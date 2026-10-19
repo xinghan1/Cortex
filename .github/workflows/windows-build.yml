@@ -41,13 +41,25 @@ jobs:
       - name: Build Windows portable app
         run: npm run build
 
-      - name: Upload Windows build
+      - name: Build Windows installer
+        run: npm run build:installer
+
+      - name: Upload Windows portable app
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Synora-code-Windows-x64
+          name: Synora-code-Windows-x64-portable
           path: |
             dist/Synora-code-*-win32-x64/
             !dist/Synora-code-*-win32-x64/data/**
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Synora-code-Windows-x64-installer
+          path: installer-output/Synora-code-Setup-*-x64.exe
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: false

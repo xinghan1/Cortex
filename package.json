@@ -1,7 +1,7 @@
 {
   "name": "synora-code",
   "productName": "Synora code",
-  "version": "0.16.5",
+  "version": "0.16.6",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",
@@ -11,12 +11,14 @@
     "start": "electron .",
     "test": "node --test tests/*.test.mjs",
     "build": "node scripts/build.mjs",
+    "build:installer": "node scripts/build-installer.mjs",
     "smoke": "electron . --smoke-test"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "electron": "44.9.0",
+    "electron-builder": "26.17.0",
     "typescript": "^7.0.2"
   },
   "engines": {

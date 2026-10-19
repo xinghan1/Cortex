@@ -2,18 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { validateBrowserURL, safeParts, resolveStaticFile, ProjectPreviewServer, clampBrowserBounds } = require('../src/core/browser-security.cjs');
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-code-browser-test-'));
+  const directory = await fs.mkdtemp(path.join(testTempRoot, 'ai-code-browser-test-'));
   const root = path.join(directory, 'project'), outside = path.join(directory, 'outside');
   await fs.mkdir(root); await fs.mkdir(outside);
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(directory)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(directory)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(directory).startsWith('ai-code-browser-test-'));
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });

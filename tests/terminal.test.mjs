@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { TerminalSession } from '../src/core/terminal.mjs';
@@ -187,10 +187,10 @@ const shell = process.platform === 'win32'
 const powerShellAvailable = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { windowsHide: true, stdio: 'ignore' }).status === 0;
 
 test('executes a real approved local PowerShell command at the workspace root with UTF-8 output', { skip: !powerShellAvailable }, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-terminal-test-'));
+  const root = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-terminal-test-'));
   t.after(async () => {
     const resolved = path.resolve(root);
-    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(resolved).startsWith('forgedesk-terminal-test-'));
     await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });

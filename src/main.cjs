@@ -8,10 +8,20 @@ const { UIPreferences } = require('./core/ui-preferences.cjs');
 const { RecentProjects } = require('./core/recent-projects.cjs');
 const { approvalDecision, validateMode } = require('./core/approval-policy.cjs');
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
+const { resolveDataDirectory } = require('./core/data-path.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test');
-const dataDir = process.env.FORGEDESK_DATA_DIR || (app.isPackaged ? path.join(path.dirname(process.execPath), 'data') : path.join(projectDir, smoke ? '.smoke-data-v16-5' : '.local-data'));
+const isInstalledBuild = require('../package.json').synoraInstalled === true;
+const dataDir = resolveDataDirectory({
+  override: process.env.FORGEDESK_DATA_DIR,
+  isPackaged: app.isPackaged,
+  isInstalled: isInstalledBuild,
+  appDataPath: app.getPath('appData'),
+  execPath: process.execPath,
+  projectDir,
+  smoke,
+});
 app.setName('Synora code');
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'chromium'));
@@ -19,8 +29,8 @@ if (smoke) app.disableHardwareAcceleration();
 
 let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
-  if (!app.isPackaged || smoke || process.env.FORGEDESK_DATA_DIR) return;
-  const previousVersions = ['Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
+  if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
+  const previousVersions = ['Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);

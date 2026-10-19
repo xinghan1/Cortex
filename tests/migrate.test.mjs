@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = createRequire(import.meta.url)('../src/core/migrate.cjs');
 
 test('portable upgrade copies existing encrypted settings and sessions once without caches', async t => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-migration-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-migration-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -45,9 +45,9 @@ test('portable upgrade copies existing encrypted settings and sessions once with
 });
 
 test('encryption preflight selects the newest real installation and preserves an existing key', async t => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-migration-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-migration-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -76,9 +76,9 @@ test('encryption preflight selects the newest real installation and preserves an
 });
 
 test('unreadable encryption state cannot cause a partial credential migration', async t => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-migration-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-migration-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -95,9 +95,9 @@ test('unreadable encryption state cannot cause a partial credential migration', 
 });
 
 test('existing recent projects mark a destination as initialized and are not overwritten during migration', async t => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-migration-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-migration-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });
@@ -111,9 +111,9 @@ test('existing recent projects mark a destination as initialized and are not ove
 });
 
 test('encrypted credentials without their encryption context are never migrated silently', async t => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-migration-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-migration-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(temp)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });

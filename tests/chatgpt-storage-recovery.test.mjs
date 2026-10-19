@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import path from 'node:path';
 import test from 'node:test';
 import { ChatGPTConnection } from '../src/core/chatgpt.mjs';
@@ -27,9 +27,9 @@ function savedState() {
 async function fixture(t, wrapClient = client => client) {
   let networkCalls = 0, browserCalls = 0;
   t.mock.method(globalThis, 'fetch', () => { networkCalls++; throw new Error('Network disabled for synthetic credential tests'); });
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'synora-chatgpt-recovery-'));
+  const dataDir = await fs.mkdtemp(path.join(testTempRoot, 'synora-chatgpt-recovery-'));
   t.after(async () => {
-    assert.equal(path.dirname(path.resolve(dataDir)).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(path.resolve(dataDir)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(dataDir).startsWith('synora-chatgpt-recovery-'));
     await fs.rm(dataDir, { recursive: true, force: true });
   });

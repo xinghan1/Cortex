@@ -2,19 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import { spawnSync } from 'node:child_process';
 import { WorkspaceTools, TOOL_DEFINITIONS } from '../src/core/workspace.mjs';
 
 async function fixture(t, options = {}) {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-workspace-test-'));
+  const temp = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-workspace-test-'));
   const root = path.join(temp, 'project');
   const outside = path.join(temp, 'outside');
   await fs.mkdir(root);
   await fs.mkdir(outside);
   t.after(async () => {
     const resolved = path.resolve(temp);
-    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(resolved).startsWith('forgedesk-workspace-test-'));
     await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });

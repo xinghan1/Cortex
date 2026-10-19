@@ -3,17 +3,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import { WorkspaceTools } from '../src/core/workspace.mjs';
 import { ManualFileManager } from '../src/core/file-manager.mjs';
 
 async function fixture(t, options = {}) {
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'synora-file-concurrency-'));
+  const temporary = await fs.mkdtemp(path.join(testTempRoot, 'synora-file-concurrency-'));
   const root = path.join(temporary, 'project');
   await fs.mkdir(root);
   t.after(async () => {
     const resolved = path.resolve(temporary);
-    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(resolved).startsWith('synora-file-concurrency-'));
     await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });

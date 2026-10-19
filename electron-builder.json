@@ -1,0 +1,49 @@
+{
+  "appId": "com.synora.code",
+  "productName": "Synora code",
+  "directories": {
+    "output": "installer-output",
+    "buildResources": "build"
+  },
+  "files": [
+    "src/**/*",
+    "package.json",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "extraFiles": [
+    { "from": "README.md", "to": "使用说明.md" },
+    { "from": "THIRD_PARTY_NOTICES.md", "to": "THIRD_PARTY_NOTICES.md" }
+  ],
+  "extraMetadata": {
+    "synoraInstalled": true
+  },
+  "asar": true,
+  "npmRebuild": false,
+  "forceCodeSigning": false,
+  "publish": null,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "src/renderer/synora-logo.png",
+    "artifactName": "Synora-code-Setup-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "selectPerMachineByDefault": false,
+    "allowElevation": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Synora code",
+    "deleteAppDataOnUninstall": false,
+    "runAfterFinish": false,
+    "packElevateHelper": false,
+    "include": "build/installer.nsh"
+  }
+}

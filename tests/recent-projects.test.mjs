@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
+import { testTempRoot } from './helpers/temp-root.mjs';
 import { createRequire } from 'node:module';
 const { RecentProjects } = createRequire(import.meta.url)('../src/core/recent-projects.cjs');
 
 async function fixture(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgedesk-recent-projects-'));
+  const dir = await fs.mkdtemp(path.join(testTempRoot, 'forgedesk-recent-projects-'));
   t.after(async () => {
     const resolved = path.resolve(dir);
-    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase());
+    assert.equal(path.dirname(resolved).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
     assert.ok(path.basename(resolved).startsWith('forgedesk-recent-projects-'));
     await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
