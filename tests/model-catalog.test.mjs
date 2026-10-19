@@ -7,6 +7,16 @@ const entry = (id, extra = {}) => ({ id, object: 'model', ...extra });
 const args = overrides => ({ provider: 'openai', baseUrl: 'https://models.example/v1', apiKey: 'private-test-key', ...overrides });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('context capacity comes only from explicit valid directory metadata and distinguishes input limits', () => {
+  assert.equal(deriveModelCapabilities('openai', 'gpt-6-astra', { officialSource: true }).contextWindow, undefined);
+  assert.deepEqual(deriveModelCapabilities('deepseek', 'opaque-id', { context_window: 131072 }), { contextWindow: 131072, contextWindowKind: 'total' });
+  assert.deepEqual(deriveModelCapabilities('anthropic', 'opaque-id', { max_input_tokens: 200000, max_tokens: 64000 }), { contextWindow: 200000, contextWindowKind: 'input' });
+  assert.deepEqual(deriveModelCapabilities('relay', 'opaque-id', { capabilities: { context_length: 32000 } }), { contextWindow: 32000, contextWindowKind: 'total' });
+  for (const value of [0, -1, '128000', 1.5, Number.MAX_SAFE_INTEGER + 1, null]) {
+    assert.equal(deriveModelCapabilities('relay', 'opaque-id', { context_window: value, max_output_tokens: 999999 }).contextWindow, undefined);
+  }
+});
+
 test('OpenAI catalog uses GET, bearer header, no redirects and preserves unknown model IDs', async () => {
   const requests = [];
   const catalog = new ModelCatalog();

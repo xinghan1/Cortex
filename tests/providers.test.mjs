@@ -55,6 +55,28 @@ function options(baseUrl, extra = {}) {
   return { provider: 'openai', apiKey, model, baseUrl, messages: history, tools, ...extra };
 }
 
+test('Responses cache details remain an input subset and reasoning output is not added twice', async t => {
+  const base = await localServer(t, ({ response }) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }],
+      usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 40 }, output_tokens_details: { reasoning_tokens: 15 } } }));
+  });
+  const result = await requestModel(options(base));
+  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 });
+});
+
+test('Chat Completions accepts nested cache details and rejects invalid cache counters', async t => {
+  for (const cached of [0, 40, 101, -1, '40']) {
+    const base = await localServer(t, ({ response }) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: cached } } }));
+    });
+    const result = await requestModel(options(base, { apiProtocol: 'chat-completions' }));
+    assert.equal(result.usage.cachedInputTokens, [0, 40].includes(cached) ? cached : undefined);
+  }
+});
+
 test('OpenAI maps history and assembles UTF-8/CRLF SSE fragments', async t => {
   let captured;
   const base = await localServer(t, async input => {
@@ -124,7 +146,7 @@ test('DeepSeek maps tool history and merges interleaved call fragments', async t
     { id: 'call-1', name: 'read_file', arguments: { path: 'one.txt' } },
     { id: 'call-2', name: 'read_file', arguments: { path: 'two.txt' } },
   ]);
-  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20 });
+  assert.deepEqual(result.usage, { inputTokens: 100, outputTokens: 20, cachedInputTokens: 10 });
 });
 
 test('Anthropic maps tool blocks, accumulates JSON and normalizes cached usage', async t => {
@@ -164,7 +186,7 @@ test('Anthropic maps tool blocks, accumulates JSON and normalizes cached usage',
   assert.deepEqual(normalized, { role: 'assistant', content: '正在读取', toolCalls: [{ id: 'toolu-1', name: 'read_file', arguments: { path: '你好.txt' } }] });
   assert.equal(providerState.provider, 'anthropic');
   assert.deepEqual(providerState.content[1].input, { path: '你好.txt' });
-  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 19 });
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 19, cachedInputTokens: 7 });
 });
 
 test('custom paths never duplicate v1 or a complete endpoint', async t => {
@@ -836,12 +858,12 @@ test('Anthropic progress merges cumulative usage and cached input without counti
   });
   const progress = [];
   const result = await requestModel(options(base, { provider: 'anthropic', onProgress: value => progress.push(value) }));
-  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 9 });
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 9, cachedInputTokens: 7 });
   assert.equal(result.usageReported, true);
   assert.equal(progress.at(-1).estimatedOutputTokens, estimatedTokens('thinking text', 'done'));
   assert.deepEqual(progress.filter(value => value.usage).map(value => value.usage), [
-    { inputTokens: 30, outputTokens: 1 }, { inputTokens: 30, outputTokens: 5 },
-    { inputTokens: 30, outputTokens: 9 }, { inputTokens: 30, outputTokens: 9 },
+    { inputTokens: 30, outputTokens: 1, cachedInputTokens: 7 }, { inputTokens: 30, outputTokens: 5, cachedInputTokens: 7 },
+    { inputTokens: 30, outputTokens: 9, cachedInputTokens: 7 }, { inputTokens: 30, outputTokens: 9, cachedInputTokens: 7 },
   ]);
 });
 
@@ -912,10 +934,10 @@ test('Anthropic usage can become complete across events without losing cached in
   const result = await requestModel(options(base, { provider: 'anthropic', onProgress: value => progress.push(value) }));
   assert.equal(progress[0].usage, undefined);
   assert.deepEqual(progress.filter(value => value.usage).map(value => value.usage), [
-    { inputTokens: 27, outputTokens: 3 }, { inputTokens: 27, outputTokens: 5 }, { inputTokens: 27, outputTokens: 5 },
+    { inputTokens: 27, outputTokens: 3, cachedInputTokens: 7 }, { inputTokens: 27, outputTokens: 5, cachedInputTokens: 7 }, { inputTokens: 27, outputTokens: 5, cachedInputTokens: 7 },
   ]);
   assert.equal(result.usageReported, true);
-  assert.deepEqual(result.usage, { inputTokens: 27, outputTokens: 5 });
+  assert.deepEqual(result.usage, { inputTokens: 27, outputTokens: 5, cachedInputTokens: 7 });
 });
 
 const chatGPTEndpoint = 'https://api.openai.com/v1/responses';

@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
+const { aggregateSessionUsage, createSessionMetrics } = require('./session-metrics.cjs');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const EFFORTS = {
@@ -63,6 +64,9 @@ function normalizeUsage(record) {
     inputTokens: reported ? record.inputTokens : null,
     outputTokens: reported ? record.outputTokens : null,
     reported, partial: record.partial === true, status: record.status,
+    ...(reported && validTokens(record.cachedInputTokens) && record.cachedInputTokens <= record.inputTokens
+      ? { cachedInputTokens: record.cachedInputTokens } : {}),
+    ...(record.purpose === 'context-compaction' ? { purpose: 'context-compaction' } : {}),
     ...(record.historicalApproximate === true ? { historicalApproximate: true } : {}),
   };
 }
@@ -86,6 +90,7 @@ class Store {
   constructor(dir, safeStorage) {
     this.dir = dir; this.crypto = safeStorage; this.settings = structuredClone(DEFAULTS);
     this.usage = null; this.usageError = null; this.usageQueue = Promise.resolve(); this.usageIds = new Set();
+    this.sessionUsageCache = new WeakMap();
   }
   async init() {
     await fs.mkdir(path.join(this.dir, 'sessions'), { recursive: true });
@@ -326,6 +331,20 @@ class Store {
     });
     this.usageQueue = operation.catch(() => {});
     return operation;
+  }
+
+  sessionUsageTotals(session) {
+    if (!session) return aggregateSessionUsage([]);
+    let cached = this.sessionUsageCache.get(session);
+    if (!cached || cached.ledger !== this.usage || cached.baseline !== session.usageBaseline || cached.sessionId !== session.id) {
+      cached = { ledger: this.usage, baseline: session.usageBaseline, sessionId: session.id,
+        value: aggregateSessionUsage((this.usage?.records || []).filter(record => record.sessionId === session.id), session.usageBaseline) };
+      this.sessionUsageCache.set(session, cached);
+    }
+    return structuredClone(cached.value);
+  }
+  sessionMetrics(session, expectedContext) {
+    return createSessionMetrics(session, this.sessionUsageTotals(session), { unavailable: Boolean(this.usageError), expectedContext });
   }
 
   usageStats(now = new Date()) {

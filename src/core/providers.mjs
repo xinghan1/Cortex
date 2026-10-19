@@ -609,6 +609,9 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       : ['input_tokens', 'output_tokens', 'prompt_tokens', 'completion_tokens'];
     const update = Object.fromEntries(fields.filter(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
       .map(key => [key, value[key]]));
+    const cached = provider === 'anthropic' ? value.cache_read_input_tokens
+      : value.input_tokens_details?.cached_tokens ?? value.prompt_tokens_details?.cached_tokens ?? value.prompt_cache_hit_tokens;
+    if (Number.isSafeInteger(cached) && cached >= 0) update.cached_input_tokens = cached;
     if (!Object.keys(update).length) return;
     reportedUsage = { ...reportedUsage, ...update };
     const input = reportedUsage.input_tokens ?? reportedUsage.prompt_tokens;
@@ -625,6 +628,9 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
         inputTokens: nonnegative(reportedUsage.input_tokens ?? reportedUsage.prompt_tokens),
         outputTokens: nonnegative(reportedUsage.output_tokens ?? reportedUsage.completion_tokens),
       };
+    }
+    if (Number.isSafeInteger(reportedUsage.cached_input_tokens) && reportedUsage.cached_input_tokens <= usage.inputTokens) {
+      usage.cachedInputTokens = reportedUsage.cached_input_tokens;
     }
     progress(undefined, usageReported);
   }

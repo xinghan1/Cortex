@@ -309,6 +309,37 @@ const usageRecord = overrides => ({
   reported: true, status: 'completed', ...overrides,
 });
 
+test('session metrics preserve cache reports, compaction charges and frozen history baselines across restart', async t => {
+  const store = await fixture(t);
+  const original = store.createSession('E:\\synthetic-project');
+  original.messages.push({ role: 'user', content: 'first turn' });
+  original.contextUsage = { provider: 'openai', model: 'test-model', usedTokens: 100, limit: 1000, status: 'reported' };
+  const first = usageRecord({ sessionId: original.id, inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 });
+  await store.recordUsage(first);
+  await store.recordUsage(first);
+  assert.equal(store.sessionMetrics(original).totalTokens, 120);
+  const branch = { ...structuredClone(original), id: randomUUID(), usageBaseline: store.sessionUsageTotals(original) };
+  branch.messages.push({ role: 'user', content: 'continue this snapshot' });
+  await store.recordUsage(usageRecord({ sessionId: original.id, inputTokens: 900, outputTokens: 10 }));
+  await store.recordUsage(usageRecord({ sessionId: branch.id, inputTokens: 50, outputTokens: 10, cachedInputTokens: 0, purpose: 'context-compaction' }));
+  await store.recordUsage(usageRecord({ sessionId: branch.id, inputTokens: 100, outputTokens: 5, cachedInputTokens: 100 }));
+  assert.equal(store.sessionMetrics(original).totalTokens, 1030);
+  assert.equal(store.sessionMetrics(branch).totalTokens, 285);
+  assert.equal(store.sessionMetrics(branch).rounds, 2);
+  assert.equal(store.sessionMetrics(branch).cacheHitPercent, 56);
+  assert.equal(store.sessionMetrics(branch).contextPercent, 10);
+  await store.saveSession(branch);
+  const restored = new Store(store.dir, mockCrypto); await restored.init();
+  const loaded = await restored.getSession(branch.id);
+  assert.deepEqual(restored.sessionMetrics(loaded), store.sessionMetrics(branch));
+  assert.equal(restored.usage.records.find(item => item.sessionId === branch.id && item.purpose)?.purpose, 'context-compaction');
+  assert.equal(restored.usage.records.find(item => item.id === first.id).cachedInputTokens, 40);
+  const empty = restored.createSession('E:\\another-project');
+  assert.equal(restored.sessionMetrics(empty).totalTokens, 0);
+  assert.equal(restored.sessionMetrics(empty).rounds, 0);
+  assert.equal(restored.sessionMetrics(empty).cacheStatus, 'unavailable');
+});
+
 test('Hong Kong midnight and Monday boundaries use the local calendar', async t => {
   const store = await fixture(t);
   await store.recordUsage(usageRecord({ timestamp: '2026-01-04T15:59:59.999Z', inputTokens: 7, outputTokens: 3 }));

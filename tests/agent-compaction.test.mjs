@@ -39,7 +39,7 @@ test('short sessions make no compaction request or notice', async () => {
 
 test('a real local HTTP provider summarizes a long completed tool result and continues without repeating the tool', { timeout: 5000 }, async t => {
   const messages = [{ role: 'user', content: 'Inspect large.txt and report the actual result.' }];
-  const events = [], records = [], bodies = [], checkpoint = {}, order = [];
+  const events = [], records = [], bodies = [], checkpoint = {}, order = [], contextSamples = [];
   let executions = 0;
   const server = createServer(async (request, response) => {
     let raw = '';
@@ -66,9 +66,10 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  await runAgent(options({ messages, config: { ...config, baseUrl: `http://127.0.0.1:${server.address().port}` },
+  await runAgent(options({ messages, config: { ...config, modelCapabilities: { contextWindow: 1000, contextWindowKind: 'total' }, baseUrl: `http://127.0.0.1:${server.address().port}` },
     contextCheckpoint: checkpoint, emit: event => { events.push(event); if (event.type === 'context-compacted') order.push('notice'); },
     onUsage: async record => records.push(record),
+    onContextUsage: sample => contextSamples.push(sample),
     onContextCompacted: async metadata => { assert.equal(metadata.messageIndex, 3); assert.ok(checkpoint.throughIndex > 0); order.push('saved'); },
     workspace: { root: 'fixture-project', execute: async (name, args) => {
       executions++; assert.equal(name, 'read_file'); assert.equal(args.path, 'large.txt');
@@ -80,6 +81,10 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   assert.equal(new Set(records.map(record => record.id)).size, 3);
   assert.equal(records.filter(record => record.purpose === 'context-compaction').length, 1);
   assert.deepEqual(records.map(record => record.inputTokens), [10, 20, 30]);
+  assert.deepEqual(contextSamples.filter(sample => sample.status === 'reported').map(sample => sample.usedTokens), [10, 30]);
+  assert.equal(contextSamples.at(-1).limit, 1000);
+  assert.equal(contextSamples.at(-1).limitKind, 'total');
+  assert.ok(contextSamples.filter(sample => sample.status === 'estimated').length === 2);
   assert.deepEqual(events.filter(event => event.type === 'usage').at(-1), { type: 'usage', inputTokens: 60, outputTokens: 6 });
   assert.deepEqual(order, ['saved', 'notice']);
   assert.equal(events.filter(event => event.type === 'context-compacted').length, 1);

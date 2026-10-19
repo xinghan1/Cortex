@@ -1378,6 +1378,43 @@ function renderUsageStats(stats) {
   $('usage-updated').title = `仅累计本应用 API 已回报的输入和输出 Token。缺失部分不计入。\n时区：Asia/Hong_Kong；每周一开始。${updated}${approximate ? '\n包含旧版历史近似用量。' : ''}${stats?.warning ? `\n提示：${safeString(stats.warning)}` : ''}${stats?.error ? `\n统计不可用：${safeString(stats.error)}` : ''}`;
 }
 
+function renderSessionMetrics(metrics) {
+  const validNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const number = value => validNumber(value) ? Math.trunc(value).toLocaleString('en-US') : '—';
+  const percent = value => validNumber(value) && value <= 100
+    ? value.toLocaleString('zh-CN', { maximumFractionDigits: 1 }) + '%' : null;
+  const rounds = validNumber(metrics?.rounds) ? Math.trunc(metrics.rounds) : null;
+  $('session-rounds').textContent = rounds === null ? '— 轮对话' : rounds ? `第 ${number(rounds)} 轮对话` : '0 轮对话';
+
+  const cachePercent = metrics?.cacheStatus === 'unavailable' ? null : percent(metrics?.cacheHitPercent);
+  const partialCache = cachePercent !== null && metrics?.cacheStatus === 'partial';
+  $('session-cache-value').textContent = cachePercent === null ? '—' : cachePercent + (partialCache ? '*' : '');
+  $('session-cache').title = cachePercent === null ? '服务商尚未提供当前会话的缓存命中数据。'
+    : `API 回报缓存输入：${number(metrics.cachedInputTokens)} Token。命中率为已回报缓存输入占对应请求输入的比例。${partialCache ? '\n部分请求未提供缓存用量；仅统计已提供数据的请求。' : ''}`;
+
+  const noReportedUsage = metrics?.usageStatus === 'unavailable' && rounds > 0;
+  $('session-total-value').textContent = noReportedUsage ? '—' : number(metrics?.totalTokens);
+  $('session-total').classList.toggle('partial', metrics?.usageStatus === 'partial');
+  $('session-total').title = noReportedUsage ? '服务商尚未回报当前会话的 Token 用量。'
+    : `当前会话 API 已回报的累计用量：输入 ${number(metrics?.inputTokens)} / 输出 ${number(metrics?.outputTokens)} Token。${metrics?.usageStatus === 'partial' ? '\n部分请求缺少用量报告，仅累计已知用量。' : ''}\n缓存输入和推理 Token 已包含在相应用量中，不重复累加。`;
+
+  const contextPercent = metrics?.contextStatus === 'unknown' ? null : percent(metrics?.contextPercent);
+  const contextEstimated = contextPercent !== null && metrics?.contextStatus === 'estimated';
+  const contextLabel = contextPercent === null ? '—' : (contextEstimated ? '≈' : '') + contextPercent;
+  const context = $('session-context');
+  const description = typeof metrics?.contextDescription === 'string' ? metrics.contextDescription : '';
+  const contextTitle = contextPercent === null
+    ? description || '模型上下文容量未知，暂无法计算使用率。'
+    : `上下文使用率：${contextLabel}\n当前请求：${number(metrics.contextUsedTokens)} / 容量 ${number(metrics.contextLimit)} Token。${contextEstimated ? '\n使用率为估算值。' : ''}${description ? '\n' + description : ''}`;
+  $('session-context-value').textContent = contextLabel;
+  $('session-context-progress').setAttribute('stroke-dasharray', `${contextPercent === null ? 0 : metrics.contextPercent} 100`);
+  context.classList.toggle('unknown', contextPercent === null);
+  context.title = contextTitle;
+  context.setAttribute('aria-valuetext', contextTitle.replace(/\n/g, '，'));
+  if (contextPercent === null) context.removeAttribute('aria-valuenow');
+  else context.setAttribute('aria-valuenow', String(metrics.contextPercent));
+}
+
 function resetTelemetry() {
   contextCompacting = false;
   clearInterval(taskActivityTimer);
@@ -1877,6 +1914,7 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   fillReasoningOptions($('reasoning-effort'), provider, settings.reasoningEffort || settings.providers?.[provider]?.reasoningEffort || 'default');
   setReasoningDisabled(contextBusy() || reasoningSaving);
   renderUsageStats(state.usageStats);
+  renderSessionMetrics(state.sessionMetrics);
   renderSessions(state.sessions || []);
   renderChatGPTState();
   renderComposerModel();
@@ -2542,6 +2580,7 @@ function clearConversation() {
   $('welcome').hidden = false;
   $('conversation-title').textContent = conversationTitle();
   $('token-usage').textContent = '请检查生成的代码与命令';
+  renderSessionMetrics(null);
   resetTelemetry();
   streamedMessage = null;
   streamedText = '';
@@ -2560,10 +2599,12 @@ async function newSession(options = {}) {
     const session = await bridge.newSession(options);
     if (workspaceId !== currentWorkspaceId()) return;
     sessionId = session.id;
-    appState = { ...appState, sessionId: session.id, temporary: session.temporary === true };
+    appState = { ...appState, sessionId: session.id, temporary: session.temporary === true,
+      sessionMetrics: session.sessionMetrics || (appState?.sessionId === session.id ? appState.sessionMetrics : null) };
     $('temporary-indicator').hidden = session.temporary !== true;
     ++sessionRequest;
     clearConversation();
+    renderSessionMetrics(appState.sessionMetrics);
     refreshControlLocks();
     renderSessions(appState?.sessions || []);
     $('task-input').focus();
@@ -2597,9 +2638,11 @@ function appendContextCompactionNotice(event) {
 }
 
 function renderSessionSnapshot(session) {
+  const metrics = session.sessionMetrics || (appState?.sessionId === session.id ? appState.sessionMetrics : null);
   clearConversation();
   sessionId = session.id;
-  appState = { ...appState, sessionId: session.id };
+  appState = { ...appState, sessionId: session.id, sessionMetrics: metrics };
+  renderSessionMetrics(metrics);
   sessionControls?.update({ ...appState, sessionId, busy: contextBusy(), authBusy: isChatGPTBusy() });
   if (typeof session.temporary === 'boolean') appState = { ...appState, temporary: session.temporary };
   $('temporary-indicator').hidden = appState?.temporary !== true;
@@ -2905,6 +2948,12 @@ function handleEvent(event) {
       setTaskActivityPhase('tool', `已按权限自动批准：${event.title || event.action || '操作'}`);
       break;
     case 'state': updateState(event.state); break;
+    case 'session-metrics':
+      if (!event.sessionId || event.sessionId === appState?.sessionId) {
+        appState = { ...appState, sessionMetrics: event.metrics };
+        renderSessionMetrics(event.metrics);
+      }
+      break;
     case 'session':
       if (event.session?.id && event.session.id !== sessionId) renderSessionSnapshot(event.session);
       if (event.session?.id) sessionId = event.session.id;

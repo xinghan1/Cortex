@@ -74,6 +74,17 @@ function reasoningMetadata(provider, metadata) {
 export function deriveModelCapabilities(provider, id, metadata = {}) {
   if (!object(metadata)) metadata = {};
   const result = {};
+  const capacities = [metadata, metadata.capabilities].filter(object);
+  for (const source of capacities) {
+    const total = source.contextWindow ?? source.context_window ?? source.context_length;
+    const input = source.max_input_tokens;
+    const capacity = total ?? input;
+    if (Number.isSafeInteger(capacity) && capacity > 0) {
+      result.contextWindow = capacity;
+      result.contextWindowKind = total !== undefined ? source.contextWindowKind === 'input' ? 'input' : 'total' : 'input';
+      break;
+    }
+  }
   let { supported, defaultLevel } = reasoningMetadata(provider, metadata);
   if (typeof metadata.supportsTools === 'boolean') result.supportsTools = metadata.supportsTools;
   if (typeof metadata.supportsImages === 'boolean') result.supportsImages = metadata.supportsImages;

@@ -30,7 +30,7 @@ if (smoke) app.disableHardwareAcceleration();
 let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
   if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
-  const previousVersions = ['Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
+  const previousVersions = ['Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
@@ -150,6 +150,7 @@ function createWindowContext(host) {
 let win, tools, currentSession, activeRun, terminal, fileManager;
 const workspaceId = randomUUID();
 let modelSelection = null;
+let metricsConnectionKey = null;
 const settingsCatalogPreviews = new Map();
 const terminalEvents = [];
 let permissionMode = 'request', browser;
@@ -213,7 +214,7 @@ async function saveProjectSettings(input) {
   return result;
 }
 function recordLiveEvent(run, clean) {
-  if (!run || ['state', 'session', 'workspace-activated', 'workspace-update', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'find-result', 'window-state', 'telemetry'].includes(clean.type)) return;
+  if (!run || ['state', 'session', 'workspace-activated', 'workspace-update', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'find-result', 'window-state', 'telemetry', 'session-metrics'].includes(clean.type)) return;
   const events = run.liveEvents ||= [];
   const previous = events.at(-1);
   if (clean.type === 'text-delta') {
@@ -253,14 +254,26 @@ function emit(event) {
   if (activeRun && event.type === 'context-compaction-start') activeRun.compacting = true;
   if (activeRun && event.type === 'context-compacted') activeRun.compacting = false;
   if (activeRun?.kind === 'agent' && event.type === 'telemetry') activeRun.telemetry = telemetrySnapshot(event);
+  if (activeRun?.kind === 'agent' && !activeRun.demo && event.type === 'tool-start') {
+    currentSession.toolSteps = (Number.isSafeInteger(currentSession.toolSteps) ? currentSession.toolSteps
+      : currentSession.events.filter(item => item.type === 'tool-start').length) + 1;
+    emitSessionMetrics();
+  }
   const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...event, workspaceId, sequence: ++eventSequence })));
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
   if (host.active === context) win.webContents.send('forge:event', clean);
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
-  if (activeRun && activeRun.kind !== 'terminal' && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'user-message', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start'].includes(event.type) && !event.type.startsWith('terminal-')) {
+  if (activeRun && activeRun.kind !== 'terminal' && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'user-message', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
     currentSession.events.push(clean);
     currentSession.events = currentSession.events.slice(-150);
   }
+}
+function emitSessionMetrics() {
+  if (currentSession) emit({ type: 'session-metrics', sessionId: currentSession.id, metrics: sessionMetricsSnapshot(currentSession) });
+}
+function sessionMetricsSnapshot(session) {
+  const settings = publicSettings();
+  return store.sessionMetrics(session, { provider: settings.provider, model: settings.model, connectionKey: metricsConnectionKey });
 }
 function requireIdle() { if (activeRun) throw new Error('请先停止正在执行的任务。'); }
 function requireTools() { if (!tools) throw new Error('请先打开本地项目。'); return tools; }
@@ -409,11 +422,13 @@ function approve(request) {
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
   const context = await catalogContext({}, account);
+  metricsConnectionKey = context.key;
   reconcileReasoningSelection(context);
   const sessions = await store.listSessions();
   const history = new Map(sessions.map(session => [projectIdentity(session.workspace), session]));
   const projects = (recentProjects?.list() || []).map(project => ({ ...project, ...(history.get(projectIdentity(project.path)) ? { sessionId: history.get(projectIdentity(project.path)).id } : {}) }));
-  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), chatgpt: account, textScale: uiPreferences?.textScale ?? 100, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask: { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true, ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex, streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null } : {}) } };
+  const sessionMetrics = sessionMetricsSnapshot(currentSession);
+  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask: { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true, ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex, streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null } : {}) } };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -544,7 +559,8 @@ async function saveCurrentSession() {
   currentSession.updatedAt = clean.updatedAt;
 }
 function publicSession(session) {
-  const { contextCheckpoint, ...publicData } = session;
+  const { contextCheckpoint, usageBaseline, contextUsage, ...publicData } = session;
+  publicData.sessionMetrics = sessionMetricsSnapshot(session);
   return JSON.parse(redact(JSON.stringify({ ...publicData, ...(session.workspace && !session.demo ? { title: path.basename(path.normalize(session.workspace)) || path.parse(session.workspace).root } : {}), messages: session.messages.map(({ providerState, ...message }) => message) })));
 }
 function sessionContextCheckpoint() {
@@ -593,7 +609,9 @@ async function startTask(input) {
   const settings = publicSettings();
   const provider = settings.provider;
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
-  const modelCapabilities = capabilitiesFor(await catalogContext(), settings.model);
+  const modelContext = await catalogContext();
+  metricsConnectionKey = modelContext.key;
+  const modelCapabilities = capabilitiesFor(modelContext, settings.model);
   // Unknown models accept the user's generic choice. Advertised capabilities
   // narrow those choices, including an explicit empty list for no adjustment.
   const reasoningEffort = resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort);
@@ -621,7 +639,9 @@ async function startTask(input) {
   }
   if (loadedSnapshot) {
     const fork = store.createSession(currentSession.workspace);
-    currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt };
+    // A history continuation inherits only the totals visible at this fork.
+    // Later requests in the original session cannot change the branch's totals.
+    currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt, usageBaseline: store.sessionUsageTotals(currentSession) };
     loadedSnapshot = false;
   }
   if (shuttingDown || win?.isDestroyed()) throw new Error('窗口已关闭，任务未启动。');
@@ -653,10 +673,15 @@ async function startTask(input) {
         const modelRequest = useChatGPT ? options => chatgpt.requestModel({ ...options, requestModel }) : requestModel;
         await runAgent({ config: { provider, apiKey, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => { if (name.startsWith('browser_')) { emit({ type: 'browser-open' }); return browser.execute(name, args, { ...options, approve }); } return tools.execute(name, args, options); } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: modelRequest, signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
           takeSteering: () => takeSteering(run),
+          onMessagesChanged: emitSessionMetrics,
           contextCheckpoint: sessionContextCheckpoint(),
           onContextCompacted: () => saveCurrentSession(),
+          onContextUsage: sample => {
+            currentSession.contextUsage = { ...sample, connectionKey: modelContext.key };
+            emitSessionMetrics();
+          },
           onUsage: async record => {
-            try { await store.recordUsage(record); await broadcastAllStates(); }
+            try { await store.recordUsage(record); emitSessionMetrics(); await broadcastAllStates(); }
             catch (cause) { emit({ type: 'storage-error', error: 'Token 统计保存失败：' + cause.message }); }
           }
         });
@@ -1184,6 +1209,14 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_SESSION_METRICS_ONLY || process.env.FORGEDESK_SMOKE_ONLY === 'session-metrics') {
+    const result = { version: app.getVersion(), sessionMetrics: await require('./core/smoke-session-metrics.cjs')({ win, output }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('FORGEDESK_SESSION_METRICS_SMOKE_OK ' + JSON.stringify(result));
+    app.quit();
+    return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'api-protocol') {
     const result = { version: app.getVersion(), apiProtocol: await require('./core/smoke-api-protocol.cjs')({ win, output, dataDir }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1410,6 +1443,7 @@ async function smokeTest() {
   result.parallelProjects = await require('./core/smoke-parallel-projects.cjs')({ win, output, dataDir });
   result.reasoningCapabilities = await require('./core/smoke-reasoning-capabilities.cjs')({ win, output, dataDir });
   result.liveFiles = await require('./core/smoke-live-files.cjs')({ win, output, dataDir });
+  result.sessionMetrics = await require('./core/smoke-session-metrics.cjs')({ win, output });
   if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
   await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
   console.log('FORGEDESK_SMOKE_OK ' + JSON.stringify({ version: result.version, status: result.status, modelRounds: result.modelRounds, integration: result.integration.status, events: [...new Set(result.events)] }));
