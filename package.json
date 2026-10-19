@@ -1,0 +1,30 @@
+{
+  "name": "synora-code",
+  "productName": "Synora code",
+  "version": "0.16.5",
+  "private": true,
+  "description": "Multi-model local coding assistant for Windows",
+  "type": "module",
+  "main": "src/main.cjs",
+  "scripts": {
+    "prepare:sdk": "node scripts/prepare-chatgpt-sdk.mjs",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "smoke": "electron . --smoke-test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "electron": "44.9.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "jose": "^6.1.0",
+    "openai": "^7.21.0",
+    "proper-lockfile": "^4.1.2"
+  }
+}

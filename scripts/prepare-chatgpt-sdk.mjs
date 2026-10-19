@@ -1,0 +1,15 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const source = path.join(root, 'vendor', 'siwc-devkit');
+const compiler = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+const result = spawnSync(process.execPath, [compiler, '-p', path.join(source, 'packages', 'local', 'tsconfig.json')], { cwd: root, windowsHide: true, stdio: 'inherit' });
+if (result.status !== 0) throw new Error('官方 ChatGPT 登录 SDK 编译失败。');
+const output = path.join(root, 'src', 'vendor', 'siwc');
+await fs.mkdir(output, { recursive: true });
+await fs.cp(path.join(source, 'packages', 'local', 'dist'), output, { recursive: true });
+for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) await fs.copyFile(path.join(source, name), path.join(output, name));
+await fs.writeFile(path.join(output, 'FORGEDESK-NOTICE.txt'), 'OpenAI Sign-in with ChatGPT DevKit. Used for local personal experimentation under the included noncommercial license. ForgeDesk adds a main-process-only withAccessToken callback to preserve official OAuth and refresh handling while integrating tool calls. Original source: https://github.com/openai/sign-in-with-chatgpt-devkit\n');
+console.log('已构建官方 ChatGPT 登录 SDK。');

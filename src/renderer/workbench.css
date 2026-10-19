@@ -1,0 +1,243 @@
+.permission-control {
+  position: relative;
+  min-width: 0;
+}
+
+.permission-trigger {
+  height: 30px;
+  max-width: 145px;
+  padding: 0 10px;
+  border: 1px solid #333;
+  border-radius: 16px;
+  background: #202020;
+  color: #aaa;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.permission-trigger:hover {
+  background: #292929;
+  color: #eee;
+}
+
+.permission-trigger[data-mode=full] {
+  border-color: #9b4c45;
+  color: #efa69d;
+}
+
+.permission-popup {
+  position: absolute;
+  z-index: 45;
+  bottom: calc(100% + 12px);
+  left: 0;
+  width: 340px;
+  max-width: calc(100vw - 40px);
+  padding: 9px;
+  border: 1px solid #4a4a4a;
+  border-radius: 15px;
+  background: #242424;
+  box-shadow: 0 15px 50px #000b;
+}
+
+.permission-heading {
+  padding: 9px 10px 12px;
+  color: #aaa;
+  font-size: 12px;
+}
+
+.permission-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 11px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  color: #eee;
+}
+
+.permission-option:hover,
+.permission-option:focus-visible {
+  background: #383838;
+}
+
+.permission-option-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.permission-option strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.permission-option small {
+  font-size: 10px;
+  line-height: 1.6;
+  color: #999;
+}
+
+.permission-check {
+  width: 18px;
+  color: #ccc;
+}
+
+.permission-danger-dialog {
+  width: 470px;
+  max-width: calc(100vw - 42px);
+  padding: 28px;
+  border: 1px solid #7c4540;
+  border-radius: 14px;
+  background: #191616;
+  color: #eee;
+  box-shadow: 0 25px 100px #000c;
+}
+
+.permission-danger-dialog::backdrop {
+  background: #000b;
+}
+
+.permission-danger-dialog h2 {
+  font-size: 21px;
+  margin: 10px 0 18px;
+}
+
+.permission-danger-dialog p {
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.permission-danger-icon {
+  font-size: 32px;
+  color: #ed8c76;
+}
+
+.permission-danger-emphasis {
+  color: #efb8ac;
+}
+
+.permission-danger-scope {
+  color: #999;
+}
+
+.permission-danger-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.permission-danger-confirm {
+  border-color: #d17362;
+  background: #ac4637;
+  color: #fff;
+}
+
+.permission-danger-confirm:hover {
+  background: #c45341;
+}
+
+.composer-context {
+  flex-wrap: wrap;
+  row-gap: 7px;
+}
+
+.browser-preview {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  background: #111;
+}
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px;
+  border-bottom: 1px solid #333;
+}
+
+.browser-toolbar .icon-button {
+  width: 27px;
+  min-width: 27px;
+}
+
+.browser-address {
+  min-width: 0;
+  flex: 1;
+  height: 29px;
+  border: 1px solid #3b3b3b;
+  border-radius: 5px;
+  background: #1c1c1c;
+  color: #ddd;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.browser-status {
+  min-height: 24px;
+  padding: 5px 9px;
+  color: #929292;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 100px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.browser-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 25px;
+  text-align: center;
+  color: #777;
+  background: #131313;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.browser-error {
+  color: #edb3a8;
+}
+
+.preview-panel.browser-active {
+  width: min(max(470px,50vw),calc(100% - var(--sidebar-width,208px)));
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-panel.browser-active .preview-tabs,
+.preview-panel.browser-active .preview-header {
+  flex-shrink: 0;
+}
+
+.preview-panel.browser-active .browser-preview {
+  display: flex;
+}
+
+.preview-panel.browser-active .browser-preview[hidden] {
+  display: none;
+}
+
+html.browser-panel-open:not(.preview-pinned) .conversation {
+  margin-right: min(max(470px,50vw),calc(100% - var(--sidebar-width,208px)));
+}
+
+html.browser-panel-open .messages {
+  padding-left: 22px;
+  padding-right: 22px;
+}

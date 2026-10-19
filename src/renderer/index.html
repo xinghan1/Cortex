@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Synora code · 本地 AI 编程助手</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./markdown.css">
+  <link rel="stylesheet" href="./workbench.css">
+  <link rel="stylesheet" href="./sessions.css">
+  <script src="./markdown.js" defer></script>
+  <script src="./permissions.js" defer></script>
+  <script src="./browser.js" defer></script>
+  <script src="./sessions.js" defer></script>
+  <script src="./app.js" defer></script>
+  <script src="./menu.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="Synora code" title="Synora code">
+        <img class="brand-logo" src="./synora-logo.png" alt="" aria-hidden="true" width="30" height="30">
+      </div>
+      <div class="project-switcher-wrap"><button id="project-switcher" class="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false"><span id="project-avatar" class="project-avatar">AI</span><span id="workspace-label">选择项目</span><span class="project-chevron">⌄</span></button><section id="project-dropdown" class="project-dropdown" role="menu" aria-label="项目与历史" hidden><div class="project-dropdown-actions"><button id="project-open" type="button" role="menuitem">▱ <span>打开项目…</span><small>Ctrl+O</small></button><button id="project-create" type="button" role="menuitem">＋ <span>新建项目…</span></button></div><div id="project-current-section"><h2>当前项目</h2><div id="project-current-list"></div></div><h2>最近项目与历史</h2><div id="session-list" class="recent-project-list"></div></section></div>
+      <nav id="app-menu-bar" class="app-menu-bar" role="menubar" aria-label="应用菜单"><button id="menu-file" class="app-menu-trigger" data-menu="file" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">文件</button><button id="menu-edit" class="app-menu-trigger" data-menu="edit" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">编辑</button><button id="menu-view" class="app-menu-trigger" data-menu="view" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">视图</button><button id="menu-help" class="app-menu-trigger" data-menu="help" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">帮助</button></nav>
+    </header>
+
+    <div class="workspace-layout">
+      <aside class="sidebar">
+        <div class="sidebar-heading"><span>资源管理器</span><div class="explorer-actions"><button id="new-file" class="icon-button small" type="button" title="新建文件" aria-label="新建文件"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3H5v18h14V9l-6-6Z M13 3v6h6 M12 12v6 M9 15h6"/></svg></button><button id="new-folder" class="icon-button small" type="button" title="新建文件夹" aria-label="新建文件夹"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 3h9v11H3V6Z M13 11v6 M10 14h6"/></svg></button></div></div>
+        <section id="files-panel" class="sidebar-panel">
+          <div class="project-title"><strong id="project-name">未选择项目</strong><button id="undo-change" class="icon-button small" title="撤销上次文件修改（当前启动期间）" aria-label="撤销上次文件修改" disabled>↶</button><button id="refresh-files" class="icon-button small" title="刷新文件树" aria-label="刷新文件树">↻</button></div>
+          <div id="file-tree" class="file-tree" role="tree" aria-label="项目文件" tabindex="0"><div class="sidebar-empty"><p>未打开项目</p><button id="open-workspace-sidebar" class="button">选择文件夹</button></div></div>
+        </section>
+        <section class="usage-stats" aria-label="Token 用量统计">
+          <div class="usage-heading"><span>Token 用量</span><span id="usage-updated" title="仅累计本应用 API 回报的用量">ⓘ</span></div>
+          <div id="usage-day-row" class="usage-row" tabindex="0"><span>今日</span><strong id="usage-day">—</strong></div>
+          <div id="usage-week-row" class="usage-row" tabindex="0"><span>本周</span><strong id="usage-week">—</strong></div>
+          <div id="usage-month-row" class="usage-row" tabindex="0"><span>本月</span><strong id="usage-month">—</strong></div>
+        </section>
+        <div class="sidebar-footer"><span>本地项目</span><span id="version-label">v0.1</span></div>
+      </aside>
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin="160" aria-valuemax="420" aria-valuenow="208" tabindex="0" title="拖动调整宽度；左右键微调；双击恢复默认"></div>
+
+      <main class="conversation">
+        <div class="conversation-header"><div class="conversation-heading"><h1 id="conversation-title">新的对话</h1><span id="temporary-indicator" class="temporary-indicator" title="仅保留当前窗口会话，不写入历史" hidden>临时聊天</span></div><div class="conversation-controls"><span id="run-status" class="run-status">准备就绪</span><button id="toggle-preview" class="button subtle" title="打开文件与变更抽屉" aria-label="打开文件与变更抽屉" aria-expanded="false">文件 / 变更</button></div></div>
+        <form id="find-bar" class="find-bar" hidden><label for="find-input" class="sr-only">查找当前窗口文字</label><input id="find-input" type="search" placeholder="在当前窗口查找…" autocomplete="off"><span id="find-result" role="status"></span><button id="find-previous" class="icon-button small" type="button" title="上一个匹配" aria-label="上一个匹配">↑</button><button id="find-next" class="icon-button small" type="submit" title="下一个匹配" aria-label="下一个匹配">↓</button><button id="find-close" class="icon-button small" type="button" title="关闭查找" aria-label="关闭查找">×</button></form>
+        <div id="message-scroll" class="message-scroll">
+          <section id="welcome" class="welcome">
+            <h2>开始一个任务</h2>
+            <p>打开项目，选择模型，然后描述需要完成的工作。</p>
+            <p class="welcome-note">写入文件与执行命令前会请求你的确认。</p>
+          </section>
+          <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
+        <div class="composer-area">
+          <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button small" aria-label="关闭提示">×</button></div>
+          <section id="pending-prompts" class="pending-prompts" aria-label="待发送内容" hidden><div class="pending-heading"><div><strong id="pending-count">待发送</strong><span id="pending-status"></span></div><button id="resume-pending" class="button" type="button" hidden>继续发送</button></div><div id="pending-items" class="pending-items"></div></section>
+          <form id="task-form" class="composer">
+            <label for="task-input" class="sr-only">输入编程任务</label>
+            <div id="attachment-drafts" class="attachment-drafts" aria-label="待发送图片" hidden></div>
+            <input id="attachment-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+            <textarea id="task-input" placeholder="描述需要完成的任务…" rows="2" spellcheck="false"></textarea>
+            <div class="composer-toolbar"><div class="composer-context"><button id="attach-images" class="attach-images" type="button" title="添加图片（PNG / JPEG / WebP，最多 4 张，每张 2 MiB）；也可粘贴截图" aria-label="添加照片或截图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13l6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9 M6 15l8-8"/></svg></button><div id="composer-model-control" class="composer-model-control">
+              <button id="model-reasoning-trigger" class="model-reasoning-pill" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reasoning-popup"><span id="composer-model-name">选择模型</span><span class="pill-separator">·</span><span id="composer-reasoning-label">默认</span><span class="pill-chevron">⌃</span></button>
+              <section id="reasoning-popup" class="reasoning-popup" role="dialog" aria-label="模型与推理强度" hidden>
+                <div id="reasoning-popup-main">
+                  <div class="reasoning-popup-heading"><output id="reasoning-value" class="reasoning-value popup-reasoning-value" for="reasoning-effort">默认</output><button id="reasoning-default" class="reasoning-default popup-reasoning-reset active" type="button" aria-label="恢复模型默认推理强度" title="恢复默认" aria-pressed="true">↺</button></div>
+                  <button id="popup-model-button" class="popup-model-button" type="button" aria-haspopup="listbox"><span id="popup-model-name">选择模型</span><span>⌄</span></button>
+                  <div class="popup-range-wrap"><label for="reasoning-effort" class="sr-only">推理强度</label><div class="reasoning-slider-visual popup-slider-visual" data-fill="50"><input id="reasoning-effort" class="reasoning-range popup-reasoning-range" type="range" min="0" max="6" step="1" value="3" data-support="unknown" data-effort="default" aria-label="推理强度" aria-valuetext="默认，遵从模型默认设置"><span class="reasoning-visual-track" aria-hidden="true"><span class="reasoning-visual-fill"></span><span id="reasoning-thumb" class="reasoning-visual-thumb"></span></span></div><div class="popup-range-labels"><span id="reasoning-low-label">关闭</span><span id="reasoning-high-label">最高</span></div></div>
+                  <p id="reasoning-hint" class="popup-hint">通用档位，获取模型能力后自动校正。</p>
+                </div>
+                <div id="model-list-panel" class="model-list-panel" hidden><div class="model-list-heading"><button id="model-list-back" class="icon-button small" type="button" aria-label="返回推理设置">‹</button><strong>选择模型</strong><button id="model-list-refresh" class="icon-button small" type="button" title="刷新模型目录" aria-label="刷新模型目录">↻</button></div><input id="model-search" class="model-search" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型"><p id="model-list-status" class="model-list-status" role="status"></p><div id="model-list" class="model-list" role="listbox" aria-label="可选模型"></div><div class="model-list-footer"><button id="model-list-retry" class="text-button" type="button" hidden>重试</button><button id="model-open-settings" class="text-button" type="button">模型设置</button></div></div>
+                <div class="reasoning-popup-footer"><button id="reasoning-open-settings" class="reasoning-settings-button" type="button"><span>模型设置</span><span aria-hidden="true">⚙</span></button></div>
+              </section>
+            </div></div><div class="send-actions"><span class="keyboard-hint">Ctrl + Enter</span><button id="stop-button" class="button stop-button" type="button" hidden>停止</button><button id="send-button" class="send-button" type="submit" title="发送任务（Ctrl + Enter）" aria-label="发送任务">↑</button></div></div>
+          </form>
+          <div class="composer-footer">
+            <div class="composer-footer-account">
+              <span id="provider-hint">尚未配置模型</span>
+              <div id="chatgpt-usage-control" class="chatgpt-usage-control" hidden>
+                <button id="chatgpt-usage-button" class="chatgpt-usage-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="chatgpt-usage-popover">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18a9 9 0 1 1 16 0 M12 5v2 M5.5 8.5l1.4 1.4 M18.5 8.5l-1.4 1.4 M12 15l4-4"/><circle cx="12" cy="15" r="1.5"/></svg>
+                  <span>使用情况</span><span class="chatgpt-usage-separator" aria-hidden="true">·</span><span id="chatgpt-usage-label">查看额度</span>
+                </button>
+                <dialog id="chatgpt-usage-popover" class="chatgpt-usage-popover" aria-labelledby="chatgpt-usage-title" aria-modal="false">
+                  <div class="chatgpt-usage-heading"><strong id="chatgpt-usage-title">ChatGPT 使用情况</strong><button id="chatgpt-usage-close" class="icon-button small" type="button" aria-label="关闭使用情况">×</button></div>
+                  <p id="chatgpt-usage-status" class="chatgpt-usage-status">暂未获取请求状态</p>
+                  <p id="chatgpt-usage-message" class="chatgpt-usage-message">当前账号接口未提供剩余额度，可在官方页面查看。</p>
+                  <p id="chatgpt-usage-checked" class="chatgpt-usage-meta" hidden></p>
+                  <p id="chatgpt-usage-source" class="chatgpt-usage-meta"></p>
+                  <button id="chatgpt-usage-official" class="chatgpt-usage-official" type="button">查看官方用量 ↗</button>
+                </dialog>
+              </div>
+            </div>
+            <span id="token-usage">请检查生成的代码与命令</span>
+          </div>
+        </div>
+        <section id="terminal-panel" class="terminal-panel" aria-label="PowerShell 终端" hidden><div class="terminal-heading"><span>终端 <small>PowerShell · 每条命令从项目根目录启动</small></span><div><span id="terminal-status">准备就绪</span><button id="terminal-stop" class="button subtle" type="button" disabled>停止</button><button id="terminal-clear" class="button subtle" type="button">清除</button><button id="terminal-close" class="icon-button small" type="button" title="隐藏终端面板" aria-label="隐藏终端面板">×</button></div></div><div id="terminal-output" class="terminal-output" role="log" aria-live="polite"></div><form id="terminal-form" class="terminal-form"><label for="terminal-input">PS &gt;</label><input id="terminal-input" type="text" placeholder="输入 PowerShell 命令，执行前会请求确认" autocomplete="off" spellcheck="false" maxlength="16000"><button id="terminal-run" class="button" type="submit">运行</button></form></section>
+      </main>
+
+      <aside id="preview-panel" class="preview-panel" aria-label="文件与变更" hidden>
+        <div id="editor-resizer" class="editor-resizer" role="separator" aria-label="调整文件编辑窗口宽度" aria-orientation="vertical" tabindex="0"></div><div class="preview-header"><span>编辑器与变更</span><div><button id="preview-pin" class="icon-button small" type="button" title="将摘要固定到右侧" aria-label="固定摘要面板" aria-pressed="false">▣</button><button id="close-preview" class="icon-button small" title="关闭预览" aria-label="关闭预览">×</button></div></div>
+        <div class="preview-tabs"><button id="file-preview-tab" class="preview-tab active">文件</button><button id="changes-preview-tab" class="preview-tab">变更 <span id="change-count">0</span></button><button id="browser-preview-tab" class="preview-tab">浏览器</button></div>
+        <section id="browser-preview" class="browser-preview" aria-label="内置浏览器" hidden><form id="browser-toolbar" class="browser-toolbar"><button id="browser-back" class="icon-button small" type="button" aria-label="网页后退" disabled>←</button><button id="browser-forward" class="icon-button small" type="button" aria-label="网页前进" disabled>→</button><button id="browser-reload" class="icon-button small" type="button" aria-label="刷新网页">↻</button><label class="sr-only" for="browser-address">网页地址</label><input id="browser-address" class="browser-address" type="text" placeholder="输入网址…" autocomplete="off" spellcheck="false"><button class="button subtle" type="submit">前往</button></form><div id="browser-status" class="browser-status" role="status"></div><div id="browser-viewport" class="browser-viewport"><div id="browser-empty" class="browser-empty">在此打开网页，或从 HTML 文件打开项目预览。<br>AI 可通过浏览器工具读取、点击及输入。</div></div></section>
+        <div id="preview-empty" class="preview-empty"><p>从左侧打开文件，在此编辑。</p></div>
+        <div id="file-preview" class="file-preview" hidden><div class="file-preview-heading"><span id="preview-filename"></span><div class="editor-file-actions"><span id="editor-dirty" hidden>待保存</span><button id="save-file" class="button subtle" type="button" title="已启用自动保存；Ctrl+S 立即保存或重试" disabled>保存</button><button id="reveal-file" class="icon-button small" title="在系统中打开文件" aria-label="在系统中打开文件">↗</button></div></div><textarea id="file-content" class="code-content file-editor" aria-label="文件内容编辑器" spellcheck="false" wrap="off"></textarea><div id="editor-status" class="editor-status" role="status" aria-live="polite">自动保存已开启 · UTF-8</div></div>
+        <div id="changes-preview" class="changes-preview" hidden><div id="changes-empty" class="preview-empty compact"><p>暂无文件变更提议。</p></div><div id="change-list"></div></div>
+      </aside>
+    </div>
+  </div>
+
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form id="settings-form">
+      <div class="dialog-header"><h2>模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
+      <p class="dialog-intro">填写连接配置，获取模型目录并选择模型后保存。</p>
+      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option></select></label>
+      <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">ChatGPT 账号 · 个人本机预览</option></select></label>
+      <label id="api-protocol-field" class="form-field" hidden><span>接口协议</span><select id="api-protocol-select" name="apiProtocol"><option value="chat-completions">Chat Completions · 兼容接口</option><option value="responses">Responses</option></select><small id="api-protocol-help">按服务商文档选择调用协议。</small></label>
+      <section id="chatgpt-panel" class="chatgpt-panel" aria-label="ChatGPT 账号授权" hidden>
+        <div class="chatgpt-status-row"><strong id="chatgpt-status">未连接</strong><span id="chatgpt-identity"></span></div>
+        <p id="chatgpt-sharing" class="chatgpt-sharing">尚未授权使用 ChatGPT 套餐用量。</p>
+        <label id="chatgpt-profiles-field" class="form-field compact" hidden><span>已保存的账号</span><select id="chatgpt-profile-select"><option value="">选择账号</option></select></label>
+        <div class="chatgpt-actions">
+          <button id="chatgpt-sign-in" class="button solid" type="button">Continue with ChatGPT</button>
+          <button id="chatgpt-cancel-sign-in" class="button" type="button" hidden>取消登录</button>
+          <button id="chatgpt-reconnect" class="button" type="button" hidden>重新连接</button>
+          <button id="chatgpt-add-profile" class="button" type="button">添加账号</button>
+          <button id="chatgpt-disconnect" class="button" type="button" disabled>退出账号</button>
+        </div>
+        <div class="chatgpt-secondary-actions"><button id="chatgpt-open-usage" class="text-button" type="button">管理套餐用量 ↗</button><button id="chatgpt-refresh-models" class="text-button" type="button" disabled>刷新模型目录</button></div>
+        <p class="chatgpt-help">在官方页面登录并授权套餐，无需 API Key。需要符合条件的 Plus / Pro 账号；此模式供个人本机预览。</p>
+        <p id="chatgpt-message" class="chatgpt-message" role="status" hidden></p>
+      </section>
+      <label id="base-url-field" class="form-field"><span>Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"><small>自定义地址会接收你的 API Key、任务及发送给模型的代码。</small></label>
+      <label id="api-key-field" class="form-field"><span>API Key <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"><small id="key-help">密钥只用于你配置的模型 API 请求。</small></label>
+      <div class="settings-inline"><label id="api-key-clear-field" class="checkbox-field"><input id="clear-key-input" type="checkbox"> 清除当前服务商密钥</label></div>
+      <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message">填写连接配置，获取模型目录并选择模型后保存。</small></div>
+      <div class="privacy-note"><p id="settings-privacy">API Key 在本机加密保存。任务和相关项目内容会发送至所配置的 API 地址。命令以当前 Windows 用户权限运行，执行前需由你确认。</p></div>
+      <p id="settings-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-footer"><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>
+    </form>
+  </dialog>
+  <dialog id="link-dialog" class="link-dialog"><form id="link-form"><div class="dialog-header"><h2>在内置浏览器中打开链接</h2><button id="link-close" class="icon-button" type="button" aria-label="关闭链接输入">×</button></div><label class="form-field"><span>HTTP / HTTPS 地址</span><input id="link-input" type="url" placeholder="https://example.com" autocomplete="off" required></label><p id="link-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><span>在右侧内置浏览器中打开</span><button class="button solid" type="submit">打开链接</button></div></form></dialog>
+  <div id="app-menu-popup" class="app-menu-popup" role="menu" hidden></div>
+  <div id="app-menu-submenu" class="app-menu-popup app-menu-submenu" role="menu" hidden></div>
+  <div id="file-context-menu" class="file-context-menu" role="menu" aria-label="文件操作" hidden></div>
+  <dialog id="file-name-dialog" class="file-name-dialog"><form id="file-name-form"><div class="dialog-header"><h2 id="file-name-title">新建文件</h2><button id="file-name-close" class="icon-button" type="button" aria-label="关闭">×</button></div><label class="form-field"><span>名称</span><input id="file-name-input" type="text" autocomplete="off" required maxlength="255"></label><p id="file-name-parent" class="file-name-parent"></p><p id="file-name-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="file-name-cancel" class="button" type="button">取消</button><button id="file-name-confirm" class="button solid" type="submit">确定</button></div></form></dialog>
+  <dialog id="editor-unsaved-dialog" class="editor-unsaved-dialog"><div class="dialog-header"><h2>保存文件更改？</h2></div><p id="editor-unsaved-message"></p><p class="unsaved-hint">放弃后，尚未保存的编辑将丢失。</p><div class="unsaved-actions"><button id="editor-unsaved-cancel" class="button" type="button">取消</button><button id="editor-unsaved-discard" class="button" type="button">放弃更改</button><button id="editor-unsaved-save" class="button solid" type="button">保存</button></div></dialog>
+  <dialog id="image-preview-dialog" class="image-preview-dialog"><div class="dialog-header"><h2 id="image-preview-title">图片预览</h2><button id="image-preview-close" class="icon-button" type="button" aria-label="关闭图片预览">×</button></div><div class="image-preview-body"><img id="image-preview-content" alt="图片预览"></div></dialog>
+</body>
+</html>

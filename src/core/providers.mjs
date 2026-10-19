@@ -1,0 +1,1262 @@
+/**
+ * Native-fetch adapters. Keys stay in request headers and are never included in
+ * error messages. `messages` and the returned message use ForgeDesk's format.
+ * API references: OpenAI Responses, DeepSeek Chat Completions, Claude Messages.
+ * DeepSeek thinking/replay contract (official Chinese reference):
+ * https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/
+ * Image inputs (official):
+ * https://developers.openai.com/api/docs/guides/images-vision
+ * https://platform.claude.com/docs/en/build-with-claude/vision
+ * https://api-docs.deepseek.com/guides/vision/
+ */
+
+import { normalizeImageAttachments } from './message-images.mjs';
+
+const DEFAULT_URLS = Object.freeze({
+  openai: 'https://api.openai.com/v1',
+  deepseek: 'https://api.deepseek.com',
+  anthropic: 'https://api.anthropic.com/v1',
+  relay: '',
+});
+const RESOURCES = Object.freeze({
+  openai: '/responses',
+  deepseek: '/chat/completions',
+  anthropic: '/messages',
+});
+const DEFAULT_TIMEOUT_MS = 600_000;
+const DEFAULT_SSE_RESPONSE_LIMIT = 64 * 1024 * 1024;
+const DEFAULT_JSON_RESPONSE_LIMIT = 8 * 1024 * 1024;
+const DEFAULT_EVENT_LIMIT = 8 * 1024 * 1024;
+const DEFAULT_MODEL_PAYLOAD_LIMIT = 16 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 32 * 1024;
+const CHATGPT_ENDPOINT = 'https://api.openai.com/v1/responses';
+const CHATGPT_NAMESPACE = 'forge';
+const REASONING_LEVELS = Object.freeze({
+  openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  deepseek: ['default', 'none', 'low', 'high', 'max'],
+  anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
+  relay: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+});
+
+class ProviderError extends Error {
+  constructor(message, code = 'PROVIDER_ERROR') {
+    super(message);
+    this.name = 'ProviderError';
+    this.code = code;
+  }
+}
+
+function fail(message, code = 'PROVIDER_PROTOCOL_ERROR') {
+  throw new ProviderError(message, code);
+}
+
+function cancelResponseBody(body) {
+  // Cancelling an injected/failed transport may itself never settle. Request
+  // cancellation immediately, but do not let cleanup block the abort result.
+  try { Promise.resolve(body?.cancel()).catch(() => {}); } catch { /* No transport details are logged. */ }
+}
+
+function releaseResponseReader(reader) {
+  try { Promise.resolve(reader.cancel()).catch(() => {}); } catch { /* Already aborted or closed. */ }
+  try { reader.releaseLock(); } catch { /* A failed transport may still own a pending read. */ }
+}
+
+function requestLifetime(signal, timeoutMs) {
+  const controller = new AbortController();
+  let timer = null, timedOut = false, disposed = false, rejectPending = null;
+  const abortError = () => new DOMException('请求已取消。', 'AbortError');
+  const onAbort = () => {
+    clearTimeout(timer); timer = null;
+    rejectPending?.();
+  };
+  const cancel = () => controller.abort();
+  controller.signal.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', cancel, { once: true });
+
+  function touch() {
+    if (disposed || controller.signal.aborted) return;
+    // Node's Timeout.refresh reuses one timer throughout even a long SSE
+    // response. Browsers without refresh retain just one replacement timer.
+    if (timer?.refresh) timer.refresh();
+    else {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (disposed || controller.signal.aborted) return;
+        timedOut = true; controller.abort();
+      }, timeoutMs);
+    }
+  }
+
+  function wait(operation, onLateValue) {
+    // One current waiter, one abort listener. Repeatedly racing all reads
+    // against a shared pending abort promise would accumulate a handler for
+    // every network chunk until the entire response completes.
+    return new Promise((resolve, reject) => {
+      if (controller.signal.aborted) { reject(abortError()); return; }
+      let settled = false;
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        if (rejectPending === abort) rejectPending = null;
+        reject(abortError());
+      };
+      rejectPending = abort;
+      const finish = (error, value) => {
+        if (settled) {
+          if (!error) { try { onLateValue?.(value); } catch { /* Late responses contain no displayed data. */ } }
+          return;
+        }
+        settled = true;
+        if (rejectPending === abort) rejectPending = null;
+        if (error) reject(error); else resolve(value);
+      };
+      try { Promise.resolve(operation()).then(value => finish(null, value), error => finish(error)); }
+      catch (error) { finish(error); }
+    });
+  }
+
+  async function read(reader) {
+    const result = await wait(() => reader.read());
+    // Any real wire bytes count: partial JSON/UTF-8, private thinking and SSE
+    // comments/heartbeats all keep an active connection alive.
+    if (!result.done && result.value?.byteLength > 0) touch();
+    return result;
+  }
+
+  touch();
+  return {
+    controller, wait, read, touch, timedOut: () => timedOut,
+    dispose() {
+      disposed = true;
+      clearTimeout(timer); timer = null;
+      signal?.removeEventListener('abort', cancel);
+      controller.signal.removeEventListener('abort', onAbort);
+      rejectPending = null;
+    },
+  };
+}
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireString(value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    fail(`${label}不能为空。`, 'INVALID_MODEL_CONFIG');
+  }
+  return value;
+}
+
+function protocolName(provider, apiProtocol) {
+  if (provider === 'relay') return apiProtocol === 'chat-completions' ? '中转站 Chat Completions' : '中转站 Responses';
+  if (provider === 'openai') return apiProtocol === 'chat-completions' ? 'OpenAI Chat Completions' : 'OpenAI Responses';
+  return provider === 'deepseek' ? 'DeepSeek Chat Completions' : 'Claude Messages';
+}
+
+function endpointFor(provider, baseUrl, apiProtocol) {
+  if (provider === 'relay' && (typeof baseUrl !== 'string' || !baseUrl.trim())) {
+    fail('请填写中转站的 Base URL。', 'INVALID_BASE_URL');
+  }
+  const raw = baseUrl === undefined || baseUrl === '' ? DEFAULT_URLS[provider] : baseUrl;
+  if (typeof raw !== 'string' || /[?#]/u.test(raw)) {
+    fail('API 地址无效：不能包含查询参数或片段。', 'INVALID_BASE_URL');
+  }
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    fail('API 地址无效，请输入完整的 HTTPS 地址。', 'INVALID_BASE_URL');
+  }
+  const authority = raw.trim().match(/^[a-z][a-z\d+.-]*:\/\/([^/]*)/iu)?.[1] ?? '';
+  if (url.username || url.password || authority.includes('@')) {
+    fail('API 地址不能包含用户名或密码。', 'INVALID_BASE_URL');
+  }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname.toLowerCase());
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) {
+    fail('API 地址必须使用 HTTPS；本机 localhost 可使用 HTTP。', 'INVALID_BASE_URL');
+  }
+  const path = url.pathname.replace(/\/+$/u, '').replace(/\/models$/u, '');
+  const resource = ['openai', 'relay'].includes(provider)
+    ? apiProtocol === 'chat-completions' ? '/chat/completions' : '/responses' : RESOURCES[provider];
+  const existingResource = path.match(/\/(?:responses|chat\/completions|messages)$/u)?.[0];
+  if (existingResource && existingResource !== resource) {
+    fail(`API 地址的请求端点与当前 ${protocolName(provider, apiProtocol)} 协议不匹配。请填写基础地址，或选择服务商支持的 API 协议。`, 'API_PROTOCOL_MISMATCH');
+  }
+  url.pathname = path.endsWith(resource) ? path : `${path}${resource}`;
+  return url.href;
+}
+
+function checkArguments(value) {
+  if (!isObject(value)) {
+    fail('工具调用参数必须是 JSON 对象，已停止执行。', 'INVALID_TOOL_ARGUMENTS');
+  }
+  return value;
+}
+
+function parseArguments(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    fail('模型返回的工具参数不是有效 JSON，已停止执行。', 'INVALID_TOOL_ARGUMENTS');
+  }
+  return checkArguments(value);
+}
+
+function assertNativeStateSafe(value, apiKey) {
+  const hasKey = item => {
+    if (typeof item === 'string') return item.includes(apiKey);
+    if (Array.isArray(item)) return item.some(hasKey);
+    if (isObject(item)) return Object.entries(item).some(([key, child]) => hasKey(key) || hasKey(child));
+    return false;
+  };
+  // Altering a signed/encrypted block would invalidate it. Reject reflected
+  // credentials rather than redacting any part of opaque provider state.
+  if (hasKey(value)) fail('模型响应意外包含 API 密钥，已中止并拒绝保存原生状态。', 'PROVIDER_SECRET_IN_RESPONSE');
+}
+
+function validateInput(messages, tools) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    fail('请提供至少一条对话消息。', 'INVALID_MODEL_INPUT');
+  }
+  for (const message of messages) {
+    if (!isObject(message) || !['system', 'user', 'assistant', 'tool'].includes(message.role)
+        || typeof message.content !== 'string') {
+      fail('对话消息格式无效。', 'INVALID_MODEL_INPUT');
+    }
+    if (message.role === 'tool') requireString(message.toolCallId, '工具结果 ID');
+    if (message.attachments !== undefined && message.role !== 'user') {
+      fail('图片附件只能属于用户消息。', 'INVALID_MODEL_INPUT');
+    }
+    if (message.toolCalls !== undefined) {
+      if (message.role !== 'assistant' || !Array.isArray(message.toolCalls)) {
+        fail('工具调用必须属于 assistant 消息。', 'INVALID_MODEL_INPUT');
+      }
+      for (const call of message.toolCalls) {
+        if (!isObject(call)) fail('工具调用格式无效。', 'INVALID_MODEL_INPUT');
+        requireString(call.id, '工具调用 ID');
+        requireString(call.name, '工具名称');
+        checkArguments(call.arguments);
+      }
+    }
+  }
+  if (!Array.isArray(tools)) fail('工具定义必须是数组。', 'INVALID_MODEL_INPUT');
+  const names = new Set();
+  for (const tool of tools) {
+    if (!isObject(tool) || typeof tool.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/u.test(tool.name)
+        || typeof tool.description !== 'string' || !isObject(tool.parameters) || names.has(tool.name)) {
+      fail('工具定义无效或名称重复。', 'INVALID_MODEL_INPUT');
+    }
+    names.add(tool.name);
+  }
+}
+
+function normalizeMessageImages(messages) {
+  let count = 0, bytes = 0;
+  return messages.map(message => {
+    if (message.attachments === undefined) return message;
+    const attachments = normalizeImageAttachments(message.attachments);
+    for (const image of attachments) {
+      const base64 = image.dataUrl.slice(image.dataUrl.indexOf(',') + 1);
+      bytes += base64.length / 4 * 3 - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+      count++;
+    }
+    if (count > 32 || bytes > 16 * 1024 * 1024) {
+      fail('本次请求的历史图片超过 32 张或合计 16 MiB，请新建会话继续；没有丢弃或转换图片。', 'MODEL_IMAGE_HISTORY_LIMIT');
+    }
+    // Preserve the caller's message/attachment objects, including queued and
+    // persisted history. Only this request gets normalized attachment copies.
+    return { ...message, attachments };
+  });
+}
+
+function validateCapabilities(capabilities, reasoningEffort, messages, tools) {
+  if (capabilities === undefined) return;
+  if (!isObject(capabilities) || (capabilities.reasoningEfforts !== undefined
+      && (!Array.isArray(capabilities.reasoningEfforts)
+        || capabilities.reasoningEfforts.some(value => typeof value !== 'string')))
+      || (capabilities.supportsImages !== undefined && typeof capabilities.supportsImages !== 'boolean')) {
+    fail('模型能力信息无效，请刷新模型列表。', 'INVALID_MODEL_CONFIG');
+  }
+  if (capabilities.compatible === false) {
+    fail('此模型不支持当前供应商的文本代理协议，请从模型列表选择兼容模型。', 'MODEL_INCOMPATIBLE');
+  }
+  if (capabilities.supportsImages === false && messages.some(message => message.attachments?.length)) {
+    fail('所选模型明确不支持图片输入；本会话包含图片，请选择支持图片的模型或新建纯文字会话。', 'MODEL_IMAGES_UNSUPPORTED');
+  }
+  if (capabilities.supportsTools === false && (tools.length || messages.some(message =>
+    message.role === 'tool' || message.toolCalls?.length))) {
+    fail('此模型不支持工具调用，无法运行代码代理；请选择支持工具的模型。', 'MODEL_TOOLS_UNSUPPORTED');
+  }
+  if (reasoningEffort !== 'default' && Array.isArray(capabilities.reasoningEfforts)
+      && !capabilities.reasoningEfforts.includes(reasoningEffort)) {
+    fail('所选模型不支持此推理强度，请使用默认强度，或从该模型支持的档位中选择。', 'INVALID_REASONING_EFFORT');
+  }
+}
+
+function openAIInput(messages, model, endpoint, authMode) {
+  return messages.flatMap(message => {
+    if (authMode === 'chatgpt' && message.role === 'system') return [];
+    if (message.role === 'tool') {
+      return [{ type: 'function_call_output', call_id: message.toolCallId, output: message.content }];
+    }
+    const state = message.providerState;
+    if (message.role === 'assistant' && state?.provider === 'openai'
+        && (state.authMode ?? 'apiKey') === authMode
+        && state.model === model && state.endpoint === endpoint && Array.isArray(state.output) && state.output.length) {
+      // Reasoning models require their signed/encrypted reasoning items on the
+      // tool-result turn. Replay native output once, never alongside a second
+      // normalized copy of its assistant text or function calls.
+      return state.output;
+    }
+    const items = [];
+    if (message.content || message.role !== 'assistant') {
+      const content = message.attachments?.length ? [
+        ...(message.content ? [{ type: 'input_text', text: message.content }] : []),
+        ...message.attachments.map(image => ({ type: 'input_image', image_url: image.dataUrl, detail: 'auto' })),
+      ] : message.content;
+      items.push({ role: message.role, content });
+    }
+    for (const call of message.toolCalls ?? []) {
+      items.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments),
+        ...(authMode === 'chatgpt' ? { namespace: CHATGPT_NAMESPACE } : {}) });
+    }
+    return items;
+  });
+}
+
+function deepSeekMessages(messages, model, endpoint) {
+  return messages.map(message => {
+    if (message.role === 'tool') {
+      return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
+    }
+    const state = message.providerState;
+    if (message.role === 'assistant' && state?.provider === 'deepseek'
+        && state.model === model && state.endpoint === endpoint && isObject(state.message)) {
+      return state.message;
+    }
+    const content = message.attachments?.length ? [
+      ...(message.content ? [{ type: 'text', text: message.content }] : []),
+      ...message.attachments.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } })),
+    ] : message.content;
+    const result = { role: message.role, content };
+    // DeepSeek's reasoning is plain text, not a model-bound signature. Keep it
+    // when changing models on the same service: tool requests require the full
+    // reasoning_content from every earlier assistant, including non-tool turns.
+    // Never move native state across endpoints or other providers.
+    if (message.role === 'assistant' && state?.provider === 'deepseek' && state.endpoint === endpoint
+        && typeof state.message?.reasoning_content === 'string') {
+      result.reasoning_content = state.message.reasoning_content;
+    }
+    if (message.toolCalls?.length) {
+      result.tool_calls = message.toolCalls.map(call => ({
+        id: call.id, type: 'function',
+        function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+      }));
+    }
+    return result;
+  });
+}
+
+function chatCompatibleMessages(messages, model, endpoint) {
+  return messages.map(message => {
+    if (message.role === 'tool') return { role: 'tool', tool_call_id: message.toolCallId, content: message.content };
+    const state = message.providerState;
+    if (message.role === 'assistant' && state?.provider === 'openai' && state.apiProtocol === 'chat-completions'
+        && state.model === model && state.endpoint === endpoint && isObject(state.message)) {
+      // Only this adapter's normalized native message is reusable. Responses
+      // encrypted items and other providers' reasoning never cross protocols.
+      return state.message;
+    }
+    const content = message.attachments?.length ? [
+      ...(message.content ? [{ type: 'text', text: message.content }] : []),
+      ...message.attachments.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl } })),
+    ] : message.content;
+    return {
+      role: message.role, content,
+      ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map(call => ({
+        id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+      })) } : {}),
+    };
+  });
+}
+
+function anthropicMessages(messages, model, endpoint) {
+  const result = [];
+  const system = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      system.push(message.content);
+      continue;
+    }
+    const role = message.role === 'tool' ? 'user' : message.role;
+    let content = [];
+    if (message.role === 'tool') {
+      content.push({ type: 'tool_result', tool_use_id: message.toolCallId, content: message.content });
+    } else if (message.role === 'assistant' && message.providerState?.provider === 'anthropic'
+        && message.providerState.model === model && message.providerState.endpoint === endpoint
+        && Array.isArray(message.providerState.content) && message.providerState.content.length) {
+      content = [...message.providerState.content];
+    } else {
+      for (const image of message.attachments ?? []) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.dataUrl.slice(image.dataUrl.indexOf(',') + 1) } });
+      }
+      if (message.content) content.push({ type: 'text', text: message.content });
+      for (const call of message.toolCalls ?? []) {
+        content.push({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments });
+      }
+    }
+    if (content.length === 0) continue;
+    if (result.at(-1)?.role === role) result.at(-1).content.push(...content);
+    else result.push({ role, content });
+  }
+  return { messages: result, ...(system.length ? { system: system.join('\n\n') } : {}) };
+}
+
+function reasoningConfig(provider, model, effort) {
+  if (effort === 'default') return {};
+  if (provider === 'openai') return { reasoning: { effort } };
+  if (provider === 'deepseek') return effort === 'none' ? { thinking: { type: 'disabled' } }
+    : { thinking: { type: 'enabled' }, reasoning_effort: effort };
+  // Known modern Claude families support adaptive thinking. For older models
+  // and custom aliases, preserve their thinking default and let the API verify
+  // the requested effort; never invent a legacy thinking budget or remap it.
+  const adaptive = /^claude-(?:opus-(?:4-[678]|5(?:-5)?)|sonnet-(?:4-6|5(?:-5)?)|haiku-5-5|fable-5(?:-1)?|mythos-(?:5(?:-1)?|preview))(?:-|$)/u.test(model);
+  return { output_config: { effort }, ...(adaptive ? { thinking: { type: 'adaptive' } } : {}) };
+}
+
+function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint, reasoningEffort, authMode, apiProtocol) {
+  if (provider === 'openai' && apiProtocol === 'chat-completions') {
+    return {
+      model, messages: chatCompatibleMessages(messages, model, endpoint), stream: true, stream_options: { include_usage: true },
+      ...(reasoningEffort !== 'default' ? { reasoning_effort: reasoningEffort } : {}),
+      ...(maxOutputTokens ? { max_completion_tokens: maxOutputTokens } : {}),
+      ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
+    };
+  }
+  const reasoning = reasoningConfig(provider, model, reasoningEffort);
+  if (provider === 'openai') {
+    const plan = authMode === 'chatgpt';
+    const instructions = messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n');
+    const functions = tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description,
+      parameters: tool.parameters, strict: false }));
+    return {
+      model, stream: true, store: false, include: ['reasoning.encrypted_content'],
+      input: openAIInput(messages, model, endpoint, authMode),
+      ...(plan && instructions ? { instructions } : {}),
+      ...reasoning,
+      ...(!plan && maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
+      ...(tools.length ? { tools: plan ? [{
+        type: 'namespace', name: CHATGPT_NAMESPACE,
+        description: 'Synora code local project tools. Read, edit, and run commands only through these tools.',
+        tools: functions,
+      }] : functions } : {}),
+    };
+  }
+  if (provider === 'deepseek') {
+    return {
+      model, messages: deepSeekMessages(messages, model, endpoint), stream: true, stream_options: { include_usage: true },
+      ...reasoning,
+      ...(maxOutputTokens ? { max_tokens: maxOutputTokens } : {}),
+      ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
+    };
+  }
+  return {
+    model, stream: true, max_tokens: maxOutputTokens ?? 8192, ...anthropicMessages(messages, model, endpoint),
+    ...reasoning,
+    ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
+  };
+}
+
+function nonnegative(value) {
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function chatGPTStreamError(value) {
+  const detail = value.response?.error ?? value.error;
+  const code = typeof detail === 'string' ? detail : detail?.code ?? value.code;
+  const errors = {
+    subscription_sharing_usage_limit_exceeded: ['CHATGPT_USAGE_LIMIT_EXCEEDED', 'ChatGPT 套餐或此应用的用量已达上限。请在 ChatGPT 设置 → 用量查看额度与应用限制，或稍后重试。'],
+    subscription_sharing_usage_unavailable: ['CHATGPT_USAGE_UNAVAILABLE', '暂时无法核验 ChatGPT 套餐用量，请稍后重试。'],
+    subscription_sharing_user_not_eligible: ['CHATGPT_NOT_ELIGIBLE', '当前 ChatGPT 账号或工作区不支持此套餐授权，请选择符合资格的账号。'],
+    subscription_sharing_unsupported_capability: ['CHATGPT_UNSUPPORTED_CAPABILITY', '当前 ChatGPT 套餐授权不支持此请求能力，请调整模型或工具配置。'],
+    subscription_sharing_route_not_supported: ['CHATGPT_UNSUPPORTED_ROUTE', '当前 ChatGPT 套餐授权不支持此请求路线，请检查应用配置。'],
+    chatpass_v2_scope_not_authorized: ['CHATGPT_SCOPE_NOT_AUTHORIZED', 'ChatGPT 登录尚未授予此请求所需的套餐使用权限，请重新连接并授权。'],
+    invalid_token: ['CHATGPT_AUTH_EXPIRED', 'ChatGPT 登录凭据无效或已过期，请重新登录。'],
+    token_expired: ['CHATGPT_AUTH_EXPIRED', 'ChatGPT 登录凭据已过期，请重新登录。'],
+    model_not_found: ['CHATGPT_MODEL_UNAVAILABLE', '所选模型不在当前 ChatGPT 账号的可用列表中，请刷新模型列表。'],
+  };
+  if (Object.hasOwn(errors, code)) {
+    const [safeCode, message] = errors[code];
+    return new ProviderError(message, safeCode);
+  }
+  return undefined;
+}
+
+function createPayloadBudget(limit) {
+  const parts = new Map();
+  let bytes = 0;
+  const commit = (key, size, tail) => {
+    const previous = parts.get(key);
+    // Bound the number of retained channels too, including empty tool/items.
+    const next = bytes + size - (previous?.bytes ?? 0) + (previous ? 0 : 64);
+    if (next > limit) fail('模型生成内容超过内存保护上限，已停止接收；请分步生成文件。', 'PROVIDER_MODEL_PAYLOAD_TOO_LARGE');
+    bytes = next;
+    parts.set(key, { bytes: size, tail });
+  };
+  return {
+    full(key, value) {
+      if (typeof value !== 'string') return;
+      commit(key, Buffer.byteLength(value, 'utf8'), value.charCodeAt(value.length - 1));
+    },
+    append(key, value) {
+      if (typeof value !== 'string' || !value) return;
+      const previous = parts.get(key);
+      let added = Buffer.byteLength(value, 'utf8');
+      const head = value.charCodeAt(0);
+      if (previous?.tail >= 0xd800 && previous.tail <= 0xdbff && head >= 0xdc00 && head <= 0xdfff) added -= 2;
+      commit(key, (previous?.bytes ?? 0) + added, value.charCodeAt(value.length - 1));
+    },
+  };
+}
+
+// Count opaque/native state without charging the same generated text again when
+// a provider repeats it in output_item.done and response.completed snapshots.
+function nativeRemainder(item) {
+  if (item.type === 'function_call') return { ...item, arguments: '' };
+  if (item.type === 'reasoning') return { ...item,
+    summary: Array.isArray(item.summary) ? item.summary.map(part => part?.type === 'summary_text' ? { ...part, text: '' } : part) : item.summary,
+    content: Array.isArray(item.content) ? item.content.map(part => part?.type === 'reasoning_text' ? { ...part, text: '' } : part) : item.content };
+  if (item.type === 'message') return { ...item, content: Array.isArray(item.content) ? item.content.map(part =>
+    part?.type === 'output_text' ? { ...part, text: '' } : part?.type === 'refusal' ? { ...part, refusal: '' } : part) : item.content };
+  if (item.type === 'text') return { ...item, text: '' };
+  if (item.type === 'thinking') return { ...item, thinking: '', signature: '' };
+  if (item.type === 'tool_use') return { ...item, input: {} };
+  return item;
+}
+
+function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onProgress, authMode, apiProtocol, maxModelPayloadBytes }) {
+  const chatCompatible = provider === 'openai' && apiProtocol === 'chat-completions';
+  const responses = provider === 'openai' && !chatCompatible;
+  const chat = provider === 'deepseek' || chatCompatible;
+  const payload = createPayloadBudget(maxModelPayloadBytes);
+  const textParts = new Map();
+  const calls = new Map();
+  let usage = { inputTokens: 0, outputTokens: 0 };
+  let reportedUsage = {};
+  let usageReported = false;
+  let complete = false;
+  const nativeItems = new Map();
+  const nativeBlocks = new Map();
+  let nativeOutput;
+  let deepSeekReasoning = '';
+  let deepSeekReasoningSeen = false;
+  const estimateParts = new Map();
+  let estimateUnits = 0;
+  let phase;
+
+  function progress(nextPhase, includeUsage = false) {
+    if (nextPhase) phase = nextPhase;
+    onProgress?.({
+      estimatedOutputTokens: Math.ceil(estimateUnits / 12),
+      ...(phase ? { phase } : {}),
+      ...(includeUsage ? { usage: { ...usage } } : {}),
+    });
+  }
+
+  // A deliberately approximate character heuristic, not a tokenizer: ASCII/4
+  // plus non-ASCII Unicode code points/1.5. Integer twelfths avoid rounding per
+  // chunk; joining a surrogate pair across deltas must count as one code point.
+  function unitsFor(text) {
+    let units = 0;
+    for (const character of text) units += character.codePointAt(0) <= 0x7f ? 3 : 8;
+    return units;
+  }
+
+  function estimateAppend(key, value, nextPhase, trackPayload = true) {
+    if (trackPayload) payload.append(key, value);
+    if (!onProgress || typeof value !== 'string' || !value) return;
+    const part = estimateParts.get(key) ?? { text: '', units: 0 };
+    let added = unitsFor(value);
+    const tail = part.text.charCodeAt(part.text.length - 1);
+    const head = value.charCodeAt(0);
+    if (tail >= 0xd800 && tail <= 0xdbff && head >= 0xdc00 && head <= 0xdfff) added -= 8;
+    part.text += value;
+    part.units += added;
+    estimateUnits += added;
+    estimateParts.set(key, part);
+    progress(nextPhase);
+  }
+
+  function estimateFull(key, value, nextPhase) {
+    payload.full(key, value);
+    if (!onProgress || typeof value !== 'string') return;
+    const previous = estimateParts.get(key) ?? { text: '', units: 0 };
+    if (value.startsWith(previous.text)) estimateAppend(key, value.slice(previous.text.length), nextPhase, false);
+    else {
+      const units = unitsFor(value);
+      estimateUnits += units - previous.units;
+      estimateParts.set(key, { text: value, units });
+      progress(nextPhase);
+    }
+  }
+
+  function setUsage(value) {
+    if (!isObject(value)) return;
+    const fields = provider === 'anthropic'
+      ? ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']
+      : ['input_tokens', 'output_tokens', 'prompt_tokens', 'completion_tokens'];
+    const update = Object.fromEntries(fields.filter(key => Number.isSafeInteger(value[key]) && value[key] >= 0)
+      .map(key => [key, value[key]]));
+    if (!Object.keys(update).length) return;
+    reportedUsage = { ...reportedUsage, ...update };
+    const input = reportedUsage.input_tokens ?? reportedUsage.prompt_tokens;
+    const output = reportedUsage.output_tokens ?? reportedUsage.completion_tokens;
+    usageReported = Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0;
+    if (provider === 'anthropic') {
+      usage = {
+        inputTokens: nonnegative(reportedUsage.input_tokens) + nonnegative(reportedUsage.cache_creation_input_tokens)
+          + nonnegative(reportedUsage.cache_read_input_tokens),
+        outputTokens: nonnegative(reportedUsage.output_tokens),
+      };
+    } else {
+      usage = {
+        inputTokens: nonnegative(reportedUsage.input_tokens ?? reportedUsage.prompt_tokens),
+        outputTokens: nonnegative(reportedUsage.output_tokens ?? reportedUsage.completion_tokens),
+      };
+    }
+    progress(undefined, usageReported);
+  }
+
+  function appendText(value, outputIndex = 0, contentIndex = 0) {
+    if (typeof value !== 'string' || !value) return;
+    const key = `${outputIndex}:${contentIndex}`;
+    const part = textParts.get(key) ?? { outputIndex, contentIndex, text: '' };
+    part.text += value;
+    textParts.set(key, part);
+    estimateAppend(`text:${key}`, value, 'generating');
+    onTextDelta?.(value);
+  }
+
+  function fullText(value, outputIndex = 0, contentIndex = 0) {
+    if (typeof value !== 'string') return;
+    const previous = textParts.get(`${outputIndex}:${contentIndex}`)?.text ?? '';
+    if (value.startsWith(previous)) appendText(value.slice(previous.length), outputIndex, contentIndex);
+    else fail('模型流式文字与最终结果不一致，请重试。');
+  }
+
+  function callAt(index) {
+    if (!Number.isInteger(index) || index < 0) fail('模型返回的工具调用索引无效。');
+    if (!calls.has(index)) { payload.full(`tool-slot:${index}`, ''); calls.set(index, { id: '', name: '', rawArguments: '' }); }
+    return calls.get(index);
+  }
+
+  function openAIItem(item, index, done = false) {
+    if (!isObject(item)) return;
+    payload.full(`native:${index}`, JSON.stringify(nativeRemainder(item)));
+    if (done) nativeItems.set(index, item);
+    if (item.type === 'function_call') {
+      if (!done) progress('tool-call');
+      const call = callAt(index);
+      if (typeof item.call_id === 'string') call.id = item.call_id;
+      if (authMode === 'chatgpt' && item.namespace != null && item.namespace !== CHATGPT_NAMESPACE) {
+        fail('ChatGPT 返回了未注册的工具命名空间，已停止执行。', 'INVALID_TOOL_CALL');
+      }
+      if (typeof item.name === 'string') {
+        const prefix = typeof item.namespace === 'string' ? `${item.namespace}.`
+          : authMode === 'chatgpt' ? `${CHATGPT_NAMESPACE}.` : '';
+        call.name = prefix && item.name.startsWith(prefix) ? item.name.slice(prefix.length) : item.name;
+      }
+      payload.full(`tool-meta:${index}`, `${call.id}\0${call.name}`);
+      if (typeof item.arguments === 'string' && (done || !call.rawArguments)) {
+        call.rawArguments = item.arguments;
+        estimateFull(`tool:${index}`, item.arguments, 'tool-call');
+      }
+    } else if (item.type === 'reasoning') {
+      if (!done) progress('thinking');
+      item.summary?.forEach((part, summaryIndex) => {
+        if (part.type === 'summary_text') estimateFull(`reasoning-summary:${index}:${summaryIndex}`, part.text, 'thinking');
+      });
+      item.content?.forEach((part, contentIndex) => {
+        if (part.type === 'reasoning_text') estimateFull(`reasoning:${index}:${contentIndex}`, part.text, 'thinking');
+      });
+    } else if (done && item.type === 'message' && Array.isArray(item.content)) {
+      item.content.forEach((part, contentIndex) => {
+        if (part.type === 'output_text') fullText(part.text, index, contentIndex);
+        else if (part.type === 'refusal') fullText(part.refusal, index, contentIndex);
+      });
+    }
+  }
+
+  function rejectIncomplete(reason) {
+    if (['max_tokens', 'length', 'max_output_tokens', 'model_context_window_exceeded'].includes(reason)) {
+      fail('模型输出达到长度限制，工具调用未执行；请缩短上下文或提高输出上限。', 'PROVIDER_TRUNCATED');
+    }
+    if (reason === 'content_filter' || reason === 'refusal') {
+      fail('模型拒绝完成此请求，请调整任务内容。', 'PROVIDER_REFUSAL');
+    }
+  }
+
+  function event(value, eventName = '') {
+    if (!isObject(value)) fail('模型返回了无效的流式事件。');
+    const type = value.type ?? eventName;
+    // Usage is cumulative and may accompany a failure/truncation. Deliver it
+    // before throwing so callers can account for already-consumed API tokens.
+    setUsage(provider === 'openai' ? value.response?.usage ?? value.usage
+      : provider === 'anthropic' ? value.message?.usage ?? value.usage : value.usage);
+    if (authMode === 'chatgpt') {
+      const planError = chatGPTStreamError(value);
+      if (planError) throw planError;
+    }
+    if (value.error || type === 'error' || type === 'response.failed') {
+      fail('模型服务返回错误，请检查模型、额度及服务状态。', 'PROVIDER_API_ERROR');
+    }
+    if (responses) {
+      if (type === 'response.output_text.delta' || type === 'response.refusal.delta') {
+        appendText(value.delta, value.output_index, value.content_index);
+      } else if (type === 'response.output_text.done' || type === 'response.refusal.done') {
+        fullText(value.text ?? value.refusal, value.output_index, value.content_index);
+      } else if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+        openAIItem(value.item, value.output_index, type.endsWith('.done'));
+      } else if (type === 'response.function_call_arguments.delta') {
+        if (typeof value.delta !== 'string') fail('模型工具参数片段格式无效。');
+        callAt(value.output_index).rawArguments += value.delta;
+        estimateAppend(`tool:${value.output_index}`, value.delta, 'tool-call');
+      } else if (type === 'response.function_call_arguments.done') {
+        if (typeof value.arguments !== 'string') fail('模型工具参数格式无效。');
+        callAt(value.output_index).rawArguments = value.arguments;
+        estimateFull(`tool:${value.output_index}`, value.arguments, 'tool-call');
+      } else if (type === 'response.reasoning_summary_text.delta') {
+        estimateAppend(`reasoning-summary:${value.output_index}:${value.summary_index ?? 0}`, value.delta, 'thinking');
+      } else if (type === 'response.reasoning_summary_text.done') {
+        estimateFull(`reasoning-summary:${value.output_index}:${value.summary_index ?? 0}`, value.text, 'thinking');
+      } else if (type === 'response.reasoning_text.delta') {
+        estimateAppend(`reasoning:${value.output_index}:${value.content_index ?? 0}`, value.delta, 'thinking');
+      } else if (type === 'response.reasoning_text.done') {
+        estimateFull(`reasoning:${value.output_index}:${value.content_index ?? 0}`, value.text, 'thinking');
+      } else if (type === 'response.completed') {
+        if (Array.isArray(value.response?.output)) {
+          nativeOutput = value.response.output;
+          nativeOutput.forEach((item, index) => openAIItem(item, index, true));
+        }
+        if (value.response?.status === 'failed' || value.response?.error) fail('模型响应失败，请重试。', 'PROVIDER_API_ERROR');
+        rejectIncomplete(value.response?.incomplete_details?.reason);
+        if (value.response?.status === 'incomplete') fail('模型响应未完整结束，工具调用未执行。', 'PROVIDER_TRUNCATED');
+        complete = true;
+      } else if (type === 'response.incomplete') {
+        fail('模型响应被截断，工具调用未执行；请调整输出上限或上下文。', 'PROVIDER_TRUNCATED');
+      }
+    } else if (chat) {
+      const choice = value.choices?.find(item => item.index === 0) ?? value.choices?.[0];
+      if (!choice) return;
+      const delta = choice.delta ?? {};
+      if (typeof delta.reasoning_content === 'string') {
+        if (!chatCompatible) {
+          deepSeekReasoningSeen = true;
+          deepSeekReasoning += delta.reasoning_content;
+        }
+        // Some compatible relays expose this optional extension. Estimate it
+        // privately without replaying DeepSeek-specific state or request flags.
+        estimateAppend('deepseek-reasoning', delta.reasoning_content, 'thinking');
+      }
+      appendText(delta.content);
+      if (chatCompatible) appendText(delta.refusal);
+      for (const fragment of delta.tool_calls ?? []) {
+        progress('tool-call');
+        const call = callAt(fragment.index);
+        if (typeof fragment.id === 'string') call.id = fragment.id;
+        if (typeof fragment.function?.name === 'string') call.name += fragment.function.name;
+        payload.full(`tool-meta:${fragment.index}`, `${call.id}\0${call.name}`);
+        if (typeof fragment.function?.arguments === 'string') {
+          call.rawArguments += fragment.function.arguments;
+          estimateAppend(`tool:${fragment.index}`, fragment.function.arguments, 'tool-call');
+        }
+      }
+      rejectIncomplete(choice.finish_reason);
+    } else {
+      if (type === 'content_block_start') {
+        const block = value.content_block;
+        if (!isObject(block) || !Number.isInteger(value.index) || value.index < 0) fail('模型内容块格式无效。');
+        payload.full(`native:${value.index}`, JSON.stringify(nativeRemainder(block)));
+        if (block.type === 'thinking') payload.full(`signature:${value.index}`, block.signature);
+        if (block.type === 'tool_use') payload.full(`tool-initial:${value.index}`, JSON.stringify(block.input));
+        nativeBlocks.set(value.index, structuredClone(block));
+        if (block?.type === 'text') {
+          progress('generating');
+          appendText(block.text, value.index);
+        } else if (block.type === 'thinking') {
+          progress('thinking');
+          estimateFull(`anthropic-reasoning:${value.index}`, block.thinking, 'thinking');
+        } else if (block.type === 'redacted_thinking') progress('thinking');
+        else if (block?.type === 'tool_use') {
+          progress('tool-call');
+          const call = callAt(value.index);
+          call.id = block.id;
+          call.name = block.name;
+          call.initialArguments = block.input;
+        }
+      } else if (type === 'content_block_delta') {
+        const block = nativeBlocks.get(value.index);
+        if (!block) fail('模型内容流缺少初始内容块。');
+        if (value.delta?.type === 'text_delta') {
+          if (block.type !== 'text' || typeof value.delta.text !== 'string') fail('模型文字片段格式无效。');
+          block.text = (block.text ?? '') + value.delta.text;
+          appendText(value.delta.text, value.index);
+        } else if (value.delta?.type === 'thinking_delta') {
+          if (block.type !== 'thinking' || typeof value.delta.thinking !== 'string') fail('模型推理片段格式无效。');
+          block.thinking = (block.thinking ?? '') + value.delta.thinking;
+          estimateAppend(`anthropic-reasoning:${value.index}`, value.delta.thinking, 'thinking');
+        } else if (value.delta?.type === 'signature_delta') {
+          if (block.type !== 'thinking' || typeof value.delta.signature !== 'string') fail('模型签名片段格式无效。');
+          block.signature = (block.signature ?? '') + value.delta.signature;
+          payload.append(`signature:${value.index}`, value.delta.signature);
+        }
+        else if (value.delta?.type === 'input_json_delta') {
+          if (!calls.has(value.index) || typeof value.delta.partial_json !== 'string') fail('模型工具参数流格式无效。');
+          callAt(value.index).rawArguments += value.delta.partial_json;
+          estimateAppend(`tool:${value.index}`, value.delta.partial_json, 'tool-call');
+        } else if (value.delta?.type === 'citations_delta') {
+          if (block.type !== 'text' || !isObject(value.delta.citation)) fail('模型引用片段格式无效。');
+          block.citations = [...(block.citations ?? []), value.delta.citation];
+          payload.append(`citations:${value.index}`, JSON.stringify(value.delta.citation));
+        }
+      } else if (type === 'message_delta') {
+        rejectIncomplete(value.delta?.stop_reason);
+      } else if (type === 'message_stop') complete = true;
+    }
+  }
+
+  function json(value) {
+    if (!isObject(value)) fail('模型服务返回了无效响应。', 'PROVIDER_API_ERROR');
+    setUsage(value.usage);
+    if (value.error) fail('模型服务返回了无效响应。', 'PROVIDER_API_ERROR');
+    if (responses) {
+      if (!Array.isArray(value.output)) fail('模型 Responses 响应缺少 output。');
+      event({ type: 'response.completed', response: value });
+    } else if (chat) {
+      const choice = value.choices?.[0];
+      if (!isObject(choice?.message)) fail('模型 Chat Completions 响应缺少 message。');
+      if (typeof choice.message.reasoning_content === 'string') {
+        if (!chatCompatible) {
+          deepSeekReasoningSeen = true;
+          deepSeekReasoning = choice.message.reasoning_content;
+        }
+        estimateFull('deepseek-reasoning', choice.message.reasoning_content, 'thinking');
+      }
+      appendText(choice.message.content);
+      if (chatCompatible) appendText(choice.message.refusal);
+      (choice.message.tool_calls ?? []).forEach((call, index) => {
+        const target = callAt(index);
+        target.id = call.id;
+        target.name = call.function?.name;
+        payload.full(`tool-meta:${index}`, `${target.id}\0${target.name}`);
+        target.rawArguments = call.function?.arguments;
+        estimateFull(`tool:${index}`, target.rawArguments, 'tool-call');
+      });
+      rejectIncomplete(choice.finish_reason);
+      complete = true;
+    } else {
+      if (!Array.isArray(value.content)) fail('模型 Messages 响应缺少 content。');
+      rejectIncomplete(value.stop_reason);
+      value.content.forEach((block, index) => event({ type: 'content_block_start', index, content_block: block }));
+      complete = true;
+    }
+  }
+
+  function done() {
+    if (chat) complete = true;
+  }
+
+  function result() {
+    if (!complete) fail('模型连接在响应完成前断开，请重试；工具调用未执行。', 'PROVIDER_INCOMPLETE_STREAM');
+    const ids = new Set();
+    const toolCalls = [...calls.entries()].sort(([a], [b]) => a - b).map(([index, call]) => {
+      if (typeof call.id !== 'string' || !call.id || typeof call.name !== 'string' || !call.name) {
+        fail('模型返回的工具调用缺少 ID 或名称，已停止执行。', 'INVALID_TOOL_CALL');
+      }
+      if (ids.has(call.id)) fail('模型返回了重复的工具调用 ID，已停止执行。', 'INVALID_TOOL_CALL');
+      ids.add(call.id);
+      const args = call.rawArguments ? parseArguments(call.rawArguments)
+        : provider === 'anthropic' ? checkArguments(call.initialArguments) : parseArguments(call.rawArguments);
+      estimateFull(`tool:${index}`, call.rawArguments || JSON.stringify(args), 'tool-call');
+      return { id: call.id, name: call.name, arguments: args };
+    });
+    const message = {
+        role: 'assistant',
+        content: [...textParts.values()].sort((a, b) => a.outputIndex - b.outputIndex || a.contentIndex - b.contentIndex)
+          .map(part => part.text).join(''),
+        toolCalls,
+    };
+    const output = nativeOutput ?? [...nativeItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+    if (responses && output.length) {
+      assertNativeStateSafe(output, apiKey);
+      message.providerState = { provider: 'openai', model, endpoint, output,
+        ...(authMode === 'chatgpt' ? { authMode } : {}) };
+    } else if (provider === 'anthropic' && nativeBlocks.size) {
+      const argsById = new Map(toolCalls.map(call => [call.id, call.arguments]));
+      const content = [...nativeBlocks.entries()].sort(([a], [b]) => a - b).map(([, block]) =>
+        block.type === 'tool_use' ? { ...block, input: argsById.get(block.id) } : block);
+      assertNativeStateSafe(content, apiKey);
+      message.providerState = { provider: 'anthropic', model, endpoint, content };
+    } else if (chat) {
+      const nativeMessage = {
+        role: 'assistant', content: message.content,
+        ...(deepSeekReasoningSeen ? { reasoning_content: deepSeekReasoning } : {}),
+        ...(toolCalls.length ? { tool_calls: toolCalls.map(call => ({
+          id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+        })) } : {}),
+      };
+      assertNativeStateSafe(nativeMessage, apiKey);
+      message.providerState = { provider, ...(chatCompatible ? { apiProtocol: 'chat-completions' } : {}), model, endpoint, message: nativeMessage };
+    }
+    progress(undefined, usageReported);
+    return { message, usage, usageReported };
+  }
+
+  return { event, json, done, result, isComplete: () => complete };
+}
+
+async function consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read }, requireSSE = false) {
+  if (!response.body) fail('模型服务未返回响应正文。');
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  // The official direct route may omit Content-Type on an otherwise valid SSE
+  // stream. A non-streaming JSON response is never sufficient for plan usage.
+  if (requireSSE && contentType && contentType !== 'text/event-stream') {
+    cancelResponseBody(response.body);
+    fail('ChatGPT 未返回预期的流式响应，请稍后重试。', 'CHATGPT_INVALID_STREAM');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const streaming = requireSSE || response.headers.get('content-type')?.toLowerCase().includes('text/event-stream');
+  const wireLimit = maxResponseBytes ?? (streaming ? DEFAULT_SSE_RESPONSE_LIMIT : DEFAULT_JSON_RESPONSE_LIMIT);
+  let bytes = 0;
+  let buffer = '';
+  let data = [];
+  let eventName = '';
+  let eventBytes = 0;
+
+  function decode(value, stream) {
+    try { return decoder.decode(value, { stream }); }
+    catch { fail('模型响应包含无效的 UTF-8 文本，请重试。', 'PROVIDER_INVALID_ENCODING'); }
+  }
+
+  function dispatch() {
+    eventBytes = 0;
+    if (!data.length) { eventName = ''; return; }
+    const raw = data.join('\n');
+    data = [];
+    const name = eventName;
+    eventName = '';
+    if (raw === '[DONE]') { accumulator.done(); return; }
+    let value;
+    try { value = JSON.parse(raw); }
+    catch { fail('模型流式响应包含无效 JSON，请重试。', 'PROVIDER_INVALID_JSON'); }
+    accumulator.event(value, name);
+  }
+
+  function line(value) {
+    const size = Buffer.byteLength(value, 'utf8');
+    if (size > maxEventBytes) fail('模型单个流式事件超过大小上限，已停止接收。', 'PROVIDER_EVENT_TOO_LARGE');
+    // Comments/keepalives are discarded immediately. Only retained data/event
+    // lines count toward an event's memory budget, independently of wire bytes.
+    if (value.startsWith('data:') || value.startsWith('event:')) {
+      eventBytes += size + 1;
+      if (eventBytes > maxEventBytes) fail('模型单个流式事件超过大小上限，已停止接收。', 'PROVIDER_EVENT_TOO_LARGE');
+    }
+    if (value === '') dispatch();
+    else if (value.startsWith('data:')) data.push(value.slice(5).replace(/^ /u, ''));
+    else if (value.startsWith('event:')) eventName = value.slice(6).replace(/^ /u, '');
+  }
+
+  function lines(flush = false) {
+    while (true) {
+      const index = buffer.search(/[\r\n]/u);
+      if (index < 0) break;
+      if (!flush && buffer[index] === '\r' && index === buffer.length - 1) break;
+      const length = buffer[index] === '\r' && buffer[index + 1] === '\n' ? 2 : 1;
+      const next = buffer.slice(0, index);
+      buffer = buffer.slice(index + length);
+      line(next);
+      if (accumulator.isComplete()) return;
+    }
+    if (flush && buffer) { line(buffer); buffer = ''; }
+    if (flush) dispatch();
+    if (Buffer.byteLength(buffer, 'utf8') > maxEventBytes) fail('模型流式响应的单行超过大小上限，已停止接收。', 'PROVIDER_EVENT_TOO_LARGE');
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await read(reader);
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > wireLimit) fail('模型响应超过传输大小限制，已停止接收；请分步生成文件。', 'PROVIDER_RESPONSE_TOO_LARGE');
+      buffer += decode(value, true);
+      if (streaming) {
+        lines();
+        if (accumulator.isComplete()) return;
+      }
+    }
+    buffer += decode(undefined, false);
+    if (streaming) lines(true);
+    else {
+      let value;
+      try { value = JSON.parse(buffer); }
+      catch { fail('模型服务返回了无效 JSON，请检查 API 地址与服务状态。', 'PROVIDER_INVALID_JSON'); }
+      accumulator.json(value);
+    }
+  } finally {
+    releaseResponseReader(reader);
+  }
+}
+
+function httpError(status, reasoningEffort, authMode) {
+  if (authMode === 'chatgpt') {
+    const detail = {
+      400: 'ChatGPT 不支持所选模型、推理强度或请求格式，请刷新模型列表，或使用默认推理强度重试。',
+      401: 'ChatGPT 登录已过期或授权无效，请重新登录。',
+      403: '当前 ChatGPT 账号、工作区或套餐授权无权使用此模型，请检查授权与套餐状态。',
+      404: '此模型不在当前 ChatGPT 账号的可用列表中，请刷新模型列表。',
+      429: 'ChatGPT 请求受限或套餐额度不足，请在 ChatGPT 设置 → 用量查看额度与应用限制。',
+    }[status];
+    if (detail) return new ProviderError(`HTTP ${status}：${detail}`, `PROVIDER_HTTP_${status}`);
+  }
+  const detail = {
+    400: reasoningEffort === 'default' ? '请求参数或模型名称不受支持，请检查设置。'
+      : '请求参数、模型名称或所选推理强度不受支持；请改用默认强度，或选择支持该档位的模型。',
+    401: 'API 密钥无效或已过期，请重新设置。',
+    402: '账户额度不足，请检查供应商账户。',
+    403: '账户无权访问此模型或 API。',
+    404: '请求的路由、资源或模型不可用；仅凭 HTTP 404 无法区分原因，请核对服务商接口与模型权限。',
+    413: '请求内容过大，请缩短对话或文件内容。',
+    429: '请求过于频繁或额度不足，请稍后重试。',
+    524: 'Cloudflare 已连接上游服务器，但未及时收到响应；请联系中转站确认上游状态，或稍后重试。延长客户端超时无法解决此网关超时。',
+  }[status] ?? (status >= 500 ? '模型服务暂时不可用，请稍后重试。' : '模型服务拒绝了请求，请检查设置。');
+  return new ProviderError(`HTTP ${status}：${detail}`, `PROVIDER_HTTP_${status}`);
+}
+
+function safeErrorField(value, apiKey, limit) {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  let text = String(value);
+  for (const credential of new Set([apiKey, encodeURIComponent(apiKey)])) {
+    if (credential) text = text.replaceAll(credential, '[已隐藏]');
+  }
+  text = text.replace(/\bBearer(?:\s+|%20)+[^\s,;"'<>]+/giu, 'Bearer [已隐藏]');
+  text = text.replace(/data:image\/[^\s;,]+;base64,[a-z\d+/=_-]+/giu, '[图片数据已隐藏]');
+  text = text.replace(/\b[a-z][a-z\d+.-]*:\/\/[^\s<>"']+/giu, address => {
+    try {
+      const url = new URL(address);
+      url.username = '';
+      url.password = '';
+      // Error diagnostics do not need URL credentials, query values or fragments.
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    } catch { return '[URL 已隐藏]'; }
+  });
+  text = text.replace(/\b(?:sk-[a-z\d_-]{8,}|eyJ[a-z\d_-]+\.[a-z\d_-]+\.[a-z\d_-]+)\b/giu, '[已隐藏]');
+  text = text.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password)\s*[:=]\s*["']?[^\s,;&"']+/giu,
+    '$1=[已隐藏]');
+  text = text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+async function errorDetails(response, apiKey, limit, read) {
+  // Only parse bounded structured fields. Never echo a raw body, HTML, prompt,
+  // headers, arbitrary JSON properties, or an exception from this diagnostic path.
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let source = '';
+  try {
+    while (true) {
+      const { done, value } = await read(reader);
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) return undefined;
+      source += decoder.decode(value, { stream: true });
+    }
+    source += decoder.decode();
+    const body = JSON.parse(source);
+    const error = isObject(body?.error) ? body.error : body;
+    if (!isObject(error)) return undefined;
+    const message = safeErrorField(error.message, apiKey, 700);
+    const code = safeErrorField(error.code ?? error.type, apiKey, 120);
+    const param = safeErrorField(error.param, apiKey, 160);
+    return message || code || param ? { message, code, param } : undefined;
+  } catch { return undefined; }
+  finally {
+    releaseResponseReader(reader);
+  }
+}
+
+function modelGroupUnavailable(detail) {
+  if (!detail) return false;
+  // Only examine the bounded, sanitized diagnostic fields, never the raw body
+  // or a generic server_error/not_found_error code by itself.
+  if (/^(?:no_available_channels?|no_channels_available|no_available_accounts?|model_not_available_in_group|(?:group_model|model_group)_unavailable)$/iu.test(detail.code)) return true;
+  const message = detail.message || '';
+  return /\bnot\s+supported\s+by\s+any\s+(?:configured\s+)?accounts?\s+in\s+(?:this|the|current)\s+group\b/iu.test(message)
+    || /\bno\s+available\s+(?:upstream\s+)?channels?\b/iu.test(message)
+    || (/\b(?:group|model)\b/iu.test(message) && /\bno\s+(?:available|configured)\s+(?:upstream\s+)?accounts?\b/iu.test(message))
+    || /(?:无|没有)(?:可用的?|已配置的?)?(?:上游)?渠道/u.test(message)
+    || (/(?:分组|模型)/u.test(message) && /(?:无|没有)(?:可用的?|已配置的?)?(?:上游)?(?:账号|账户)/u.test(message));
+}
+
+function withErrorDetails(error, detail, includeHints = true) {
+  if (!detail) return error;
+  const tags = [detail.code ? `code: ${detail.code}` : '', detail.param ? `param: ${detail.param}` : ''].filter(Boolean);
+  error.message += ` 服务详情：${detail.message}${tags.length ? `（${tags.join('；')}）` : ''}`;
+  if (!includeHints) return error;
+  if (/reasoning_content/iu.test(`${detail.message} ${detail.param}`)) {
+    error.message += '。历史对话缺少此模型要求的推理字段，请新建对话，或选择关闭推理后重试。';
+  } else if (/model/iu.test(`${detail.code} ${detail.param}`) || /model.{0,20}(?:not.{0,5}(?:exist|found)|invalid)/iu.test(detail.message)) {
+    error.message += '。请刷新模型列表并选择 API 返回的模型 ID，发布名称可能不是有效 ID。';
+  }
+  return error;
+}
+
+/**
+ * @param {object} options
+ * @param {'openai'|'deepseek'|'anthropic'|'relay'} options.provider
+ * @param {string} options.apiKey
+ * @param {'apiKey'|'chatgpt'} [options.authMode='apiKey'] chatgpt accepts only the fixed official endpoint;
+ * its apiKey argument contains the OAuth token managed by the privileged main process.
+ * @param {'responses'|'chat-completions'} [options.apiProtocol] OpenAI API Key defaults to Responses;
+ * relay defaults to Chat Completions. ChatGPT always uses the fixed official Responses route.
+ * @param {string} options.model Explicit model ID from the user's settings.
+ * @param {Array} options.messages Normalized system/user/assistant/tool history.
+ * @param {Array} [options.tools] {name, description, parameters} definitions.
+ * @param {AbortSignal} [options.signal]
+ * @param {number} [options.timeoutMs=600000] Network inactivity budget, including
+ * waiting for headers. Every nonempty response chunk refreshes it; there is no
+ * fixed total response duration while the service keeps sending data.
+ * @param {(text: string) => void} [options.onTextDelta] Visible text only.
+ * @param {string} [options.reasoningEffort='default'] Provider-supported effort; default omits overrides.
+ * @param {object} [options.modelCapabilities] Optional model catalog metadata; unknown capabilities stay unspecified.
+ * @param {(progress: object) => void} [options.onProgress] Cumulative approximate output tokens,
+ * phase and optional cumulative API usage; never raw thinking. Estimates use ASCII/4
+ * plus non-ASCII code points/1.5 and cannot count opaque/hidden reasoning tokens.
+ * @param {typeof fetch} [options.fetchImpl=globalThis.fetch] Privileged dependency injection for tests.
+ * @param {number} [options.maxResponseBytes] Explicit raw-wire cap for both SSE and JSON (up to 64 MiB).
+ * Defaults are 64 MiB SSE / 8 MiB JSON. Protocol metadata and keepalives only consume this cap.
+ * @param {number} [options.maxEventBytes=8388608] Retained SSE event/line budget (up to 16 MiB).
+ * @param {number} [options.maxModelPayloadBytes=16777216] Generated content/native-state budget (up to 32 MiB).
+ * @returns {Promise<{message: object, usage: {inputTokens: number, outputTokens: number}, usageReported: boolean}>}
+ */
+export async function requestModel({
+  provider, apiKey, baseUrl, model, messages, tools = [], signal, onTextDelta, onProgress, reasoningEffort = 'default',
+  authMode = 'apiKey', apiProtocol = provider === 'relay' ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
+  timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens,
+  maxEventBytes = DEFAULT_EVENT_LIMIT, maxModelPayloadBytes = DEFAULT_MODEL_PAYLOAD_LIMIT,
+} = {}) {
+  if (!Object.hasOwn(DEFAULT_URLS, provider)) fail('不支持的模型供应商。', 'INVALID_MODEL_CONFIG');
+  if (!['apiKey', 'chatgpt'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai')) {
+    fail('此供应商不支持所选的登录方式。', 'INVALID_AUTH_MODE');
+  }
+  const transportProvider = provider === 'relay' ? 'openai' : provider;
+  // A persisted API Key preference must never select a different OAuth route.
+  const effectiveProtocol = authMode === 'chatgpt' ? 'responses' : apiProtocol;
+  if (['openai', 'relay'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)) {
+    fail('API 协议无效，请选择 Responses 或 Chat Completions。', 'INVALID_API_PROTOCOL');
+  }
+  requireString(apiKey, authMode === 'chatgpt' ? 'ChatGPT 登录凭据' : 'API 密钥');
+  requireString(model, '模型名称');
+  if (typeof fetchImpl !== 'function') fail('请求传输配置无效。', 'INVALID_MODEL_CONFIG');
+  if (onTextDelta !== undefined && typeof onTextDelta !== 'function') fail('流式回调格式无效。', 'INVALID_MODEL_CONFIG');
+  if (onProgress !== undefined && typeof onProgress !== 'function') fail('进度回调格式无效。', 'INVALID_MODEL_CONFIG');
+  if (!REASONING_LEVELS[provider].includes(reasoningEffort)) {
+    fail(`该供应商不支持此推理强度，可选值：${REASONING_LEVELS[provider].join('、')}。`, 'INVALID_REASONING_EFFORT');
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000
+      || (maxResponseBytes !== undefined && (!Number.isInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 64 * 1024 * 1024))
+      || !Number.isInteger(maxEventBytes) || maxEventBytes < 1 || maxEventBytes > 16 * 1024 * 1024
+      || !Number.isInteger(maxModelPayloadBytes) || maxModelPayloadBytes < 1 || maxModelPayloadBytes > 32 * 1024 * 1024
+      || (maxOutputTokens !== undefined && (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1))) {
+    fail('模型请求限制设置无效。', 'INVALID_MODEL_CONFIG');
+  }
+  const endpoint = endpointFor(provider, baseUrl, effectiveProtocol);
+  if (authMode === 'chatgpt' && endpoint !== CHATGPT_ENDPOINT) {
+    fail('ChatGPT 账号模式只能连接 OpenAI 官方 Responses 地址，不能使用自定义 API 地址。', 'INVALID_CHATGPT_BASE_URL');
+  }
+  // Locally generated status/partial-response explanations belong to the UI,
+  // not the model transcript. In particular, they have no signed thinking or
+  // DeepSeek reasoning_content and must not invalidate a later continuation.
+  const filteredMessages = Array.isArray(messages)
+    ? messages.filter(message => !(message?.role === 'assistant' && message.localOnly === true)) : messages;
+  validateInput(filteredMessages, tools);
+  const modelMessages = normalizeMessageImages(filteredMessages);
+  // Missing relay metadata leaves the user's explicit effort choice available.
+  // Only an explicit empty list disables overrides; aliases/suffixes never
+  // rewrite the model or establish a different set of supported parameters.
+  const declaredEfforts = modelCapabilities?.reasoningEfforts;
+  const relayEffortDisabled = Array.isArray(declaredEfforts) && declaredEfforts.length === 0;
+  const effectiveReasoningEffort = provider === 'relay' && relayEffortDisabled ? 'default' : reasoningEffort;
+  validateCapabilities(modelCapabilities, effectiveReasoningEffort, modelMessages, tools);
+  let body;
+  try { body = JSON.stringify(makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint, effectiveReasoningEffort, authMode, effectiveProtocol)); }
+  catch (error) {
+    if (error instanceof ProviderError) throw error;
+    fail('对话或工具定义不能序列化为 JSON。', 'INVALID_MODEL_INPUT');
+  }
+  const lifetime = requestLifetime(signal, timeoutMs);
+  const { controller } = lifetime;
+  let response;
+  try {
+    if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
+    response = await lifetime.wait(() => fetchImpl(endpoint, {
+      method: 'POST', redirect: 'error', signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json', Accept: authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
+        ...(provider === 'anthropic'
+          ? { 'x-api-key': apiKey.trim(), 'anthropic-version': '2023-06-01' }
+          : { Authorization: `Bearer ${apiKey.trim()}` }),
+      },
+      body,
+    }), lateResponse => cancelResponseBody(lateResponse?.body));
+    lifetime.touch();
+    if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
+    if (!response.ok) {
+      const detail = await errorDetails(response, apiKey.trim(), Math.min(MAX_ERROR_RESPONSE_BYTES, maxResponseBytes ?? MAX_ERROR_RESPONSE_BYTES), lifetime.read);
+      const unavailableGroup = authMode !== 'chatgpt' && [400, 403, 404, 422, 429, 500, 502, 503].includes(response.status) && modelGroupUnavailable(detail);
+      const failure = unavailableGroup
+        ? new ProviderError(`HTTP ${response.status}：中转站当前分组没有可用的上游账号或渠道支持此模型。请更换当前分组可用的模型、切换分组，或联系服务商配置上游渠道。`, `PROVIDER_HTTP_${response.status}`)
+        : httpError(response.status, effectiveReasoningEffort, authMode);
+      const error = withErrorDetails(failure, detail, !unavailableGroup);
+      if (response.status === 404 && authMode !== 'chatgpt' && !unavailableGroup) {
+        const path = safeErrorField(new URL(endpoint).pathname, apiKey.trim(), 240);
+        error.message += ` 当前协议：${protocolName(provider, effectiveProtocol)}；请求路径：${path}。模型目录可用不代表服务商支持此推理接口或模型路由，请核对中转站文档中的协议与模型权限。`;
+      }
+      if (!unavailableGroup && [400, 415, 422].includes(response.status) && modelMessages.some(message => message.attachments?.length)) {
+        error.message += '。本次包含图片，请确认所选模型和 API 地址支持图片输入，或移除图片后重试。';
+      }
+      throw error;
+    }
+    const accumulator = createAccumulator(transportProvider, onTextDelta, { model, endpoint, apiKey: apiKey.trim(), onProgress, authMode, apiProtocol: effectiveProtocol, maxModelPayloadBytes });
+    await consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read: lifetime.read }, authMode === 'chatgpt');
+    if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
+    return accumulator.result();
+  } catch (error) {
+    if (lifetime.timedOut()) {
+      const duration = timeoutMs < 1000 ? `${timeoutMs} 毫秒` : `${timeoutMs / 1000} 秒`;
+      throw new ProviderError(`模型连接等待超时：已连续 ${duration}未收到网络数据，已停止等待；请检查网络或稍后重试。`, 'PROVIDER_TIMEOUT');
+    }
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      const aborted = new Error('模型请求已取消。');
+      aborted.name = 'AbortError';
+      aborted.code = 'ABORT_ERR';
+      throw aborted;
+    }
+    if (error instanceof ProviderError) throw error;
+    // Native fetch errors and arbitrary callback exceptions can contain input
+    // values. Only disclose a known, non-secret network error code.
+    const code = error?.cause?.code;
+    const known = ['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+      'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(code) ? `（${code}）` : '';
+    throw new ProviderError(`无法连接模型服务${known}，请检查网络、代理和 API 地址。`, 'PROVIDER_NETWORK_ERROR');
+  } finally {
+    lifetime.dispose();
+    cancelResponseBody(response?.body);
+  }
+}

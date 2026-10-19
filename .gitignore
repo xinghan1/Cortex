@@ -1,0 +1,33 @@
+# Dependencies and generated output
+node_modules/
+/dist/
+/installer-output/
+/artifacts/
+/src/vendor/siwc/
+/vendor/siwc-devkit/packages/local/dist/
+
+# Local application data, test output and caches
+/data/
+/.local-data/
+/.smoke*/
+/.diagnose*/
+/.npm-cache/
+/.electron-cache/
+/tests/.tmp/
+*.log
+*.tmp
+
+# Local credentials and editor/OS files
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.pfx
+*.p12
+*.key
+.DS_Store
+Thumbs.db
+Desktop.ini
+/.idea/
+/.vscode/
