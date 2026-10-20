@@ -79,18 +79,39 @@ module.exports = async function smokeControls({ win, store, output, broadcastSta
     const animation = await win.webContents.executeJavaScript(`(async()=>{
       const range=document.getElementById('reasoning-effort'),thumb=document.getElementById('reasoning-thumb');
       const start=thumb.getBoundingClientRect().x;
+      const target=thumb.parentElement.getBoundingClientRect().left-thumb.getBoundingClientRect().width/2;
       const began=performance.now();
       const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const samples=[];
+      let sawTransition=false;
+      const sample=()=>{
+        const transitions=thumb.getAnimations().filter(animation=>animation.transitionProperty==='left');
+        sawTransition ||= transitions.length>0;
+        const value={elapsed:Math.round(performance.now()-began),x:thumb.getBoundingClientRect().x,active:transitions.some(animation=>animation.playState!=='finished')};
+        samples.push(value);
+        return value;
+      };
+      const details=()=>({start,target,end:thumb.getBoundingClientRect().x,elapsed:performance.now()-began,sawTransition,samples:samples.slice(-24),value:range.value,effort:range.dataset.effort,fill:range.dataset.fill,support:range.dataset.support,disabled:range.disabled,visualFill:range.closest('.reasoning-slider-visual').dataset.fill,dragging:range.closest('.reasoning-slider-visual').classList.contains('is-dragging'),transition:getComputedStyle(thumb).transitionDuration,left:getComputedStyle(thumb).left,savedEffort:appState?.settings?.reasoningEffort});
       range.value='0';range.dispatchEvent(new Event('input',{bubbles:true}));
-      await new Promise(resolve=>requestAnimationFrame(resolve));
-      await new Promise(resolve=>setTimeout(resolve,25));
-      const middle=thumb.getBoundingClientRect().x;
-      const elapsedMiddle=performance.now()-began;
-      await new Promise(resolve=>setTimeout(resolve,180));
+      // Force the new style to start its real CSS transition, then sample every
+      // presented frame. Software/offscreen compositing can still be at the
+      // starting position after 25ms, so one fixed-time sample is insufficient.
+      sample();
+      await new Promise((resolve,reject)=>{
+        let frame;
+        const timeout=setTimeout(()=>{cancelAnimationFrame(frame);reject(new Error('Reasoning thumb transition did not settle: '+JSON.stringify(details())));},3000);
+        const tick=()=>{
+          const value=sample();
+          if(samples.length>=3&&!value.active&&Math.abs(value.x-target)<0.75){clearTimeout(timeout);resolve();}
+          else frame=requestAnimationFrame(tick);
+        };
+        frame=requestAnimationFrame(tick);
+      });
       const end=thumb.getBoundingClientRect().x;
-      if(!reduced&&!(middle<start&&middle>end)) throw new Error('Reasoning thumb position did not transition: '+JSON.stringify({start,middle,end,elapsedMiddle,elapsedEnd:performance.now()-began,value:range.value,effort:range.dataset.effort,fill:range.dataset.fill,support:range.dataset.support,disabled:range.disabled,visualFill:range.closest('.reasoning-slider-visual').dataset.fill,dragging:range.closest('.reasoning-slider-visual').classList.contains('is-dragging'),transition:getComputedStyle(thumb).transitionDuration,left:getComputedStyle(thumb).left,savedEffort:appState?.settings?.reasoningEffort}));
+      const intermediate=samples.filter(value=>value.x<start-0.1&&value.x>end+0.1);
+      if(start<=target+1||Math.abs(end-target)>=0.75||(!reduced&&(!sawTransition||!intermediate.length))) throw new Error('Reasoning thumb position did not transition: '+JSON.stringify(details()));
       range.value=range.max;range.dispatchEvent(new Event('input',{bubbles:true}));
-      return {reducedMotion:reduced,positionTransition:reduced?'system-disabled':true};
+      return {reducedMotion:reduced,positionTransition:reduced?'system-disabled':true,frameSamples:samples.length,intermediateFrames:intermediate.length};
     })()`);
     const details=await win.webContents.executeJavaScript(`(async()=>{
       await window.forge.listModels();

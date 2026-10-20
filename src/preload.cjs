@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 const call = (name, arg) => ipcRenderer.invoke(`forge:${name}`, arg);
 contextBridge.exposeInMainWorld('forge', Object.freeze({
   getState: () => call('getState'),
+  getAppearance: () => call('getAppearance'),
+  importBackground: () => call('importBackground'),
+  setAppearance: arg => call('setAppearance', arg),
+  resetBackground: () => call('resetBackground'),
   copyText: arg => call('copyText', arg),
   getCurrentSession: () => call('getCurrentSession'),
   listProjectSessions: () => call('listProjectSessions'),

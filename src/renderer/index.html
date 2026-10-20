@@ -9,14 +9,17 @@
   <link rel="stylesheet" href="./markdown.css">
   <link rel="stylesheet" href="./workbench.css">
   <link rel="stylesheet" href="./sessions.css">
+  <link rel="stylesheet" href="./glass.css">
   <script src="./markdown.js" defer></script>
   <script src="./permissions.js" defer></script>
   <script src="./browser.js" defer></script>
   <script src="./sessions.js" defer></script>
   <script src="./app.js" defer></script>
+  <script src="./appearance.js" defer></script>
   <script src="./menu.js" defer></script>
 </head>
 <body>
+  <div id="app-background" class="app-background" aria-hidden="true"></div>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand" aria-label="Synora code" title="Synora code">
@@ -48,6 +51,8 @@
         <form id="find-bar" class="find-bar" hidden><label for="find-input" class="sr-only">查找当前窗口文字</label><input id="find-input" type="search" placeholder="在当前窗口查找…" autocomplete="off"><span id="find-result" role="status"></span><button id="find-previous" class="icon-button small" type="button" title="上一个匹配" aria-label="上一个匹配">↑</button><button id="find-next" class="icon-button small" type="submit" title="下一个匹配" aria-label="下一个匹配">↓</button><button id="find-close" class="icon-button small" type="button" title="关闭查找" aria-label="关闭查找">×</button></form>
         <div id="message-scroll" class="message-scroll">
           <section id="welcome" class="welcome">
+            <div class="welcome-mark" aria-hidden="true"><img src="./synora-logo.png" alt="" width="48" height="48"></div>
+            <p class="welcome-eyebrow">SYNORA WORKSPACE</p>
             <h2>开始一个任务</h2>
             <p>打开项目，选择模型，然后描述需要完成的工作。</p>
             <p class="welcome-note">写入文件与执行命令前会请求你的确认。</p>
@@ -122,6 +127,23 @@
     </div>
   </div>
 
+  <dialog id="appearance-dialog" class="appearance-dialog" aria-labelledby="appearance-title">
+    <div class="dialog-header"><div><p class="appearance-kicker">PERSONALIZE YOUR SPACE</p><h2 id="appearance-title">外观与背景</h2></div><button id="appearance-close" class="icon-button" type="button" aria-label="关闭外观设置">×</button></div>
+    <p class="dialog-intro">为你的工作空间，换一种氛围。</p>
+    <div class="appearance-hero">
+      <div class="appearance-preview" aria-hidden="true"><div class="appearance-preview-glass"><span></span><span></span><span></span></div></div>
+      <div class="appearance-meta"><strong id="background-name">极光 · 默认背景</strong><p id="background-description">柔和蓝紫渐变，专注于眼前的创作。</p></div>
+    </div>
+    <div class="appearance-slider">
+      <div class="appearance-slider-heading"><label for="background-transparency">背景透明度</label><output id="background-transparency-value" for="background-transparency">28%</output></div>
+      <input id="background-transparency" type="range" min="0" max="100" step="1" value="28" aria-describedby="background-transparency-help">
+      <div class="appearance-slider-labels"><span>鲜明</span><span>淡雅</span></div>
+      <p id="background-transparency-help">拖动即时预览，自动保存到本机。</p>
+    </div>
+    <div class="appearance-actions"><button id="background-import" class="button solid" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>导入背景图…</button><button id="background-reset" class="button subtle" type="button">恢复默认背景</button></div>
+    <p class="appearance-file-hint">支持 PNG、JPEG、WebP · 最大 12 MB · 仅用于本机界面</p>
+    <p id="appearance-status" class="appearance-status" role="status" hidden></p>
+  </dialog>
   <dialog id="settings-dialog" class="settings-dialog">
     <form id="settings-form">
       <div class="dialog-header"><h2>模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>

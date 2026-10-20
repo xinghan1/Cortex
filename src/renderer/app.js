@@ -3387,6 +3387,8 @@ window.aiCodeCommands = Object.freeze({
       case 'logout': return runChatGPTAction('disconnect', () => bridge.chatgptDisconnect());
       case 'quit': return bridge.quitApp();
       case 'settings': return openSettings();
+      case 'import-background': return window.synoraAppearance?.importBackground();
+      case 'appearance-settings': return window.synoraAppearance?.open();
       case 'toggle-sidebar': return toggleSidebar();
       case 'toggle-terminal': return setTerminalOpen($('terminal-panel').hidden);
       case 'pin-summary': return setPreviewPinned(!previewPinned);

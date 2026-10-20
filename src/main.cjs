@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, nativeImage, session: electronSession } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
 const { Store } = require('./core/store.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
 const { UIPreferences } = require('./core/ui-preferences.cjs');
+const { AppearanceStore } = require('./core/appearance.cjs');
 const { RecentProjects } = require('./core/recent-projects.cjs');
 const { approvalDecision, validateMode } = require('./core/approval-policy.cjs');
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
@@ -31,13 +32,14 @@ let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
   if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
   const previousVersions = ['Synora-code-0.16.7-win32-x64', 'Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
+  previousVersions.unshift('Synora-code-0.16.8-win32-x64');
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
 let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, runAgent, runDemo, requestModel, TerminalSession, ManualFileManager, normalizeImageAttachments;
-let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, recentProjects, primaryContext;
+let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
 const windows = new Map();
@@ -56,6 +58,14 @@ function mutateShared(operation) {
   return pending.finally(() => { sharedMutations--; });
 }
 async function broadcastAllStates() { await Promise.allSettled([...windows.values()].map(context => context.broadcastState())); }
+function broadcastAppearance(value) {
+  // Background bytes are local UI state. Keep them out of periodic application
+  // state, project sessions, model inputs and telemetry.
+  for (const host of windows.values()) {
+    if (!host.win || host.win.isDestroyed() || host.win.webContents.isDestroyed()) continue;
+    host.win.webContents.send('forge:event', { type: 'appearance', appearance: value });
+  }
+}
 function makeRun(kind) {
   let finish;
   const done = new Promise(resolve => { finish = resolve; });
@@ -739,6 +749,32 @@ function buildHandlers() {
   };
   const handlers = {
     getState: state,
+    getAppearance: () => appearance.snapshot(),
+    importBackground: async () => {
+      let chosen;
+      try {
+        chosen = await dialog.showOpenDialog(win, {
+          title: '导入背景图', buttonLabel: '导入背景图', properties: ['openFile'],
+          filters: [{ name: '背景图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+        });
+      } catch { throw new Error('背景图片选择窗口无法打开，请稍后重试。'); }
+      if (chosen.canceled || !chosen.filePaths?.length) return appearance.snapshot();
+      // The renderer cannot supply a filesystem path. Only this native chooser
+      // passes a user-selected raster file into the persistent appearance store.
+      const value = await appearance.importFile(chosen.filePaths[0]);
+      broadcastAppearance(value);
+      return value;
+    },
+    setAppearance: async arg => {
+      const value = await appearance.setAppearance(arg);
+      broadcastAppearance(value);
+      return value;
+    },
+    resetBackground: async () => {
+      const value = await appearance.resetBackground();
+      broadcastAppearance(value);
+      return value;
+    },
     copyText: arg => {
       if (typeof arg?.text !== 'string' || arg.text.length > 40000) throw new Error('复制内容无效或超过 40000 个字符。');
       clipboard.writeText(arg.text);
@@ -1192,6 +1228,11 @@ async function boot() {
   }
   uiPreferences = new UIPreferences(dataDir);
   await uiPreferences.init();
+  appearance = new AppearanceStore({ dataDir, decodeImage: bytes => {
+    const image = nativeImage.createFromBuffer(bytes);
+    return image.isEmpty() ? null : image.getSize();
+  } });
+  await appearance.init();
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await chatgpt.init();
@@ -1209,6 +1250,14 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'appearance') {
+    const result = { version: app.getVersion(), appearance: await require('./core/smoke-appearance.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_APPEARANCE_SMOKE_OK ' + JSON.stringify(result));
+    app.quit();
+    return;
+  }
   if (process.env.FORGEDESK_SMOKE_SESSION_METRICS_ONLY || process.env.FORGEDESK_SMOKE_ONLY === 'session-metrics') {
     const result = { version: app.getVersion(), sessionMetrics: await require('./core/smoke-session-metrics.cjs')({ win, output }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1444,6 +1493,7 @@ async function smokeTest() {
   result.reasoningCapabilities = await require('./core/smoke-reasoning-capabilities.cjs')({ win, output, dataDir });
   result.liveFiles = await require('./core/smoke-live-files.cjs')({ win, output, dataDir });
   result.sessionMetrics = await require('./core/smoke-session-metrics.cjs')({ win, output });
+  result.appearance = await require('./core/smoke-appearance.cjs')({ win, output, dataDir });
   if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
   await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
   console.log('FORGEDESK_SMOKE_OK ' + JSON.stringify({ version: result.version, status: result.status, modelRounds: result.modelRounds, integration: result.integration.status, events: [...new Set(result.events)] }));

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2400" viewBox="0 0 2560 1600" fill="none">
+  <defs>
+    <linearGradient id="night" x1="138" y1="0" x2="2260" y2="1600" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#071526"/>
+      <stop offset=".46" stop-color="#091631"/>
+      <stop offset="1" stop-color="#100c25"/>
+    </linearGradient>
+    <radialGradient id="blue" cx="0" cy="0" r="1" gradientTransform="translate(504 258) rotate(35) scale(1070 680)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2378f6" stop-opacity=".92"/>
+      <stop offset=".47" stop-color="#244cc1" stop-opacity=".7"/>
+      <stop offset="1" stop-color="#2347ad" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violet" cx="0" cy="0" r="1" gradientTransform="translate(2280 1162) rotate(145) scale(1140 720)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#754dff" stop-opacity=".94"/>
+      <stop offset=".5" stop-color="#5039bf" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#5039bf" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fold" x1="115" y1="264" x2="2340" y2="1417" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5fbbff" stop-opacity=".56"/>
+      <stop offset=".37" stop-color="#408bff" stop-opacity=".16"/>
+      <stop offset=".76" stop-color="#8c70ff" stop-opacity=".4"/>
+      <stop offset="1" stop-color="#7b4bf5" stop-opacity=".08"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="292" y1="221" x2="2168" y2="1380" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73ceff" stop-opacity=".52"/>
+      <stop offset=".48" stop-color="#769fff" stop-opacity=".02"/>
+      <stop offset="1" stop-color="#a491ff" stop-opacity=".44"/>
+    </linearGradient>
+    <filter id="soft" x="-25%" y="-50%" width="150%" height="200%">
+      <feGaussianBlur stdDeviation="64"/>
+    </filter>
+    <filter id="edge-soft" x="-10%" y="-30%" width="120%" height="160%">
+      <feGaussianBlur stdDeviation="17"/>
+    </filter>
+  </defs>
+  <path fill="url(#night)" d="M0 0h2560v1600H0z"/>
+  <path fill="url(#blue)" d="M0 0h2560v1600H0z"/>
+  <path fill="url(#violet)" d="M0 0h2560v1600H0z"/>
+  <path d="M-330 86C324-188 646 159 1004 631c385 509 858 604 1637 264l177 475c-823 369-1543 130-1983-428C437 439 130 237-240 477Z" fill="url(#fold)" filter="url(#soft)"/>
+  <path d="M-175 239C409-17 700 406 1078 839c327 375 855 434 1650 125" stroke="url(#edge)" stroke-width="34" filter="url(#edge-soft)"/>
+  <ellipse cx="1316" cy="609" rx="832" ry="439" fill="#071224" fill-opacity=".35" filter="url(#soft)"/>
+</svg>
