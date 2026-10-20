@@ -152,14 +152,24 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
     assert.equal(await fs.readFile(path.join(fixture, 'note.txt'), 'utf8'), 'Original permission fixture\n');
     await wait(100);
     assert.equal(records.filter(record => record.name === 'request').length, 1, 'Unapproved write resumed the model');
+    const approvalPlacement = await js(`(() => {
+      const slot=document.getElementById('composer-approval'),form=document.getElementById('task-form'),card=slot?.querySelector('.approval-card');
+      const actions=card?.querySelector('.approval-actions'),rect=actions?.getBoundingClientRect();
+      return {slotVisible:!!slot&&!slot.hidden,formHidden:form?.hidden===true,cards:slot?.querySelectorAll('.approval-card').length||0,
+        chatCards:document.querySelectorAll('#messages .approval-card').length,
+        actionsVisible:!!rect&&rect.width>0&&rect.height>0&&rect.top>=0&&rect.bottom<=innerHeight,
+        pendingButtons:!!card?.querySelector('.approval-accept:not(:disabled)')&&!!card?.querySelector('.approval-reject:not(:disabled)')};
+    })()`);
+    assert.deepEqual(approvalPlacement, {slotVisible:true,formHidden:true,cards:1,chatCards:0,actionsVisible:true,pendingButtons:true}, 'Write approval must temporarily replace the composer without hiding the decision controls');
     assert.equal(await js("document.getElementById('permission-trigger').disabled"), true);
     await rejected('setPermissionMode', { mode: 'assist' });
     await rejected('setPermissionMode', { mode: 'full', confirmed: true });
     assert.equal((await state()).permissionMode, 'request');
-    await js("(()=>{const button=[...document.querySelectorAll('.approval-accept')].find(button=>!button.disabled);if(!button)throw new Error('Approval button unavailable');button.click();})()");
+    await js("(()=>{const button=document.querySelector('#composer-approval .approval-accept:not(:disabled)');if(!button)throw new Error('Composer approval button unavailable');button.click();})()");
     const requested = await completed('request');
     assert.equal(await fs.readFile(path.join(fixture, 'note.txt'), 'utf8'), scenarios.request.content);
     assert.equal(requested.filter(event => event.type === 'approval-auto').length, 0);
+    assert.equal(await js("document.getElementById('composer-approval').hidden&&document.getElementById('composer-approval').childElementCount===0&&!document.getElementById('task-form').hidden"), true, 'Completed explicit approval must restore the composer without stale controls');
 
     await choose('assist'); await modeReady('assist');
     await start('assist');
@@ -176,7 +186,7 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
     assert.equal((await call('getState', undefined, win)).permissionMode, parentMode);
     assert.equal(win.isDestroyed(), false);
     assert.deepEqual(problems, []); assert.equal(records.length, 6);
-    return { status: 'completed', realApi: false, defaultRequest: true, actualMenu: true, riskDialogCentered: true, cancelPreservesMode: true, confirmRequired: true, currentWindowOnly: true, newWindowDefaultsRequest: true, busyChangeRejected: true, explicitWriteWaited: true, assistWriteAutomatic: true, fullCommandAutomatic: true, projectSwitchResets: true, modelRequests: records.length, screenshots: ['permissions-menu.png', 'permissions-risk.png'] };
+    return { status: 'completed', realApi: false, defaultRequest: true, actualMenu: true, riskDialogCentered: true, cancelPreservesMode: true, confirmRequired: true, currentWindowOnly: true, newWindowDefaultsRequest: true, busyChangeRejected: true, explicitWriteWaited: true, composerApprovalVisible:true,composerRestored:true, assistWriteAutomatic: true, fullCommandAutomatic: true, projectSwitchResets: true, modelRequests: records.length, screenshots: ['permissions-menu.png', 'permissions-risk.png'] };
   } catch (error) {
     const current = child && !child.isDestroyed() ? await state().catch(() => null) : null;
     console.error('PERMISSIONS_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, stack: error.stack, records, problems, state: current ? { permissionMode: current.permissionMode, workspace: current.workspace, activeTask: current.activeTask, queueLength: current.promptQueue?.items?.length, model: current.settings?.model } : null }));

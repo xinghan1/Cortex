@@ -1,0 +1,277 @@
+/* Compact task history: current action while running, elapsed time when finished. */
+
+.task-activity {
+  min-width: 0;
+  margin: 9px 0 18px;
+  color: #b1c3de;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.task-activity > .task-activity-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  min-height: 32px;
+  padding: 4px 0;
+  border-radius: 5px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.task-activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-activity > .task-activity-summary:hover {
+  color: #dce9ff;
+}
+
+.task-activity-summary:focus-visible,
+.task-activity-events .tool-summary:focus-visible {
+  outline: 2px solid #accbff;
+  outline-offset: 3px;
+}
+
+.task-activity .task-activity-phase-line {
+  flex: 1 1 200px;
+  gap: 8px;
+  margin: 0;
+}
+
+.task-activity .task-activity-phase-line[hidden] {
+  display: none;
+}
+
+.task-activity .task-activity-phase {
+  color: inherit;
+  font-size: 12px;
+}
+
+.task-activity .task-activity-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  font-size: 17px;
+}
+
+.task-activity .task-activity-meta {
+  flex: 0 1 auto;
+  gap: 7px;
+  min-width: 0;
+  color: #a4b6d0;
+  font-size: 11px;
+}
+
+.task-activity .task-activity-speed {
+  color: #9db6d9;
+}
+
+.task-history-chevron {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin: 0 4px 0 5px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.task-activity[open] > .task-activity-summary .task-history-chevron {
+  transform: rotate(135deg) translate(-1px, -1px);
+}
+
+.task-activity:not(.running) > .task-activity-summary {
+  justify-content: flex-start;
+  padding: 6px 0 11px;
+  border-bottom: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
+  border-radius: 0;
+}
+
+.task-activity:not(.running) .task-activity-meta {
+  font-size: 12px;
+}
+
+.task-activity[data-status='failed'] > .task-activity-summary .task-activity-meta {
+  color: #e8b9c6;
+}
+
+/* Keep the conversation as the only full-height scroller. */
+
+.task-activity-events {
+  min-width: 0;
+  margin: 5px 0 9px 7px;
+  padding: 1px 0 1px 15px;
+  border-left: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
+}
+
+.task-activity-events:empty {
+  display: none;
+}
+
+.task-history-empty {
+  margin: 8px 0;
+  color: #a4b6d0;
+  font-size: 11px;
+}
+
+.task-activity-events .message.assistant {
+  margin: 9px 0 13px;
+}
+
+.task-activity-events .message.assistant .message-header {
+  display: none;
+}
+
+.task-activity-events .message.assistant .message-body {
+  color: #c2d0e5;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+/* Tool rows stay light; the full input and result are available on expansion. */
+
+.task-activity-events .tool-card {
+  margin: 3px 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.task-activity-events .tool-summary {
+  gap: 8px;
+  min-height: 31px;
+  padding: 5px 4px;
+  border-radius: 6px;
+  color: #b6c7e0;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.task-activity-events .tool-summary:hover {
+  background: rgb(211 230 255 / 5%);
+  color: #e0ecff;
+}
+
+.task-activity-events .tool-summary::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  margin: 0 5px 0 3px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  opacity: .65;
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.task-activity-events .tool-card[open] > .tool-summary::after {
+  transform: rotate(135deg) translate(-1px, -1px);
+}
+
+.task-activity-events .tool-mark {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #a9bdd9;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.task-activity-events .tool-mark svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.task-activity-events .tool-title {
+  min-width: 0;
+  color: inherit;
+  font-size: 12px;
+}
+
+.task-activity-events .tool-badge {
+  flex: 0 0 auto;
+  color: #9baec9;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.task-activity-events .tool-card.running .tool-badge {
+  color: #b7d2ff;
+}
+
+.task-activity-events .tool-details {
+  margin: 3px 0 9px 26px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
+  border-radius: 8px;
+  background: rgb(5 15 33 / 26%);
+}
+
+.task-activity-events .tool-details pre {
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.task-activity-events .command-output {
+  margin: 6px 0 10px 26px;
+  border-color: var(--line-soft, rgb(215 231 255 / 10%));
+  font-size: 11px;
+}
+
+/* Approval actions retain their separate card and existing scroll safeguards. */
+
+.task-activity-events .approval-card {
+  margin: 10px 0 14px;
+}
+
+.task-activity-events .approval-actions {
+  gap: 8px;
+}
+
+@media (max-width: 700px) {
+  .task-activity > .task-activity-summary {
+    gap: 2px 10px;
+  }
+
+  .task-activity.running .task-activity-meta {
+    margin-left: 24px;
+  }
+
+  .task-activity-events {
+    padding-left: 10px;
+  }
+
+  .task-activity-events .tool-details,
+  .task-activity-events .command-output {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-history-chevron,
+  .task-activity-events .tool-summary,
+  .task-activity-events .tool-summary::after {
+    transition: none;
+  }
+
+  .task-activity.running .task-activity-marker {
+    animation: none;
+  }
+}

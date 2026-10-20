@@ -1,0 +1,76 @@
+/* Local vector file types. Color stays distinct in selected and hovered rows. */
+.file-row .file-icon[data-kind] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 17px;
+  width: 17px;
+  min-width: 17px;
+  height: 18px;
+  margin-right: 2px;
+  color: #b2c0d3;
+  pointer-events: none;
+}
+
+.file-icon[data-kind] svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.file-icon[data-kind] text {
+  font-family: "Cascadia Code", Consolas, sans-serif;
+}
+
+.file-row .file-icon[data-kind='folder'] { color: #d5b783; }
+.file-row .file-icon[data-kind='json'] { color: #ded66c; }
+.file-row .file-icon[data-kind='markdown'] { color: #8bbdf0; }
+.file-row .file-icon[data-kind='java'] { color: #eda87c; }
+.file-row .file-icon[data-kind='python'] { color: #80b9ed; }
+.file-row .file-icon[data-kind='javascript'] { color: #ead174; }
+.file-row .file-icon[data-kind='typescript'],
+.file-row .file-icon[data-kind='react-typescript'] { color: #82b5f3; }
+.file-row .file-icon[data-kind='react'] { color: #88d9ed; }
+.file-row .file-icon[data-kind='html'],
+.file-row .file-icon[data-kind='svelte'],
+.file-row .file-icon[data-kind='swift'] { color: #f2a080; }
+.file-row .file-icon[data-kind='css'],
+.file-row .file-icon[data-kind='kotlin'],
+.file-row .file-icon[data-kind='csharp'],
+.file-row .file-icon[data-kind='php'] { color: #c4a0ee; }
+.file-row .file-icon[data-kind='vue'],
+.file-row .file-icon[data-kind='table'] { color: #8bcca9; }
+.file-row .file-icon[data-kind='xml'],
+.file-row .file-icon[data-kind='yaml'] { color: #e5abbd; }
+.file-row .file-icon[data-kind='image'] { color: #bd9be8; }
+.file-row .file-icon[data-kind='svg'],
+.file-row .file-icon[data-kind='license'],
+.file-row .file-icon[data-kind='archive'] { color: #d5bc83; }
+.file-row .file-icon[data-kind='c'],
+.file-row .file-icon[data-kind='cpp'],
+.file-row .file-icon[data-kind='document'] { color: #92b8eb; }
+.file-row .file-icon[data-kind='go'],
+.file-row .file-icon[data-kind='dart'],
+.file-row .file-icon[data-kind='audio'],
+.file-row .file-icon[data-kind='database'] { color: #8ad0d4; }
+.file-row .file-icon[data-kind='rust'],
+.file-row .file-icon[data-kind='presentation'] { color: #dfad8e; }
+.file-row .file-icon[data-kind='ruby'],
+.file-row .file-icon[data-kind='pdf'],
+.file-row .file-icon[data-kind='git'] { color: #ed9b9f; }
+.file-row .file-icon[data-kind='shell'] { color: #a6c69a; }
+.file-row .file-icon[data-kind='video'] { color: #d8a0cb; }
+
+.file-folder-open,
+.file-row[aria-expanded='true'] .file-folder-closed {
+  display: none;
+}
+
+.file-row[aria-expanded='true'] .file-folder-open {
+  display: inline;
+}

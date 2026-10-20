@@ -280,7 +280,7 @@ export class WorkspaceTools {
     return { matches, truncated };
   }
 
-  async #write(input, content, signal, expectedContent, { recordHistory = true, title } = {}) {
+  async #write(input, content, signal, expectedContent, { recordHistory = true, title, onFileChange } = {}) {
     const buffer = textBuffer(content);
     const { target, snapshot } = await withFileCommit(async () => {
       abortIfNeeded(signal);
@@ -357,11 +357,14 @@ export class WorkspaceTools {
         this.history.push({ path: target.relative, before, after: content });
         if (this.history.length > 100) this.history.shift();
       }
+      // Report only committed content. Approval describes a proposal and may
+      // still be followed by a rejected concurrent edit or a failed write.
+      try { onFileChange?.({ path: target.relative, before, after: content }); } catch { /* A display listener must not turn a committed write into a failure. */ }
       return { path: target.relative, bytes: buffer.length, message: '文件已保存。' };
     });
   }
 
-  async undoLastChange({ signal } = {}) {
+  async undoLastChange({ signal, onFileChange } = {}) {
     try {
       abortIfNeeded(signal);
       const change = this.history.at(-1);
@@ -371,7 +374,7 @@ export class WorkspaceTools {
       let result;
       if (change.before !== null) {
         result = await this.#write(change.path, change.before, signal, change.after, {
-          recordHistory: false, title: `撤销文件修改：${change.path}`,
+          recordHistory: false, title: `撤销文件修改：${change.path}`, onFileChange,
         });
       } else {
         const approved = await this.approve({
@@ -392,6 +395,7 @@ export class WorkspaceTools {
           abortIfNeeded(signal);
           await fsp.unlink(current.target.absolute);
           this.#observedFiles.delete(this.#observationKey(change.path));
+          try { onFileChange?.({ path: change.path, before: change.after, after: null }); } catch { /* The deletion has already committed. */ }
           return { path: change.path, deleted: true };
         });
       }
@@ -404,13 +408,13 @@ export class WorkspaceTools {
     } catch (error) { return `错误：${error.message}`; }
   }
 
-  async #replace({ path: input, old_text, new_text }, signal) {
+  async #replace({ path: input, old_text, new_text }, signal, onFileChange) {
     if (typeof old_text !== 'string' || !old_text || typeof new_text !== 'string') throw new Error('old_text 必须是非空字符串，new_text 必须是字符串。');
     const { content } = await this.readFile({ path: input });
     const index = content.indexOf(old_text);
     if (index === -1) throw new Error('未找到要替换的文本。');
     if (content.indexOf(old_text, index + 1) !== -1) throw new Error('要替换的文本出现多次，请提供唯一的上下文。');
-    return this.#write(input, content.slice(0, index) + new_text + content.slice(index + old_text.length), signal, content);
+    return this.#write(input, content.slice(0, index) + new_text + content.slice(index + old_text.length), signal, content, { onFileChange });
   }
 
   async #command({ command, timeout_ms = 60000 }, signal) {
@@ -490,7 +494,7 @@ export class WorkspaceTools {
     });
   }
 
-  async execute(name, args = {}, { signal } = {}) {
+  async execute(name, args = {}, { signal, onFileChange } = {}) {
     try {
       abortIfNeeded(signal);
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('工具参数必须是对象。');
@@ -499,10 +503,10 @@ export class WorkspaceTools {
         case 'list_files': result = await this.listFiles(args); break;
         case 'read_file': result = await this.readFile(args); break;
         case 'search_files': result = await this.#search(args, signal); break;
-        case 'write_file': result = await this.#write(args.path, args.content, signal); break;
-        case 'replace_in_file': result = await this.#replace(args, signal); break;
+        case 'write_file': result = await this.#write(args.path, args.content, signal, undefined, { onFileChange }); break;
+        case 'replace_in_file': result = await this.#replace(args, signal, onFileChange); break;
         case 'run_command': result = await this.#command(args, signal); break;
-        case 'undo_last_change': return await this.undoLastChange({ signal });
+        case 'undo_last_change': return await this.undoLastChange({ signal, onFileChange });
         default: throw new Error(`未知工具：${name}`);
       }
       return JSON.stringify(result);

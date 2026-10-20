@@ -1,0 +1,260 @@
+/* Pending decisions temporarily replace the composer; its draft DOM stays intact. */
+.composer-approval {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-approval .composer-approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgb(179 206 255 / 34%);
+  border-radius: 18px;
+  background: linear-gradient(125deg, rgb(112 158 222 / 15%), rgb(153 125 222 / 13%)), rgb(25 39 67 / 78%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 8px 30px rgb(3 9 26 / 17%);
+  color: #e5eaf2;
+}
+
+.composer-approval-card:focus {
+  outline: none;
+}
+
+.composer-approval-card:focus-visible {
+  outline: 2px solid #a9c8ff;
+  outline-offset: 2px;
+}
+
+.composer-approval .approval-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 15px 17px 10px;
+  border: 0;
+  background: none;
+  color: #b7c1d0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.composer-approval .approval-icon {
+  color: #cbd5e3;
+  font-family: var(--font-mono, monospace);
+  font-size: 15px;
+}
+
+.composer-approval-count {
+  margin-left: auto;
+  color: #97a3b5;
+  font-size: 11px;
+}
+
+.composer-approval-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: #f0f3f8;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.composer-approval-preview {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0 16px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.composer-approval .approval-body {
+  max-height: min(28vh, 260px);
+  margin: 0;
+  padding: 0 1px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: rgb(190 206 230 / 30%) transparent;
+  scrollbar-width: thin;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.composer-approval .is-expanded .approval-body {
+  max-height: min(34vh, 320px);
+}
+
+.composer-approval .approval-detail,
+.composer-approval .approval-path {
+  margin: 0 0 7px;
+  color: #aab7ca;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer-approval .approval-command {
+  max-height: none;
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  overflow: visible;
+  border: 1px solid rgb(184 209 249 / 14%);
+  border-radius: 12px;
+  background: rgb(5 14 34 / 49%);
+  color: #d5deeb;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer-approval-expand {
+  display: block;
+  margin: 5px 9px 6px auto;
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: #b3bfd1;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.composer-approval-expand:hover,
+.composer-approval-full > summary:hover {
+  color: #f3f6fb;
+}
+
+.composer-approval-proposal {
+  margin: 0 0 6px;
+  color: #b9c9e2;
+  font-size: 11px;
+}
+
+.composer-approval .code-diff-card {
+  margin: 0 0 8px;
+}
+
+.composer-approval .code-diff-scroll {
+  max-height: 210px;
+}
+
+.composer-approval-full > summary {
+  padding: 3px 0 7px;
+  color: #b3bfd1;
+  cursor: pointer;
+}
+
+.composer-approval .approval-diff {
+  display: block;
+  margin: 0;
+}
+
+.composer-approval .diff-side {
+  margin-bottom: 8px;
+}
+
+.composer-approval .diff-side pre {
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer-approval .approval-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid rgb(184 209 249 / 16%);
+  background: rgb(196 219 255 / 5%);
+}
+
+.composer-approval-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #aebdd1;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.composer-approval-status.error {
+  flex-basis: 100%;
+  color: #ffb2b7;
+}
+
+.composer-approval .approval-actions .button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid rgb(230 240 255 / 12%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 7%);
+  color: #dbe2ed;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.composer-approval .approval-actions .approval-accept {
+  border-color: #c1d4ff;
+  background: #afc8ff;
+  color: #142b53;
+  font-weight: 600;
+}
+
+.composer-approval .approval-actions .approval-accept:hover:not(:disabled) {
+  background: #c0d5ff;
+}
+
+.composer-approval .approval-actions .composer-approval-stop {
+  margin-right: 0;
+  padding-right: 4px;
+  padding-left: 4px;
+  border-color: transparent;
+  background: none;
+  color: #9daabd;
+  font-size: 11px;
+}
+
+.composer-approval .approval-actions kbd {
+  display: none;
+  margin-left: 5px;
+  color: inherit;
+  font: inherit;
+  opacity: .6;
+}
+
+.composer-approval button:focus-visible,
+.composer-approval summary:focus-visible,
+.composer-approval .approval-body:focus-visible {
+  outline: 2px solid #a9c8ff;
+  outline-offset: -2px;
+}
+
+@media (max-height: 760px) {
+  .composer-approval .composer-approval-card {
+    padding: 0;
+  }
+
+  .composer-approval-title {
+    margin: 0;
+  }
+
+  .composer-approval .approval-body {
+    max-height: min(24vh, 180px);
+  }
+
+  .composer-approval .is-expanded .approval-body {
+    max-height: min(25vh, 200px);
+  }
+}

@@ -270,11 +270,30 @@ function emit(event) {
     emitSessionMetrics();
   }
   const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...event, workspaceId, sequence: ++eventSequence })));
+  // Local display metadata stays outside model messages and context budgets.
+  if (activeRun && clean.type === 'tool-result' && clean.fileChange && currentSession) {
+    const change = clean.fileChange;
+    if (typeof change.path === 'string' && change.path && ['before', 'after'].every(key => change[key] === null || typeof change[key] === 'string')) {
+      const edits = currentSession.fileEdits = Array.isArray(currentSession.fileEdits) ? currentSession.fileEdits.filter(item => item && typeof item.path === 'string'
+        && ['before', 'after'].every(key => item[key] === null || typeof item[key] === 'string')) : [];
+      const previous = edits.findIndex(item => clean.toolCallId && item.runId === clean.runId && item.toolCallId === clean.toolCallId);
+      if (previous !== -1) edits.splice(previous, 1);
+      edits.push({ runId: clean.runId, toolCallId: clean.toolCallId, sequence: clean.sequence, path: change.path, before: change.before, after: change.after });
+      let characters = edits.reduce((sum, item) => sum + (item.before?.length || 0) + (item.after?.length || 0), 0);
+      while (edits.length > 64 || characters > 8 * 1024 * 1024) {
+        const oldest = edits.shift();
+        characters -= (oldest.before?.length || 0) + (oldest.after?.length || 0);
+      }
+    }
+  }
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
   if (host.active === context) win.webContents.send('forge:event', clean);
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
   if (activeRun && activeRun.kind !== 'terminal' && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'user-message', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
-    currentSession.events.push(clean);
+    // Snapshots have their own bounded archive. Do not retain a second copy
+    // in the 150-event suffix after the live event has been delivered.
+    const { fileChange: localSnapshot, ...historicalEvent } = clean;
+    currentSession.events.push(historicalEvent);
     currentSession.events = currentSession.events.slice(-150);
   }
 }
@@ -776,7 +795,7 @@ function buildHandlers() {
       return value;
     },
     copyText: arg => {
-      if (typeof arg?.text !== 'string' || arg.text.length > 40000) throw new Error('复制内容无效或超过 40000 个字符。');
+      if (typeof arg?.text !== 'string' || arg.text.length > 1024 * 1024) throw new Error('复制内容无效或超过 1 MB 字符上限。');
       clipboard.writeText(arg.text);
       return { copied: true };
     },
@@ -964,18 +983,25 @@ function buildHandlers() {
       const run = makeRun('undo');
       activeRun = run;
       emit({ type: 'run-start', runId: run.id, kind: 'undo' });
+      emit({ type: 'tool-start', name: 'undo_last_change', args: {}, toolCallId: run.id });
       let status = 'completed', error;
       try {
-        const result = await workspace.undoLastChange({ signal: run.controller.signal });
+        let fileChange;
+        const result = await workspace.undoLastChange({ signal: run.controller.signal, onFileChange: change => { fileChange = change; } });
         if (result.startsWith('错误：')) { status = 'failed'; error = result; }
-        emit({ type: 'tool-result', name: 'undo_last_change', result });
+        emit({ type: 'tool-result', name: 'undo_last_change', toolCallId: run.id, result, ...(fileChange ? { fileChange } : {}) });
         return { result };
       } finally {
+        const endEvent = { type: 'run-end', runId: run.id, kind: 'undo', status: run.controller.signal.aborted ? 'stopped' : status,
+          ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(),
+          elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageIndex: currentSession.messages.length - 1 };
+        currentSession.events.push(endEvent);
+        currentSession.events = currentSession.events.slice(-150);
         try { await saveCurrentSession(); }
         finally {
           activeRun = null;
           run.finish();
-          emit({ type: 'run-end', status: run.controller.signal.aborted ? 'stopped' : status, error });
+          emit(endEvent);
         }
       }
     },
@@ -1250,6 +1276,42 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (['scroll', 'permissions', 'window-chrome', 'compaction'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+    const name = process.env.FORGEDESK_SMOKE_ONLY;
+    const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_FOCUSED_UI_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'composer-approval') {
+    const result = { version: app.getVersion(), composerApproval: await require('./core/smoke-composer-approval.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_COMPOSER_APPROVAL_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'code-diff') {
+    const result = { version: app.getVersion(), codeDiff: await require('./core/smoke-code-diff.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_CODE_DIFF_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'task-history') {
+    const result = { version: app.getVersion(), taskHistory: await require('./core/smoke-task-history.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_TASK_HISTORY_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'activity') {
+    const result = { version: app.getVersion(), activity: await require('./core/smoke-activity.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_ACTIVITY_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'appearance') {
     const result = { version: app.getVersion(), appearance: await require('./core/smoke-appearance.cjs')({ win, output, dataDir }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1325,7 +1387,7 @@ async function smokeTest() {
       const timer = setTimeout(() => { off(); reject(new Error('Demo timed out')); }, 15000);
       const off = window.forge.onEvent(e => {
         events.push(e.type);
-        if (e.type === 'approval-request') queueMicrotask(() => document.querySelector('.approval-card:last-of-type .approval-accept')?.click());
+        if (e.type === 'approval-request') queueMicrotask(() => approvals.get(e.id)?.accept?.click());
         if (e.type === 'run-end') { clearTimeout(timer); off(); resolve(e); }
       });
     });
@@ -1424,7 +1486,7 @@ async function smokeTest() {
         const timer = setTimeout(() => {off();reject(new Error('Integration timed out'));},30000);
         const off = window.forge.onEvent(e => {
           events.push(e.type);
-          if(e.type==='approval-request') queueMicrotask(() => document.querySelector('.approval-card:last-of-type .approval-accept')?.click());
+          if(e.type==='approval-request') queueMicrotask(() => approvals.get(e.id)?.accept?.click());
           if(e.type==='telemetry' && e.estimated && e.tokensPerSecond>0) estimatedLiveRate=true;
           if(e.type==='telemetry' && !e.estimated && e.phase==='completed' && e.tokensPerSecond>0) finalExactRate=true;
           if(e.type==='run-end'){clearTimeout(timer);off();resolve(e);}
@@ -1437,7 +1499,7 @@ async function smokeTest() {
       const counted=await window.forge.getState();
       if(counted.usageStats.day.totalTokens-initialTokens!==48) throw new Error('Token ledger double counted or lost requests');
       if(document.getElementById('usage-day').textContent==='—') throw new Error('Token stats did not render');
-      if(!document.getElementById('generation-speed').textContent.includes('tok/s')) throw new Error('Token speed did not render');
+      if(document.getElementById('session-speed').classList.contains('unknown')||!document.getElementById('generation-speed').textContent.includes('tok/s')) throw new Error('Token speed did not render');
       if(!estimatedLiveRate||!finalExactRate) throw new Error('Live/final token rate was not emitted');
       const file = await window.forge.readFile({path:'hello.js'});
       if(!file.content.includes('42')) throw new Error('Write did not happen');
@@ -1494,6 +1556,9 @@ async function smokeTest() {
   result.liveFiles = await require('./core/smoke-live-files.cjs')({ win, output, dataDir });
   result.sessionMetrics = await require('./core/smoke-session-metrics.cjs')({ win, output });
   result.appearance = await require('./core/smoke-appearance.cjs')({ win, output, dataDir });
+  result.taskHistory = await require('./core/smoke-task-history.cjs')({ win, output, dataDir });
+  result.codeDiff = await require('./core/smoke-code-diff.cjs')({ win, output, dataDir });
+  result.composerApproval = await require('./core/smoke-composer-approval.cjs')({ win, output, dataDir });
   if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
   await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
   console.log('FORGEDESK_SMOKE_OK ' + JSON.stringify({ version: result.version, status: result.status, modelRounds: result.modelRounds, integration: result.integration.status, events: [...new Set(result.events)] }));

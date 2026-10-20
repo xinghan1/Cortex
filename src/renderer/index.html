@@ -10,10 +10,17 @@
   <link rel="stylesheet" href="./workbench.css">
   <link rel="stylesheet" href="./sessions.css">
   <link rel="stylesheet" href="./glass.css">
+  <link rel="stylesheet" href="./file-icons.css">
+  <link rel="stylesheet" href="./task-history.css">
+  <link rel="stylesheet" href="./code-diff.css">
+  <link rel="stylesheet" href="./composer-approval.css">
   <script src="./markdown.js" defer></script>
   <script src="./permissions.js" defer></script>
   <script src="./browser.js" defer></script>
   <script src="./sessions.js" defer></script>
+  <script src="./file-icons.js" defer></script>
+  <script src="./task-history.js" defer></script>
+  <script src="./code-diff.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./appearance.js" defer></script>
   <script src="./menu.js" defer></script>
@@ -62,6 +69,7 @@
         <div class="composer-area">
           <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button small" aria-label="关闭提示">×</button></div>
           <section id="pending-prompts" class="pending-prompts" aria-label="待发送内容" hidden><div class="pending-heading"><div><strong id="pending-count">待发送</strong><span id="pending-status"></span></div><button id="resume-pending" class="button" type="button" hidden>继续发送</button></div><div id="pending-items" class="pending-items"></div></section>
+          <section id="composer-approval" class="composer-approval" aria-label="待批准的操作" aria-live="polite" hidden></section>
           <form id="task-form" class="composer">
             <label for="task-input" class="sr-only">输入编程任务</label>
             <div id="attachment-drafts" class="attachment-drafts" aria-label="待发送图片" hidden></div>
@@ -103,6 +111,7 @@
             <div id="session-metrics" class="session-metrics" role="group" aria-label="当前会话统计">
               <div class="session-metrics-details">
                 <span id="session-rounds" class="session-metric" title="只统计已实际发送的用户消息，待发送内容不计入">— 轮对话</span>
+                <span id="session-speed" class="session-metric session-speed unknown" title="模型输出速度；尚无可用输出速率时显示 —。"><strong id="generation-speed">— tok/s</strong></span>
                 <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">—</strong></span>
                 <span id="session-total" class="session-metric">本会话 <strong id="session-total-value">—</strong><span>Token</span></span>
               </div>

@@ -37,6 +37,26 @@ test('short sessions make no compaction request or notice', async () => {
   assert.equal(events.some(event => event.type.startsWith('context-')), false);
 });
 
+test('a catalog one-million-token model uses its capacity instead of the legacy character limit', async () => {
+  const messages = history(), original = structuredClone(messages), events = [], checkpoint = {};
+  let requests = 0;
+  await runAgent(options({ messages, config: { ...config, modelCapabilities: { contextWindow: 1_048_576 } },
+    contextCheckpoint: checkpoint, emit: event => events.push(event),
+    requestModel: async request => {
+      requests++;
+      assert.equal(isSummary(request), false);
+      assert.ok(JSON.stringify(request.messages).length > 180_000);
+      assert.equal(request.messages.filter(message => message.role === 'tool').length, 24);
+      assert.equal(request.messages[2].providerState.message.reasoning_content, 'private-completed-reasoning-0');
+      return reply('Finished without unnecessary compaction.');
+    },
+  }));
+  assert.equal(requests, 1);
+  assert.equal(events.some(event => event.type.startsWith('context-')), false);
+  assert.deepEqual(checkpoint, {});
+  assert.deepEqual(messages.slice(0, original.length), original);
+});
+
 test('a real local HTTP provider summarizes a long completed tool result and continues without repeating the tool', { timeout: 5000 }, async t => {
   const messages = [{ role: 'user', content: 'Inspect large.txt and report the actual result.' }];
   const events = [], records = [], bodies = [], checkpoint = {}, order = [], contextSamples = [];
@@ -66,7 +86,7 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  await runAgent(options({ messages, config: { ...config, modelCapabilities: { contextWindow: 1000, contextWindowKind: 'total' }, baseUrl: `http://127.0.0.1:${server.address().port}` },
+  await runAgent(options({ messages, config: { ...config, modelCapabilities: { contextWindow: 64_000, contextWindowKind: 'total' }, baseUrl: `http://127.0.0.1:${server.address().port}` },
     contextCheckpoint: checkpoint, emit: event => { events.push(event); if (event.type === 'context-compacted') order.push('notice'); },
     onUsage: async record => records.push(record),
     onContextUsage: sample => contextSamples.push(sample),
@@ -82,7 +102,7 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   assert.equal(records.filter(record => record.purpose === 'context-compaction').length, 1);
   assert.deepEqual(records.map(record => record.inputTokens), [10, 20, 30]);
   assert.deepEqual(contextSamples.filter(sample => sample.status === 'reported').map(sample => sample.usedTokens), [10, 30]);
-  assert.equal(contextSamples.at(-1).limit, 1000);
+  assert.equal(contextSamples.at(-1).limit, 64_000);
   assert.equal(contextSamples.at(-1).limitKind, 'total');
   assert.ok(contextSamples.filter(sample => sample.status === 'estimated').length === 2);
   assert.deepEqual(events.filter(event => event.type === 'usage').at(-1), { type: 'usage', inputTokens: 60, outputTokens: 6 });

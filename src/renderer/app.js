@@ -32,6 +32,7 @@ let filesRequest = 0;
 let sessionRequest = 0;
 let reasoningSaving = false;
 let latestTelemetry = null;
+let sessionTokenRate = null;
 let taskActivityTimer = null;
 let activeTaskActivity = null;
 let settingsSaving = false;
@@ -105,6 +106,9 @@ let editorSizeRule = null;
 const expandedDirectories = new Set();
 const chatgptDisabledControls = new Map();
 const approvals = new Map();
+let composerApprovalFocus = null;
+let composerApprovalEpoch = 0;
+let composerApprovalSequence = 0;
 let browserController, permissionControls, sessionControls;
 let contextCompacting = false;
 const contextCompactionNotices = new Set();
@@ -258,7 +262,7 @@ function activateWorkspace(state, session) {
     for (const event of live) if (!event.type?.startsWith('terminal-')) handleEvent({ ...event, workspaceId: state.workspaceId });
     if (!live.length && active?.streamText) handleEvent({ type: 'text-delta', text: active.streamText, replace: true, workspaceId: state.workspaceId });
   } finally { restoringWorkspace = false; }
-  for (const event of state.pendingApprovals || []) if (!approvals.has(event.id)) approvalRequest(event);
+  syncComposerApprovals(state.pendingApprovals || []);
   if (active?.telemetry) updateTelemetry(active.telemetry);
   if (state.activeTask?.compacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
   if (!state.activeTask?.running) {
@@ -482,6 +486,7 @@ function terminalSnapshot(event) {
 function handleTerminalEvent(event) {
   if (event.type === 'terminal-start') {
     terminalRunning = true;
+    setSessionTokenRate(null);
     terminalCurrentId = event.id;
     setTerminalOpen(true);
     ensureTerminalRun(event.id, event.command || event.text || '');
@@ -498,8 +503,7 @@ function handleTerminalEvent(event) {
       terminalCurrentId = null;
       $('terminal-status').textContent = labels[event.status] || '已结束';
       $('run-status').textContent = '准备就绪';
-      for (const approval of approvals.values()) approval.actions.replaceWith(element('div', 'approval-resolved', '终端任务已结束，此请求已失效'));
-      approvals.clear();
+      clearComposerApprovals();
       if (!restoringWorkspace) {
         refreshSelectedFile();
         if (appState?.workspace) loadFiles();
@@ -1033,6 +1037,7 @@ function refreshControlLocks() {
   if (appState) sessionControls?.update({ ...appState, sessionId: sessionId || appState.sessionId, busy: contextBusy() || editorSaving, authBusy: isChatGPTBusy() });
   const busy = contextBusy() || editorSaving;
   $('task-form').classList.toggle('has-active-task', running);
+  renderComposerApproval({ restoreFocus: false });
   $('task-input').disabled = terminalRunning || (running && taskKind === 'undo') || isChatGPTBusy();
   $('task-input').placeholder = running ? '可继续输入，发送后加入待发送列表…' : '描述需要完成的任务…';
   $('send-button').hidden = false;
@@ -1413,6 +1418,7 @@ function renderSessionMetrics(metrics) {
   context.setAttribute('aria-valuetext', contextTitle.replace(/\n/g, '，'));
   if (contextPercent === null) context.removeAttribute('aria-valuenow');
   else context.setAttribute('aria-valuenow', String(metrics.contextPercent));
+  renderSessionTokenRate();
 }
 
 function resetTelemetry() {
@@ -1421,28 +1427,60 @@ function resetTelemetry() {
   taskActivityTimer = null;
   activeTaskActivity = null;
   latestTelemetry = null;
+  setSessionTokenRate(null);
 }
 
 function hasTokenRate(event) {
   return typeof event?.tokensPerSecond === 'number' && Number.isFinite(event.tokensPerSecond) && event.tokensPerSecond > 0;
 }
 
+function sessionTokenRateIdentity() {
+  return `${currentWorkspaceId()}\n${appState?.sessionId || sessionId || ''}`;
+}
+
+function setSessionTokenRate(event) {
+  sessionTokenRate = hasTokenRate(event) ? { identity: sessionTokenRateIdentity(), event: { ...event } } : null;
+  renderSessionTokenRate();
+}
+
+function renderSessionTokenRate() {
+  const metric = $('session-speed'), speed = $('generation-speed');
+  if (!metric || !speed) return;
+  if (sessionTokenRate?.identity !== sessionTokenRateIdentity()) sessionTokenRate = null;
+  const event = sessionTokenRate?.event;
+  const known = hasTokenRate(event);
+  metric.classList.toggle('unknown', !known);
+  if (!known) {
+    speed.textContent = '— tok/s';
+    metric.title = '模型输出速度；等待、工具执行和审批期间不显示实时速度。尚无可用输出速率时显示 —。';
+  } else {
+    const rate = event.tokensPerSecond.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    speed.textContent = `${event.estimated ? '≈' : ''}${rate} tok/s`;
+    const output = event.estimated ? count(event.estimatedOutputTokens) : count(event.outputTokens);
+    metric.title = `模型请求平均输出速度，排除工具执行与审批等待。\n${event.estimated ? '估算' : 'API 回报'}输出：${output.toLocaleString('en-US')} Token\n任务总时长：${(Math.max(0, Number(event.elapsedMs) || 0) / 1000).toFixed(1)} 秒${event.estimated ? '\n估算速度不计入用量统计。' : ''}`;
+  }
+  metric.setAttribute('aria-label', `输出速度：${speed.textContent}。${metric.title.replace(/\n/g, '，')}`);
+}
+
 function showTokenRate(event, activity = activeTaskActivity) {
   if (!activity) return;
   const { speed, separator } = activity;
+  // Keep per-run values available for restoration, with one visible rate in
+  // the composer statistics rather than repeating it beside every duration.
+  speed.hidden = true; separator.hidden = true;
+  if (activity === activeTaskActivity) setSessionTokenRate(event);
   if (!hasTokenRate(event)) { speed.hidden = true; separator.hidden = true; return; }
   const rate = event.tokensPerSecond.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   speed.textContent = event.estimated ? `≈${rate} tok/s` : `${rate} tok/s`;
   const output = event.estimated ? count(event.estimatedOutputTokens) : count(event.outputTokens);
   speed.title = `模型请求平均输出速度，排除工具执行与审批等待。\n${event.estimated ? '估算' : 'API 回报'}输出：${output.toLocaleString('en-US')} Token\n任务总时长：${(Math.max(0, Number(event.elapsedMs) || 0) / 1000).toFixed(1)} 秒${event.estimated ? '\n估算速度不计入用量统计。' : ''}`;
-  speed.hidden = false;
-  separator.hidden = false;
 }
 
 function updateTelemetry(event) {
   if (event.runId && activeTaskActivity?.runId && event.runId !== activeTaskActivity.runId) return;
   latestTelemetry = event;
   if (!running || !activeTaskActivity) return;
+  if (event.phase === 'waiting') { activeTaskActivity.lastAssistant = null; activeTaskActivity.lastAssistantConfirmed = false; }
   if (Number.isFinite(event.elapsedMs) && event.elapsedMs >= 0) activeTaskActivity.elapsedFloor = Math.max(activeTaskActivity.elapsedFloor, event.elapsedMs);
   const phaseLabels = { waiting: '等待模型', thinking: '正在思考', generating: '正在生成', tool: '正在执行工具', approval: '等待你的确认', completed: '模型已返回' };
   if (contextCompacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
@@ -1451,7 +1489,7 @@ function updateTelemetry(event) {
     if (!preserveToolLabel) setTaskActivityPhase(event.phase, phaseLabels[event.phase]);
   }
   if (hasTokenRate(event)) activeTaskActivity.lastRate = { ...event };
-  if (['generating', 'thinking', 'completed'].includes(event.phase)) showTokenRate(event);
+  if (!contextCompacting && ['generating', 'thinking', 'completed'].includes(event.phase)) showTokenRate(event);
   else showTokenRate(null);
   renderTaskActivityElapsed();
 }
@@ -1469,11 +1507,18 @@ function taskElapsed(activity) {
 
 function renderTaskActivityElapsed(activity = activeTaskActivity) {
   if (!activity) return;
-  activity.elapsed.textContent = activityDuration(taskElapsed(activity));
+  const duration = taskElapsed(activity);
+  const seconds = Math.max(0, Math.floor(duration / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  activity.elapsed.textContent = activity.status === 'running' ? activityDuration(duration)
+    : `用时${hours ? `${hours}h` : ''}${hours || minutes ? `${minutes}m` : ''}${seconds % 60}s`;
 }
 
 function createTaskActivity(record = {}) {
-  const block = element('section', 'task-activity');
+  const block = element('details', 'task-activity');
+  const summary = element('summary', 'task-activity-summary');
+  const events = element('div', 'task-activity-events');
   const phaseLine = element('div', 'task-activity-phase-line');
   const marker = element('span', 'task-activity-marker', '◌');
   marker.setAttribute('aria-hidden', 'true');
@@ -1485,11 +1530,19 @@ function createTaskActivity(record = {}) {
   const speed = element('span', 'generation-speed task-activity-speed');
   separator.hidden = true;
   speed.hidden = true;
-  meta.append(elapsed, separator, speed);
-  block.append(phaseLine, meta);
+  const chevron = element('span', 'task-history-chevron');
+  chevron.setAttribute('aria-hidden', 'true');
+  meta.append(elapsed, separator, speed, chevron);
+  summary.append(phaseLine, meta);
+  block.append(summary, events);
+  block.open = true;
   const runId = String(record.runId || record.id || '');
   if (runId) block.dataset.runId = runId;
-  return { block, phaseLine, phaseNode: phase, marker, elapsed, separator, speed, runId, phase: 'waiting', lastRate: null, elapsedFloor: 0, startedMono: performance.now(), finishedElapsed: null, status: 'running' };
+  return { block, events, summary, phaseLine, phaseNode: phase, marker, elapsed, separator, speed, runId, phase: 'waiting', lastRate: null, elapsedFloor: 0, startedMono: performance.now(), finishedElapsed: null, status: 'running', lastAssistant: null, lastAssistantConfirmed: false };
+}
+
+function taskProcessTarget() {
+  return activeTaskActivity?.status === 'running' ? activeTaskActivity.events : $('messages');
 }
 
 function moveTaskActivityToEnd() {
@@ -1505,14 +1558,13 @@ function beginTaskActivity(record = {}) {
     return activeTaskActivity;
   }
   clearInterval(taskActivityTimer);
-  const oldSpeed = $('generation-speed');
-  if (oldSpeed) oldSpeed.removeAttribute('id');
   latestTelemetry = null;
   activeTaskActivity = createTaskActivity(record);
   const activity = activeTaskActivity;
+  for (const tool of pendingTools) if (tool.card.parentElement === $('messages')) activity.events.append(tool.card);
   activity.block.classList.add('running');
   activity.block.dataset.status = 'running';
-  activity.speed.id = 'generation-speed';
+  setSessionTokenRate(null);
   const startedAt = typeof record.startedAt === 'number' ? record.startedAt : Date.parse(record.startedAt || '');
   if (Number.isFinite(startedAt) && startedAt <= Date.now()) {
     activity.elapsedFloor = Date.now() - startedAt;
@@ -1546,6 +1598,15 @@ function finishTaskActivity(record = {}) {
   activity.block.dataset.status = activity.status;
   activity.block.classList.remove('running');
   activity.phaseLine.hidden = true;
+  // Only the final assistant reply stays outside the folded operation history.
+  // A later tool-start invalidates an earlier commentary candidate.
+  const answer = activity.lastAssistant;
+  if (activity.lastAssistantConfirmed && answer?.isConnected && activity.events.contains(answer) && answer.querySelector('.message-body')?.textContent.trim()) {
+    activity.block.after(answer);
+  }
+  for (const tool of activity.events.querySelectorAll('details.tool-card')) tool.open = false;
+  activity.block.open = false;
+  if (!activity.events.childElementCount) activity.events.append(element('p', 'task-history-empty', '本轮没有工具操作。'));
   const finalRate = record.telemetry || record.finalTelemetry;
   if (finalRate) activity.lastRate = hasTokenRate(finalRate) ? { ...finalRate, elapsedMs: activity.finishedElapsed } : null;
   else if (hasTokenRate(latestTelemetry)) activity.lastRate = { ...latestTelemetry };
@@ -1574,14 +1635,36 @@ function historicalTaskRecords(session) {
   });
 }
 
-function renderHistoricalTaskActivity(record) {
+function renderHistoricalTaskActivity(record, items = []) {
   const activity = createTaskActivity(record);
   activity.status = ['completed', 'failed', 'stopped'].includes(record.status) ? record.status : 'completed';
   activity.block.dataset.status = activity.status;
   activity.block.dataset.historical = 'true';
   activity.phaseLine.hidden = true;
   activity.finishedElapsed = Number.isFinite(record.elapsedMs) ? record.elapsedMs : record.durationMs;
+  const tools = [];
+  for (const item of items) {
+    if (item.type === 'message' && item.message.content) addMessage(item.message.role, item.message.content, false, { ...item.message, target: activity.events, historical: true });
+    else if (item.type === 'event') {
+      const event = item.event;
+      if (event.type === 'tool-start') {
+        const tool = createToolCard(event);
+        activity.events.append(tool.card); tools.push(tool);
+      } else if (event.type === 'tool-result') {
+        if (!tools.some(tool => event.toolCallId ? tool.toolCallId === event.toolCallId : tool.name === event.name)) {
+          const tool = createToolCard({ name: event.name, args: {}, toolCallId: event.toolCallId });
+          activity.events.append(tool.card); tools.push(tool);
+        }
+        completeTool(event, { tools, updateActivity: false });
+      } else if (event.type === 'context-compacted') appendContextCompactionNotice(event, activity.events);
+      else if (event.type === 'command-output') activity.events.append(element('pre', 'command-output', event.text || ''));
+    }
+  }
+  tools.forEach(tool => { tool.card.classList.remove('running'); tool.badge.textContent = '已结束'; });
+  if (!activity.events.childElementCount) activity.events.append(element('p', 'task-history-empty', '此记录未保留可展开的操作明细。'));
+  activity.block.open = false;
   showTokenRate(record.telemetry || record.finalTelemetry, activity);
+  if (!activeTaskActivity) setSessionTokenRate(record.telemetry || record.finalTelemetry);
   renderTaskActivityElapsed(activity);
   $('messages').append(activity.block);
 }
@@ -1605,8 +1688,8 @@ function toolActivity(name, args, completed = false) {
     browser_screenshot: completed ? '已保存网页截图' : '正在截取网页'
   };
   const label = labels[id] || (completed ? '工具已返回' : '正在执行工具');
-  const path = typeof args?.path === 'string' ? args.path.slice(0, 220) : '';
-  return path ? `${label} · ${path}` : label;
+  const detail = typeof args?.path === 'string' ? args.path : id === 'run_command' ? args?.command : args?.url;
+  return typeof detail === 'string' && detail ? `${label} · ${detail.replace(/\s+/g, ' ').slice(0, 220)}` : label;
 }
 
 function renderText(container, text) {
@@ -1641,8 +1724,13 @@ function addMessage(role, text, streaming = false, metadata = {}) {
     header.append(element('span', 'message-avatar', '✳'), element('span', '', 'Synora code'));
     message.append(header, body);
   }
-  $('messages').append(message);
-  moveTaskActivityToEnd();
+  const target = metadata.target || (role !== 'user' && !metadata.historical ? taskProcessTarget() : $('messages'));
+  target.append(message);
+  if (!metadata.historical && activeTaskActivity?.status === 'running') {
+    activeTaskActivity.lastAssistant = role !== 'user' ? message : null;
+    activeTaskActivity.lastAssistantConfirmed = false;
+  }
+  if (!metadata.target) moveTaskActivityToEnd();
   scrollBottom();
   return { message, body };
 }
@@ -1839,12 +1927,14 @@ function createUserMessageFooter(text, metadata = {}) {
 }
 
 function finishStream(text) {
+  let finished = streamedMessage;
   if (streamedMessage) {
     if (text !== undefined) renderText(streamedMessage.body, text);
     streamedMessage.message.classList.remove('streaming');
     streamedMessage = null;
     streamedText = '';
-  } else if (text) addMessage('assistant', text);
+  } else if (text) finished = addMessage('assistant', text);
+  return finished;
 }
 
 function setRunning(value, metadata = {}) {
@@ -1882,6 +1972,7 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
     if (agentRunning && contextCompacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
     if (terminalRunning) { setTerminalOpen(true); $('terminal-status').textContent = '终端执行中'; }
   }
+  if (syncActiveTask && Array.isArray(state.pendingApprovals)) syncComposerApprovals(state.pendingApprovals);
   syncTextScaleState(state.textScale);
   const identity = activeCatalogIdentity(state);
   if (oldIdentity !== identity) invalidateCatalogs();
@@ -1978,7 +2069,7 @@ function createTree(files) {
     row.setAttribute('role', 'treeitem');
     if (selectedEntry?.path === file.path) { row.classList.add('selected'); selectedRow = row; }
     const arrow = element('span', 'file-arrow', file.type === 'directory' ? '›' : '');
-    row.append(arrow, element('span', 'file-icon', file.type === 'directory' ? '▱' : '◇'), element('span', 'file-name', file.name));
+    row.append(arrow, window.ForgeFileIcons.create(file.name, file.type), element('span', 'file-name', file.name));
     row.title = file.path;
     row.addEventListener('focus', () => selectFileEntry(file, row));
     row.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); selectFileEntry(file, row); row.focus(); showFileContextMenu(event.clientX, event.clientY); });
@@ -2587,7 +2678,7 @@ function clearConversation() {
   pendingTools = [];
   commandOutput = null;
   changes = [];
-  approvals.clear();
+  clearComposerApprovals({ restoreFocus: false });
   renderChanges();
 }
 
@@ -2625,7 +2716,7 @@ async function loadSession(id) {
   } catch (error) { notice(errorText(error), true); }
 }
 
-function appendContextCompactionNotice(event) {
+function appendContextCompactionNotice(event, target = taskProcessTarget()) {
   const key = `${event.runId || ''}:${event.count || 0}:${event.throughIndex || 0}:${event.messageIndex || 0}`;
   if (contextCompactionNotices.has(key)) return;
   contextCompactionNotices.add(key);
@@ -2633,8 +2724,14 @@ function appendContextCompactionNotice(event) {
   note.setAttribute('role', 'status');
   note.dataset.count = String(event.count || 1);
   note.append(element('span', 'context-compaction-mark', '↻'), element('span', 'context-compaction-message', '上下文已自动压缩'));
-  if (Number.isFinite(event.beforeChars) && Number.isFinite(event.afterChars)) note.title = `发送给模型的上下文：${event.beforeChars.toLocaleString()} → ${event.afterChars.toLocaleString()} 字符；完整聊天记录保留。`;
-  $('messages').append(note);
+  if (event.budgetMode === 'model-capacity' && Number.isFinite(event.contextLimit) && Number.isFinite(event.triggerTokens)) {
+    const usage = Number.isFinite(event.estimatedBeforeTokens) && Number.isFinite(event.estimatedAfterTokens)
+      ? `预算估算：≈${event.estimatedBeforeTokens.toLocaleString()} → ≈${event.estimatedAfterTokens.toLocaleString()} Token。` : '';
+    note.title = `模型${event.contextLimitKind === 'input' ? '输入上限' : '上下文容量'}：${event.contextLimit.toLocaleString()} Token；自动压缩阈值：≈${event.triggerTokens.toLocaleString()} Token。${usage}按当前请求预算触发，不按会话累计消耗触发；完整聊天记录保留。`;
+  } else if (Number.isFinite(event.beforeChars) && Number.isFinite(event.afterChars)) {
+    note.title = `${event.budgetMode === 'fallback-characters' ? '模型未提供有效容量，使用保守的本地字符阈值。' : ''}发送给模型的上下文：${event.beforeChars.toLocaleString()} → ${event.afterChars.toLocaleString()} 字符；完整聊天记录保留。`;
+  }
+  target.append(note);
 }
 
 function renderSessionSnapshot(session) {
@@ -2650,17 +2747,18 @@ function renderSessionSnapshot(session) {
   const records = historicalTaskRecords(session);
   const compactions = (session.events || []).filter(event => event.type === 'context-compacted');
   const renderedCompactions = new Set();
-  const rendered = new Set();
-  (session.messages || []).forEach((message, index) => {
+  const blocks = window.ForgeTaskHistory.project(session, records);
+  blocks.forEach((block) => {
+    const index = block.type === 'message' ? block.index : block.record.messageStartIndex;
     compactions.forEach((event) => {
       if (!renderedCompactions.has(event) && Number.isInteger(event.messageIndex) && event.messageIndex <= index) { appendContextCompactionNotice(event); renderedCompactions.add(event); }
     });
-    if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || (message.role === 'user' && messageImageAttachments(message.attachments).length))) addMessage(message.role, message.content, false, { id: message.id, source: message.source, createdAt: message.createdAt, attachments: message.attachments });
-    records.forEach((record) => {
-      if (!rendered.has(record) && Number.isInteger(record.messageIndex) && record.messageIndex <= index) { renderHistoricalTaskActivity(record); rendered.add(record); }
-    });
+    if (block.type === 'run') renderHistoricalTaskActivity(block.record, block.items);
+    else {
+      const message = block.message;
+      if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || (message.role === 'user' && messageImageAttachments(message.attachments).length))) addMessage(message.role, message.content, false, { ...message, historical: true });
+    }
   });
-  records.forEach((record) => { if (!rendered.has(record)) renderHistoricalTaskActivity(record); });
   compactions.forEach((event) => { if (!renderedCompactions.has(event)) appendContextCompactionNotice(event); });
   restoreTaskActivityFromState();
   renderSessions(appState?.sessions || []);
@@ -2721,22 +2819,43 @@ function addTool(event) {
   updateTelemetry({ phase: 'tool', tokensPerSecond: null });
   setTaskActivityPhase('tool', toolActivity(event.name, event.args));
   commandOutput = null;
-  const card = element('details', 'tool-card running');
-  const summary = element('summary', 'tool-summary');
-  const badge = element('span', 'tool-badge', '执行中');
-  summary.append(element('span', 'tool-mark', '⌘'), element('span', 'tool-title', event.name || '工具调用'), badge);
-  const details = element('div', 'tool-details');
-  details.append(element('div', 'tool-label', '输入参数'), element('pre', '', safeString(event.args)));
-  card.append(summary, details);
-  $('messages').append(card);
-  pendingTools.push({ name: event.name, args: event.args, card, details, badge });
+  if (activeTaskActivity?.status === 'running') { activeTaskActivity.lastAssistant = null; activeTaskActivity.lastAssistantConfirmed = false; }
+  const tool = createToolCard(event);
+  taskProcessTarget().append(tool.card);
+  pendingTools.push(tool);
   moveTaskActivityToEnd();
   scrollBottom();
 }
 
-function completeTool(event) {
-  const index = pendingTools.findIndex((tool) => tool.name === event.name);
-  const tool = index >= 0 ? pendingTools.splice(index, 1)[0] : null;
+function createToolCard(event) {
+  const card = element('details', 'tool-card running');
+  const summary = element('summary', 'tool-summary');
+  const badge = element('span', 'tool-badge', '执行中');
+  const title = element('span', 'tool-title', toolActivity(event.name, event.args));
+  title.title = event.name || '工具调用';
+  const id = String(event.name || '').replace(/（模拟）/g, '');
+  const mark = element('span', 'tool-mark');
+  mark.setAttribute('aria-hidden', 'true');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', id === 'run_command' ? 'M3 4h18v16H3V4Z M7 8l4 4-4 4 M14 16h3'
+    : /^(write_file|replace_in_file|undo_last_change)$/.test(id) ? 'm4 16-1 5 5-1L21 7l-4-4L4 16Z M14 6l4 4'
+    : /screenshot|image/.test(id) ? 'M5 3H2v15 M5 7h17v14H5V7Z M5 18l5-5 5 5 3-3 4 4 M17 10h1'
+    : /^search_/.test(id) ? 'M16 16l5 5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z'
+    : /^browser_/.test(id) ? 'M3 4h18v16H3V4Z M3 9h18 M6 6h1 M10 6h1'
+    : 'M14 3H5v18h14V8l-5-5Z M14 3v5h5 M8 12h8 M8 16h6');
+  svg.append(path); mark.append(svg);
+  summary.append(mark, title, badge);
+  const details = element('div', 'tool-details');
+  details.append(element('div', 'tool-label', '输入参数'), element('pre', '', safeString(event.args)));
+  card.append(summary, details);
+  return { name: event.name, args: event.args, toolCallId: event.toolCallId, card, details, badge, title };
+}
+
+function completeTool(event, { tools = pendingTools, updateActivity = true } = {}) {
+  const index = tools.findIndex(tool => event.toolCallId ? tool.toolCallId === event.toolCallId : tool.name === event.name);
+  const tool = index >= 0 ? tools.splice(index, 1)[0] : null;
   if (!tool) return;
   let result = event.result;
   if (typeof result === 'string') { try { result = JSON.parse(result); } catch { /* Human-readable failures stay in the original tool detail. */ } }
@@ -2745,76 +2864,202 @@ function completeTool(event) {
   const command = String(event.name || '').replace(/（模拟）/g, '') === 'run_command';
   tool.card.classList.remove('running');
   tool.badge.textContent = denied ? '未执行' : failed ? '返回错误' : '已返回';
-  tool.details.append(element('div', 'tool-label', '执行结果'), element('pre', '', safeString(event.result)));
+  tool.title.textContent = toolActivity(event.name, tool.args, true);
+  const edit = event.fileChange;
+  const hasEdit = !denied && !failed && edit && typeof edit.path === 'string' && edit.path
+    && ['before', 'after'].every(key => edit[key] === null || typeof edit[key] === 'string');
+  if (hasEdit && window.ForgeCodeDiff) {
+    tool.card.classList.add('file-edit-card');
+    tool.title.textContent = '已编辑的文件';
+    tool.badge.textContent = edit.after === null ? '已删除' : '已保存';
+    tool.details.classList.add('file-edit-details');
+    const diff = window.ForgeCodeDiff.create(edit, { onCopy: async text => {
+      try { await bridge.copyText({ text }); }
+      catch (error) { notice(errorText(error), true); throw error; }
+    } });
+    const raw = element('details', 'code-diff-raw');
+    raw.append(element('summary', '', '调用参数与结果'));
+    raw.append(element('div', 'tool-label', '输入参数'), element('pre', '', safeString(tool.args)));
+    raw.append(element('div', 'tool-label', '执行结果'), element('pre', '', safeString(event.result)));
+    tool.details.replaceChildren(diff, raw);
+    if (updateActivity) tool.card.open = true;
+  } else tool.details.append(element('div', 'tool-label', '执行结果'), element('pre', '', safeString(event.result)));
   const status = denied ? command ? '命令未执行' : '操作未执行'
     : failed ? '工具未完成，继续处理'
     : command && result?.terminated ? '命令已停止'
     : command && Number.isFinite(result?.exitCode) && result.exitCode !== 0 ? `命令已结束 · 退出代码 ${result.exitCode}`
     : toolActivity(event.name, tool.args, true);
-  setTaskActivityPhase('tool', status);
-  scrollBottom();
+  if (updateActivity) { setTaskActivityPhase('tool', status); scrollBottom(); }
+}
+
+function renderComposerApproval({ focus = false, restoreFocus = true } = {}) {
+  const slot = $('composer-approval');
+  if (!slot) return;
+  const pending = [...approvals.values()].filter(entry => entry.workspaceId === currentWorkspaceId());
+  const current = pending[0];
+  const wasVisible = !slot.hidden;
+  $('task-form').hidden = !!current;
+  $('task-form').inert = !!current;
+  slot.hidden = !current;
+  if (current) {
+    if (slot.firstElementChild !== current.card) slot.replaceChildren(current.card);
+    current.count.textContent = pending.length > 1 ? `待批准 ${pending.length} 项` : '需要你的批准';
+    current.stop.hidden = !(running || terminalRunning);
+    if (focus && !restoringWorkspace && !approvalOverlayOpen()) current.card.focus({ preventScroll: true });
+  } else {
+    slot.replaceChildren();
+    if (wasVisible && restoreFocus && composerApprovalFocus?.workspaceId === currentWorkspaceId()) {
+      const saved = composerApprovalFocus;
+      const target = saved.node?.isConnected && !saved.node.disabled && !saved.node.closest('[hidden]') ? saved.node : $('task-input');
+      if (!target.disabled) {
+        target.focus({ preventScroll: true });
+        if (target === $('task-input') && Number.isInteger(saved.start)) target.setSelectionRange(saved.start, saved.end);
+      }
+    }
+    composerApprovalFocus = null;
+  }
+}
+
+function clearComposerApprovals({ restoreFocus = true } = {}) {
+  ++composerApprovalEpoch;
+  for (const entry of approvals.values()) {
+    entry.reject.disabled = true; entry.accept.disabled = true;
+    entry.stop.disabled = true;
+  }
+  approvals.clear();
+  renderComposerApproval({ restoreFocus });
+}
+
+function resolveComposerApproval(id, approved, { expired = false } = {}) {
+  const entry = approvals.get(id);
+  if (!entry || entry.workspaceId !== currentWorkspaceId()) return;
+  entry.reject.disabled = true; entry.accept.disabled = true; entry.stop.disabled = true;
+  approvals.delete(id);
+  const change = changes.find(value => value.id === id);
+  if (change) { change.status = expired ? '请求已失效 · 未批准' : approved ? '已批准 · 请查看工具执行结果' : '已拒绝'; renderChanges(); }
+  if (running) setTaskActivityPhase(approved && !expired ? 'tool' : 'waiting', expired ? '批准请求已失效' : approved ? entry.event.kind === 'command' ? '正在运行命令' : entry.event.kind === 'browser' ? '正在操作浏览器' : '正在写入文件' : '操作已拒绝，等待模型');
+  renderComposerApproval({ focus: true });
+  $('run-status').textContent = approvals.size ? '等待你的确认' : running ? '任务进行中' : terminalRunning ? '终端执行中' : '准备就绪';
+}
+
+function syncComposerApprovals(pending) {
+  const entries = Array.isArray(pending) ? pending.filter(event => event && typeof event.id === 'string' && belongsToCurrentWorkspace(event)) : [];
+  const retained = new Set(entries.map(event => event.id));
+  for (const [id, entry] of approvals) if (entry.workspaceId !== currentWorkspaceId() || !retained.has(id)) {
+    entry.accept.disabled = true; entry.reject.disabled = true; entry.stop.disabled = true; approvals.delete(id);
+  }
+  for (const event of entries) if (!approvals.has(event.id)) approvalRequest(event);
+  renderComposerApproval();
+}
+
+function approvalOverlayOpen() {
+  return !!document.querySelector('dialog[open]') || ['app-menu-popup', 'app-menu-submenu', 'file-context-menu', 'permission-popup', 'reasoning-popup', 'project-dropdown', 'session-dropdown'].some(id => $(id) && !$(id).hidden);
 }
 
 function approvalRequest(event) {
+  if (!event || typeof event.id !== 'string' || !event.id || !belongsToCurrentWorkspace(event) || approvals.has(event.id)) return;
   const workspaceId = currentWorkspaceId();
+  const epoch = composerApprovalEpoch;
+  if (!approvals.size) composerApprovalFocus = { workspaceId, node: document.activeElement, start: $('task-input').selectionStart, end: $('task-input').selectionEnd };
   finishStream();
-  showConversation();
-  const card = element('article', 'approval-card');
+  closeReasoningPopup();
+  const card = element('article', 'approval-card composer-approval-card');
+  card.tabIndex = -1;
+  card.dataset.approvalId = event.id;
   const header = element('div', 'approval-header');
-  header.append(element('span', 'approval-icon', '◇'), element('strong', '', event.title || (event.kind === 'command' ? '确认执行终端命令' : '确认写入文件')));
+  const type = event.kind === 'command' ? '终端' : event.kind === 'browser' ? '浏览器' : '编辑文件';
+  const count = element('span', 'composer-approval-count');
+  const title = element('h2', 'composer-approval-title', event.title || (event.kind === 'command' ? '允许运行这条命令吗？' : event.kind === 'browser' ? '允许执行这次网页操作吗？' : '允许修改这个文件吗？'));
+  header.append(element('span', 'approval-icon', '◇'), title, count);
   const body = element('div', 'approval-body');
+  body.id = `composer-approval-body-${++composerApprovalSequence}`;
   body.tabIndex = 0;
-  body.setAttribute('aria-label', '操作详情，可滚动查看完整内容');
-  card.append(header, body);
-  body.append(element('div', 'approval-detail', event.detail || '请查看以下操作，确认后继续。'));
+  body.setAttribute('aria-label', '待批准的操作详情，可展开和滚动查看完整内容');
+  body.append(element('div', 'approval-detail', event.detail || '请查看操作详情，再决定是否允许本次操作。'));
   if (event.path) body.append(element('div', 'approval-path', `${event.kind === 'command' ? '执行目录' : '文件路径'}：${event.path}`));
-  if (event.kind === 'command') body.append(element('pre', 'approval-command', event.command || '（未提供命令）'));
-  else if (event.kind === 'browser') {
-    body.append(element('pre', 'approval-command', [event.url, event.selector, event.action].filter(Boolean).join('\n')));
-  } else {
+  if (event.kind === 'command' || event.kind === 'browser') body.append(element('pre', 'approval-command', event.kind === 'command' ? event.command || '（未提供命令）' : [event.url, event.selector, event.action].filter(Boolean).join('\n')));
+  else {
+    body.append(element('p', 'composer-approval-proposal', '待批准的修改 · 尚未写入文件'));
+    if (window.ForgeCodeDiff?.create && (event.before === null || typeof event.before === 'string') && (event.after === null || typeof event.after === 'string')) body.append(window.ForgeCodeDiff.create(event));
+    const full = element('details', 'composer-approval-full');
+    full.append(element('summary', '', '查看完整修改前后内容'));
     const diff = element('div', 'approval-diff');
     diff.append(diffSide('修改前 · 完整内容', event.before, 'before'), diffSide('修改后 · 完整内容', event.after, 'after'));
-    body.append(diff);
+    full.append(diff); body.append(full);
     changes.push({ ...event, status: '等待确认' });
     renderChanges();
-    showPreviewTab('changes');
   }
+  const expand = element('button', 'composer-approval-expand', '展开');
+  expand.type = 'button';
+  expand.setAttribute('aria-controls', body.id);
+  expand.setAttribute('aria-expanded', 'false');
+  expand.addEventListener('click', () => {
+    const expanded = card.classList.toggle('is-expanded');
+    expand.textContent = expanded ? '收起' : '展开';
+    expand.setAttribute('aria-expanded', String(expanded));
+  });
+  const preview = element('div', 'composer-approval-preview');
+  preview.append(body, expand);
   const actions = element('div', 'approval-actions');
-  actions.append(element('span', '', '由你决定是否继续'));
-  const reject = element('button', 'button approval-reject', '拒绝');
-  const accept = element('button', 'button approval-accept', event.kind === 'command' ? '允许执行' : event.kind === 'browser' ? '允许操作' : '允许写入');
-  if (event.kind === 'command' && !event.command) accept.disabled = true;
-  const respond = async (approved) => {
-    reject.disabled = true;
-    accept.disabled = true;
+  const status = element('span', 'composer-approval-status', appState?.permissionMode === 'assist'
+    ? `帮我批准：此${event.kind === 'command' ? '命令' : '操作'}不在自动批准范围` : '由你决定是否继续');
+  status.setAttribute('role', 'status');
+  const stop = element('button', 'button composer-approval-stop', '停止任务');
+  const reject = element('button', 'button approval-reject');
+  const accept = element('button', 'button approval-accept');
+  for (const button of [stop, reject, accept]) button.type = 'button';
+  reject.append(document.createTextNode('拒绝 '), element('kbd', '', 'Esc'));
+  accept.append(document.createTextNode(event.kind === 'command' ? '允许执行 ' : event.kind === 'browser' ? '允许操作 ' : '允许写入 '), element('kbd', '', '↵'));
+  accept.disabled = event.kind === 'command' && !event.command;
+  const entry = { event, workspaceId, epoch, card, count, actions, status, stop, reject, accept, submitting: false };
+  const current = () => workspaceId === currentWorkspaceId() && epoch === composerApprovalEpoch && approvals.get(event.id) === entry && $('composer-approval').firstElementChild === card;
+  const respond = async approved => {
+    if (!current() || entry.submitting || (approved && event.kind === 'command' && !event.command)) return;
+    entry.submitting = true; reject.disabled = true; accept.disabled = true; stop.disabled = true;
+    status.textContent = '正在提交…';
+    status.classList.remove('error');
     try {
-      await bridge.respondApproval({ id: event.id, approved });
-      if (workspaceId !== currentWorkspaceId()) return;
-      actions.replaceWith(element('div', 'approval-resolved', approved ? (terminalRunning ? '✓ 已批准，请在底部终端查看结果' : '✓ 已批准，等待工具返回执行结果') : '× 已拒绝此操作'));
-      approvals.delete(event.id);
-      if (running) setTaskActivityPhase(approved ? 'tool' : 'waiting', approved ? event.kind === 'command' ? '正在运行命令' : '正在写入文件' : '操作已拒绝，等待模型');
-      const change = changes.find((entry) => entry.id === event.id);
-      if (change) { change.status = approved ? '已批准 · 请查看工具执行结果' : '已拒绝'; renderChanges(); }
-      $('run-status').textContent = running ? '任务进行中' : terminalRunning ? '终端执行中' : '准备就绪';
+      const accepted = await bridge.respondApproval({ id: event.id, approved });
+      if (!current()) return;
+      resolveComposerApproval(event.id, approved, { expired: accepted === false });
     } catch (error) {
-      if (workspaceId !== currentWorkspaceId()) return;
-      reject.disabled = false; accept.disabled = false; notice(errorText(error), true);
+      if (!current()) return;
+      entry.submitting = false; reject.disabled = false; accept.disabled = event.kind === 'command' && !event.command; stop.disabled = false;
+      status.textContent = errorText(error);
+      status.classList.add('error');
     }
   };
   reject.addEventListener('click', () => respond(false));
   accept.addEventListener('click', () => respond(true));
-  actions.append(reject, accept);
-  card.append(actions);
-  approvals.set(event.id, { actions, reject, accept });
-  $('messages').append(card);
+  stop.addEventListener('click', async () => {
+    if (!current() || entry.submitting) return;
+    entry.submitting = true; reject.disabled = true; accept.disabled = true; stop.disabled = true;
+    status.textContent = '正在停止…';
+    try {
+      await (terminalRunning ? bridge.stopTerminal() : bridge.stopTask());
+      if (current()) clearComposerApprovals();
+    } catch (error) {
+      if (!current()) return;
+      entry.submitting = false; reject.disabled = false; accept.disabled = event.kind === 'command' && !event.command; stop.disabled = false;
+      status.textContent = errorText(error); status.classList.add('error');
+    }
+  });
+  card.addEventListener('keydown', keyboard => {
+    if (!current() || !card.contains(document.activeElement) || keyboard.defaultPrevented || keyboard.repeat || keyboard.isComposing || keyboard.altKey || keyboard.ctrlKey || keyboard.metaKey || keyboard.shiftKey || approvalOverlayOpen()) return;
+    if (keyboard.key === 'Escape') { keyboard.preventDefault(); keyboard.stopPropagation(); respond(false); }
+    else if (keyboard.key === 'Enter' && !keyboard.target.closest('button,summary,a,input,textarea,select,[contenteditable]')) { keyboard.preventDefault(); keyboard.stopPropagation(); respond(true); }
+  });
+  actions.append(status, stop, reject, accept);
+  card.append(header, preview, actions);
+  approvals.set(event.id, entry);
+  renderComposerApproval({ focus: true });
   updateTelemetry({ phase: 'approval', tokensPerSecond: null });
-  if (running) setTaskActivityPhase('approval', event.kind === 'command' ? '等待确认：运行命令' : '等待确认：写入文件');
+  if (running) setTaskActivityPhase('approval', `等待确认：${type}`);
   else $('run-status').textContent = '等待你的确认';
-  moveTaskActivityToEnd();
-  scrollBottom(true);
 }
 
 async function runTask(demo = false, mode = 'queue') {
+  if (approvals.size || !$('composer-approval').hidden) return;
   if (projectSwitching) return;
   if (running && taskKind === 'undo') return;
   if (terminalRunning || promptSubmitting || reasoningSaving || modelSaving || settingsSaving || isChatGPTBusy() || (demo && contextBusy())) return;
@@ -2976,22 +3221,23 @@ function handleEvent(event) {
       renderText(streamedMessage.body, streamedText);
       scrollBottom();
       break;
-    case 'assistant-message': finishStream(event.text || ''); moveTaskActivityToEnd(); scrollBottom(); break;
+    case 'assistant-message': {
+      const response = finishStream(event.text || '');
+      if (activeTaskActivity?.status === 'running') {
+        activeTaskActivity.lastAssistant = response?.message || null;
+        activeTaskActivity.lastAssistantConfirmed = !!response && !(event.toolCallCount > 0);
+      }
+      moveTaskActivityToEnd(); scrollBottom(); break;
+    }
     case 'tool-start': addTool(event); break;
     case 'tool-result': completeTool(event); break;
     case 'approval-request': approvalRequest(event); break;
     case 'approval-resolved': {
-      const approval = approvals.get(event.id);
-      if (approval) {
-        approval.actions.replaceWith(element('div', 'approval-resolved', event.approved ? '✓ 已批准，等待工具返回执行结果' : '× 已拒绝此操作'));
-        approvals.delete(event.id);
-      }
-      const change = changes.find(entry => entry.id === event.id);
-      if (change) { change.status = event.approved ? '已批准 · 请查看工具执行结果' : '已拒绝'; renderChanges(); }
+      resolveComposerApproval(event.id, event.approved === true);
       break;
     }
     case 'command-output':
-      if (!commandOutput) { commandOutput = element('pre', 'command-output'); $('messages').append(commandOutput); }
+      if (!commandOutput) { commandOutput = element('pre', 'command-output'); taskProcessTarget().append(commandOutput); }
       commandOutput.append(document.createTextNode(event.text || ''));
       commandOutput.scrollTop = commandOutput.scrollHeight;
       moveTaskActivityToEnd();
@@ -3011,8 +3257,7 @@ function handleEvent(event) {
       const text = failed ? `任务未完成：${event.error || '发生错误'}` : event.status === 'stopped' ? '任务已停止' : '任务已完成';
       $('run-status').textContent = failed ? '任务失败' : event.status === 'stopped' ? '已停止' : '已完成';
       $('messages').append(element('div', `run-result${failed ? ' failed' : ''}`, `${failed ? '×' : '✓'} ${text}`));
-      for (const approval of approvals.values()) approval.actions.replaceWith(element('div', 'approval-resolved', '任务已结束，此请求已失效'));
-      approvals.clear();
+      clearComposerApprovals();
       pendingTools.forEach((tool) => { tool.card.classList.remove('running'); tool.badge.textContent = '已结束'; });
       pendingTools = [];
       changes.forEach((change) => { if (change.status === '等待确认') change.status = '任务结束 · 未批准'; });
@@ -3107,7 +3352,6 @@ async function undoChange() {
   if ((editorDirty || editorSavePromise) && !(await confirmEditorTransition())) return;
   const workspaceId = currentWorkspaceId();
   $('undo-change').disabled = true;
-  addTool({ name: 'undo_last_change', args: {} });
   try {
     const result = await bridge.undoLastChange();
     if (workspaceId !== currentWorkspaceId()) return;

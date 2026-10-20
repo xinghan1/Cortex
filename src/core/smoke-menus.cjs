@@ -128,7 +128,7 @@ module.exports = async function smokeMenus({ win, output, dataDir }) {
     await click('file','new-chat');await wait(60);
     if((await js('window.forge.getState()')).temporary) throw new Error('Normal chat did not exit temporary mode');
     const terminal=await js(`(async()=>{
-      const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{off();reject(new Error('Terminal timed out'));},10000);const off=window.forge.onEvent(event=>{if(event.type==='approval-request')queueMicrotask(()=>document.querySelector('.approval-card:last-of-type .approval-accept')?.click());if(event.type==='terminal-end'){clearTimeout(timer);off();resolve(event);}});});
+      const done=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{off();reject(new Error('Terminal timed out'));},10000);const off=window.forge.onEvent(event=>{if(event.type==='approval-request')queueMicrotask(()=>{const entry=approvals.get(event.id),slot=document.getElementById('composer-approval');if(!entry||!slot.contains(entry.card)||slot.hidden||!document.getElementById('task-form').hidden){clearTimeout(timer);off();reject(new Error('Terminal decision is missing from the composer'));return;}entry.accept?.click();});if(event.type==='terminal-end'){clearTimeout(timer);off();resolve(event);}});});
       await window.forge.runTerminal({command:'Write-Output "AI_CODE_TERMINAL_OK"',timeoutMs:5000});return await done;
     })()`);
     if(terminal.status!=='completed'||!JSON.stringify(terminal).includes('AI_CODE_TERMINAL_OK')) throw new Error('Real terminal command failed');

@@ -295,6 +295,15 @@ html.browser-panel-open .messages {
   font-weight: 500;
 }
 
+.session-speed {
+  font-variant-numeric: tabular-nums;
+}
+
+.session-speed.unknown strong {
+  color: inherit;
+  font-weight: 400;
+}
+
 .session-metric.partial strong::after {
   content: '*';
   margin-left: 1px;

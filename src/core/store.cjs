@@ -170,8 +170,27 @@ class Store {
   async write(relative, data) {
     const destination = path.join(this.dir, relative);
     const temporary = `${destination}.${randomUUID()}.tmp`;
-    await fs.writeFile(temporary, JSON.stringify(data, null, 2), 'utf8');
-    await fs.rename(temporary, destination);
+    try {
+      await fs.writeFile(temporary, JSON.stringify(data, null, 2), 'utf8');
+      // Windows readers and security scanners can briefly hold the existing
+      // JSON file open. Retry only its atomic replacement, never delete the
+      // destination or relax its permissions to make a save succeed.
+      const retryDelays = process.platform === 'win32' ? [20, 40, 80, 160, 320] : [];
+      let firstLockError;
+      for (let attempt = 0; ; attempt++) {
+        try { await fs.rename(temporary, destination); break; }
+        catch (error) {
+          if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+          firstLockError ||= error;
+          if (attempt >= retryDelays.length) throw firstLockError;
+          await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+        }
+      }
+    } finally {
+      // Clean only the temporary file owned by this invocation. Cleanup must
+      // not replace an original write/rename failure or touch the old JSON.
+      await fs.rm(temporary, { force: true }).catch(() => {});
+    }
   }
   async listSessions() {
     const names = await fs.readdir(path.join(this.dir, 'sessions'));

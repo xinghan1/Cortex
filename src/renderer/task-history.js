@@ -1,0 +1,204 @@
+/* Project the redacted, public chat archive into expandable task histories.
+ * This helper never reads native provider state or evaluates tool arguments. */
+(() => {
+  'use strict';
+
+  const messageFields = ['role', 'content', 'id', 'source', 'createdAt', 'attachments', 'toolCalls', 'localOnly'];
+  const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry'];
+  const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'triggerChars', 'targetChars'];
+  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted']);
+  const pick = (value, fields) => {
+    const result = {};
+    if (value && typeof value === 'object') for (const field of fields) if (Object.prototype.hasOwnProperty.call(value, field)) result[field] = value[field];
+    return result;
+  };
+  const displayMessage = (message, index) => {
+    const clean = pick(message, messageFields);
+    if (Array.isArray(clean.toolCalls)) clean.toolCalls = clean.toolCalls.map(call => pick(call, ['id', 'name', 'arguments']));
+    return { type: 'message', index, message: clean };
+  };
+  const fileChange = value => value && typeof value.path === 'string' && value.path
+    && ['before', 'after'].every(key => value[key] === null || typeof value[key] === 'string') ? pick(value, ['path', 'before', 'after']) : null;
+  const displayEvent = event => {
+    const clean = pick(event, eventFields), change = fileChange(clean.fileChange);
+    if (change) clean.fileChange = change;
+    else delete clean.fileChange;
+    return { type: 'event', event: clean };
+  };
+  const validIndex = (index, length) => Number.isInteger(index) && index >= 0 && index < length;
+  const hasCalls = message => Array.isArray(message?.toolCalls) && message.toolCalls.length > 0;
+
+  function recordsFor(session, supplied) {
+    const records = Array.isArray(supplied) ? supplied : [
+      ...(Array.isArray(session?.taskRuns) ? session.taskRuns : []),
+      ...(Array.isArray(session?.events) ? session.events.filter(event => event?.type === 'run-end') : []),
+    ];
+    const seen = new Set();
+    return records.filter(record => {
+      if (!record || typeof record !== 'object') return false;
+      const key = record.runId || record.id || `${record.startedAt || ''}:${record.messageStartIndex}:${record.messageIndex}:${record.elapsedMs ?? record.durationMs}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function runItems(session, record, messages, finalIndex) {
+    const start = record.messageStartIndex, end = record.messageIndex;
+    const nodes = [], calls = [], pending = [];
+    const changes = new Map((Array.isArray(session.fileEdits) ? session.fileEdits : [])
+      .filter(value => value?.runId === (record.runId || record.id) && typeof value.toolCallId === 'string' && fileChange(value))
+      .map(value => [value.toolCallId, fileChange(value)]));
+    let ordinal = 0;
+    const add = (order, item) => nodes.push({ order, ordinal: ordinal++, item });
+    const event = (value, index) => displayEvent({ ...value, runId: record.runId || record.id, messageIndex: index });
+    const begin = (call, index) => {
+      if (call.start) return;
+      call.order = index * 10 - 3;
+      call.start = event({ type: 'tool-start', name: call.name, args: call.args, toolCallId: call.id }, call.assistantIndex);
+      add(call.order, call.start);
+    };
+    const flush = index => {
+      for (const call of pending) if (!call.start) begin(call, index);
+    };
+    for (let index = start; index <= end; index++) {
+      const message = messages[index];
+      if (message?.role !== 'tool') flush(index);
+      if (message?.role === 'assistant') {
+        if (index !== finalIndex) add(index * 10, displayMessage(message, index));
+        for (const call of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
+          if (!call || typeof call !== 'object') continue;
+          const value = { id: call.id, name: call.name || '工具调用', args: call.arguments, assistantIndex: index, resultIndex: null, start: null, matched: false };
+          calls.push(value); pending.push(value);
+        }
+      } else if (message?.role === 'tool') {
+        const call = pending.find(value => value.resultIndex === null && value.id !== undefined && value.id === message.toolCallId);
+        if (call) {
+          begin(call, index);
+          call.resultIndex = index;
+          call.result = message.content;
+          const completed = event({ type: 'tool-result', name: call.name, result: message.content, toolCallId: call.id,
+            ...(changes.has(call.id) ? { fileChange: changes.get(call.id) } : {}) }, index);
+          call.resultEvent = completed.event;
+          add(index * 10 - 1, completed);
+        } else {
+          // An old/incomplete archive may have a result without its call. Keep
+          // it inspectable instead of silently dropping the stored text.
+          add(index * 10, event({ type: 'tool-result', name: '工具调用', result: message.content, toolCallId: message.toolCallId }, index));
+        }
+      }
+    }
+    flush(end + 1);
+
+    // New runs may keep a bounded per-run log. Older archives retain only the
+    // last 150 session events, so message records remain the source of truth
+    // for tool inputs/results. Event-only demo tools and approval/output
+    // details supplement them, without duplicating real calls.
+    const events = Array.isArray(record.activityEvents) ? record.activityEvents
+      : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []);
+    let currentCall = null, assistantCursor = start, anchor = start;
+    const matchedResults = new Set();
+    for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+      const value = events[eventIndex];
+      if (!value || typeof value !== 'object') continue;
+      if (value.type === 'assistant-message') {
+        for (let index = assistantCursor; index <= end; index++) {
+          if (messages[index]?.role === 'assistant' && messages[index].content === value.text) {
+            anchor = index; assistantCursor = index + 1; break;
+          }
+        }
+        continue;
+      }
+      const fractional = (eventIndex + 1) / (events.length + 1);
+      if (value.type === 'tool-start') {
+        currentCall = calls.find(call => !call.matched && (value.toolCallId ? call.id === value.toolCallId : call.name === value.name)) || null;
+        if (currentCall) { currentCall.matched = true; continue; }
+      } else if (value.type === 'tool-result') {
+        const call = currentCall && (value.toolCallId ? currentCall.id === value.toolCallId : !value.name || currentCall.name === value.name) ? currentCall
+          : calls.find(candidate => !matchedResults.has(candidate) && (value.toolCallId ? candidate.id === value.toolCallId
+            : candidate.name === value.name && (candidate.matched || candidate.result === value.result)));
+        currentCall = null;
+        if (call?.resultIndex !== null && call?.resultIndex !== undefined) {
+          const change = fileChange(value.fileChange);
+          if (change && !call.resultEvent.fileChange) call.resultEvent.fileChange = change;
+          call.matched = true; matchedResults.add(call); anchor = call.resultIndex; continue;
+        }
+      } else if (!extraTypes.has(value.type)) continue;
+
+      if (currentCall && extraTypes.has(value.type)) {
+        // Keep live command output and approvals inside the matching tool,
+        // even when emit-time messageIndex still points at its assistant.
+        add(currentCall.order + 1 + fractional, displayEvent(value));
+      } else {
+        const explicit = validIndex(value.messageIndex, messages.length) && value.messageIndex >= start && value.messageIndex <= end;
+        let order = (explicit ? value.messageIndex : anchor) * 10 + 2 + fractional;
+        if (value.type === 'context-compacted' && explicit) order = value.messageIndex * 10 - 4 + fractional;
+        // Event-only tools/demo steps occur before the final answer.
+        if (finalIndex !== null) order = Math.min(order, finalIndex * 10 - 0.5 + fractional / 4);
+        add(order, displayEvent(value));
+      }
+    }
+    return nodes.sort((left, right) => left.order - right.order || left.ordinal - right.ordinal);
+  }
+
+  function project(session = {}, historicalRecords) {
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const records = recordsFor(session, historicalRecords);
+    const candidates = records.map((record, order) => ({ record, order,
+      valid: validIndex(record.messageStartIndex, messages.length) && validIndex(record.messageIndex, messages.length)
+        && record.messageStartIndex <= record.messageIndex && messages[record.messageStartIndex]?.role === 'user'
+        && !messages.slice(record.messageStartIndex + 1, record.messageIndex + 1).some(message => message?.role === 'user') }));
+    // Guessing which run owns overlapping anchors can hide or reorder user
+    // messages. Keep both histories flat when old metadata is ambiguous.
+    for (let left = 0; left < candidates.length; left++) for (let right = left + 1; right < candidates.length; right++) {
+      const a = candidates[left], b = candidates[right];
+      if (a.valid && b.valid && a.record.messageStartIndex <= b.record.messageIndex && b.record.messageStartIndex <= a.record.messageIndex) a.overlap = b.overlap = true;
+    }
+    const starts = new Map(), legacy = new Map();
+    for (const candidate of candidates) {
+      if (candidate.valid && !candidate.overlap) starts.set(candidate.record.messageStartIndex, candidate.record);
+      else {
+        const anchor = validIndex(candidate.record.messageIndex, messages.length) ? candidate.record.messageIndex : messages.length;
+        const list = legacy.get(anchor) || []; list.push(candidate.record); legacy.set(anchor, list);
+      }
+    }
+    const blocks = [];
+    const standaloneUndo = record => {
+      if (record.kind !== 'undo') return [];
+      const runId = record.runId || record.id;
+      const edits = (Array.isArray(session.fileEdits) ? session.fileEdits : []).filter(value => value?.runId === runId && fileChange(value));
+      const events = (Array.isArray(session.events) ? session.events : []).filter(value => value?.runId === runId && ['tool-start', 'tool-result'].includes(value.type));
+      const items = events.map(value => {
+        const change = edits.find(edit => edit.toolCallId === value.toolCallId);
+        return displayEvent({ ...value, ...(value.type === 'tool-result' && change ? { fileChange: fileChange(change) } : {}) });
+      });
+      for (const edit of edits) if (!events.some(value => value.type === 'tool-result' && value.toolCallId === edit.toolCallId)) {
+        items.push(displayEvent({ type: 'tool-start', runId, name: 'undo_last_change', args: { path: edit.path }, toolCallId: edit.toolCallId }));
+        items.push(displayEvent({ type: 'tool-result', runId, name: 'undo_last_change', toolCallId: edit.toolCallId,
+          result: JSON.stringify({ path: edit.path, message: '最近一次文件修改已撤销。' }), fileChange: fileChange(edit) }));
+      }
+      return items;
+    };
+    const appendLegacy = index => {
+      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: standaloneUndo(record), finalIndex: null, unanchored: true });
+    };
+    for (let index = 0; index < messages.length; index++) {
+      const record = starts.get(index);
+      if (!record) { blocks.push(displayMessage(messages[index], index)); appendLegacy(index); continue; }
+      const end = record.messageIndex, last = messages[end];
+      const finalIndex = last?.role === 'assistant' && !hasCalls(last) && last.localOnly !== true ? end : null;
+      const items = runItems(session, record, messages, finalIndex).map(node => node.item);
+      blocks.push(displayMessage(messages[index], index)); appendLegacy(index);
+      blocks.push({ type: 'run', record: pick(record, recordFields), items, finalIndex });
+      for (let cursor = index + 1; cursor <= end; cursor++) if (cursor !== finalIndex) appendLegacy(cursor);
+      if (finalIndex !== null) { blocks.push(displayMessage(last, finalIndex)); appendLegacy(finalIndex); }
+      index = end;
+    }
+    appendLegacy(messages.length);
+    return blocks;
+  }
+
+  const api = Object.freeze({ project });
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  globalThis.ForgeTaskHistory = api;
+})();

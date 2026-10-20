@@ -25,6 +25,117 @@ test('short contexts do not summarize, mutate checkpoint, or alter messages', as
   assert.deepEqual(checkpoint, {});
 });
 
+test('a declared one-million-token capacity does not compact a modest archive at the legacy character threshold', async () => {
+  const messages = longHistory(), original = structuredClone(messages), checkpoint = {};
+  assert.ok(contextChars(messages) > 180_000);
+  const result = await prepareContext({ messages, checkpoint,
+    modelCapabilities: { contextWindow: 1_048_576, contextWindowKind: 'total' },
+    summarize: () => assert.fail('A small fraction of the advertised context must not cause a paid summary'),
+  });
+  assert.equal(result.compacted, false);
+  assert.deepEqual(checkpoint, {});
+  assert.deepEqual(messages, original);
+  assert.equal(result.messages[1], messages[1], 'Native tool continuation is retained without rewriting');
+});
+
+test('catalog capacity triggers at an estimated 80%, targets 60%, and keeps recent exact tool results', async () => {
+  const messages = [user('Original goal.'), assistant('large'), tool('large', 'X'.repeat(210_000)),
+    assistant('recent'), tool('recent', 'Exact recent result.'), user('Latest requirement.')];
+  const original = structuredClone(messages), checkpoint = {};
+  const result = await prepareContext({ messages, checkpoint,
+    modelCapabilities: { contextWindow: 64_000, contextWindowKind: 'input' },
+    summarize: async ({ source, maxSummaryChars }) => {
+      assert.equal(maxSummaryChars, 19_200);
+      assert.ok(source.length <= 51_200);
+      return 'Read large.js; preserve the exact recent result and latest requirement.';
+    },
+  });
+  assert.equal(result.compacted, true);
+  assert.equal(result.metadata.budgetMode, 'model-capacity');
+  assert.equal(result.metadata.contextLimit, 64_000);
+  assert.equal(result.metadata.contextLimitKind, 'input');
+  assert.equal(result.metadata.triggerTokens, 51_200);
+  assert.equal(result.metadata.targetTokens, 38_400);
+  assert.ok(result.metadata.estimatedBeforeTokens > result.metadata.triggerTokens);
+  assert.ok(result.metadata.estimatedAfterTokens <= result.metadata.targetTokens);
+  assert.equal(result.messages.includes(messages[3]), true);
+  assert.equal(result.messages.includes(messages[4]), true);
+  assert.deepEqual(messages, original);
+});
+
+test('small declared contexts count system and tool overhead and reserve an appropriately sized summary', async () => {
+  const messages = [user('Task.'), assistant('read'), tool('read', 'X'.repeat(24_000)), user('Continue.')];
+  const modelCapabilities = { contextWindow: 8_000 };
+  assert.equal((await prepareContext({ messages, modelCapabilities, summarize: () => assert.fail('Without overhead this input still fits') })).compacted, false);
+  const result = await prepareContext({ messages, modelCapabilities,
+    systemMessages: [{ role: 'system', content: 'S'.repeat(2_000) }],
+    tools: [{ name: 'read_file', description: 'T'.repeat(1_200), parameters: { type: 'object' } }],
+    summarize: async ({ source, maxSummaryChars }) => {
+      assert.equal(maxSummaryChars, 2_400);
+      assert.ok(source.length <= 6_400);
+      return 'The completed read is archived; continue the user task.';
+    },
+  });
+  assert.equal(result.compacted, true);
+  assert.equal(result.metadata.triggerTokens, 6_400);
+  assert.ok(result.metadata.estimatedAfterTokens <= 4_800);
+  const checkpoint = {};
+  await assert.rejects(prepareContext({ messages, checkpoint, modelCapabilities,
+    tools: [{ name: 'oversized_definition', description: 'T'.repeat(40_000) }],
+    summarize: () => assert.fail('Immutable tool overhead alone cannot fit; do not bill for an unusable summary'),
+  }), { code: 'CONTEXT_COMPACTION_LIMIT' });
+  assert.deepEqual(checkpoint, {});
+});
+
+test('native provider payload is included in catalog budgeting but never exposed to the summarizer or modified', async () => {
+  const messages = [user('Continue the completed work.'), { role: 'assistant', content: 'Earlier step completed.', toolCalls: [],
+    providerState: { provider: 'deepseek', message: { reasoning_content: 'R'.repeat(52_000), signature: 'preserve-native-state' } } }];
+  const original = structuredClone(messages);
+  const result = await prepareContext({ messages, modelCapabilities: { contextWindow: 16_000 }, summarize: async ({ source }) => {
+    assert.doesNotMatch(source, /R{100}|preserve-native-state|providerState/);
+    return 'Earlier step completed; continue the original task.';
+  } });
+  assert.equal(result.compacted, true);
+  assert.deepEqual(messages, original);
+  assert.equal(result.messages.some(message => message.providerState), false);
+});
+
+test('large catalog contexts enlarge bounded summary source and preserve the recent tail instead of repeatedly compressing tiny prefixes', async () => {
+  const messages = [user('Complete the project and preserve all user changes.')];
+  for (let index = 0; index < 72; index++) messages.push(assistant(`read-${index}`), tool(`read-${index}`, `File ${index} result\n` + 'X'.repeat(50_000)));
+  messages.push(user('Finish the latest task.'));
+  const original = structuredClone(messages), checkpoint = {};
+  let sourceChars = 0;
+  const result = await prepareContext({ messages, checkpoint, modelCapabilities: { contextWindow: 1_048_576 }, summarize: async ({ source }) => {
+    sourceChars = source.length;
+    assert.ok(source.length > 60_000, 'Large contexts should retain more summary evidence than the legacy fixed source cap');
+    assert.ok(source.length <= 240_000, 'Summary cost remains bounded');
+    return 'The archived file reads completed; continue with the unchanged recent file results and latest task.';
+  } });
+  assert.equal(result.compacted, true);
+  assert.ok(sourceChars > 60_000);
+  assert.ok(result.metadata.estimatedBeforeTokens > 838_860);
+  assert.ok(result.metadata.estimatedAfterTokens <= 629_145);
+  assert.ok(result.messages.includes(messages.at(-2)));
+  assert.ok(result.messages.filter(message => message.role === 'tool').length > 20, 'Retain many recent exact tool results');
+  assert.deepEqual(messages, original);
+  const restored = JSON.parse(JSON.stringify({ messages, checkpoint }));
+  const continued = await prepareContext({ ...restored, modelCapabilities: { contextWindow: 1_048_576 },
+    summarize: () => assert.fail('A restored checkpoint below the catalog trigger must not summarize again') });
+  assert.equal(continued.compacted, false);
+});
+
+test('missing or invalid advertised capacity keeps the conservative character fallback', async () => {
+  for (const contextWindow of [undefined, null, 0, -1, '1048576', Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const result = await prepareContext({ messages: longHistory(), modelCapabilities: { contextWindow }, summarize: async () => 'Read old.js; verify the result.' });
+    assert.equal(result.compacted, true);
+    assert.equal(result.metadata.budgetMode, 'fallback-characters');
+    assert.equal(result.metadata.triggerChars, 180_000);
+    assert.equal(result.metadata.targetChars, 150_000);
+    assert.equal(Object.hasOwn(result.metadata, 'triggerTokens'), false);
+  }
+});
+
 test('a long complete tool batch is summarized while recent native batches remain exact', async () => {
   const messages = longHistory(), original = structuredClone(messages), checkpoint = {};
   let calls = 0;

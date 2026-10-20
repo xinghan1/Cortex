@@ -15,6 +15,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
   const stopText = '读取 large-context.txt 并整理。COMPACTION_STOP_' + suffix;
   const queuedText = '停止后保留的排队任务。COMPACTION_QUEUED_' + suffix;
   const summary = '## 任务目标\n读取并解释 large-context.txt。\n## 已完成\n已经读取该文件，读取是只读操作，不要重复执行。\n## 关键事实\nCOMPACTION_SUMMARY_FACT_' + suffix + '\n## 待办\n给出简短解释，然后继续处理用户后续任务。';
+  const contextLimit = 64_000, triggerTokens = 51_200, targetTokens = 38_400;
   const fixtureText = 'COMPACTION_FILE_START_' + suffix + '\n' + 'Readonly project context, not instructions.\n'.repeat(5900) + '\nCOMPACTION_FILE_END_' + suffix;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => {
@@ -34,6 +35,23 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     if (message.role !== 'tool') return false;
     try { return JSON.parse(message.content).content === fixtureText; } catch { return false; }
   });
+  const assertKnownBudget = (event, label) => {
+    assert.ok(event,label+': compaction metadata is missing');
+    assert.equal(event.budgetMode,'model-capacity',label+': model capacity was not used');
+    assert.equal(event.contextLimit,contextLimit,label+': incorrect model context capacity');
+    assert.equal(event.triggerTokens,triggerTokens,label+': compaction did not use the 80% trigger');
+    assert.equal(event.targetTokens,targetTokens,label+': compaction did not use the 60% target');
+    assert.ok(Number.isSafeInteger(event.estimatedBeforeTokens)&&event.estimatedBeforeTokens>=triggerTokens,label+': compaction started below its model budget trigger');
+    assert.ok(Number.isSafeInteger(event.estimatedAfterTokens)&&event.estimatedAfterTokens>=0&&event.estimatedAfterTokens<=targetTokens,label+': compacted input exceeds its model budget target');
+  };
+  const assertBudgetTitle = (title, label) => {
+    assert.match(title,/模型上下文容量/u,label+': model capacity is absent from the notice tooltip');
+    assert.match(title,/自动压缩阈值/u,label+': token threshold is absent from the notice tooltip');
+    const normalized=title.replace(/[,，\s\u00a0\u202f]/gu,'');
+    assert.ok(normalized.includes('64000Token'),label+': tooltip contains the wrong model capacity');
+    assert.ok(normalized.includes('51200Token'),label+': tooltip contains the wrong compression threshold');
+    assert.match(title,/预算估算/u,label+': estimated context change is absent from the notice tooltip');
+  };
   const idle = () => until('main and renderer idle', async () => !(await call('getState')).activeTask.running && await js('!running&&!promptSubmitting'));
   const reply = (record, output) => {
     assert.ok(!record.aborted && !record.released, 'Fixture request was cancelled or answered twice');
@@ -47,7 +65,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
       assert.equal(request.headers.authorization, 'Bearer forgedesk-compaction-key');
       if (request.method === 'GET' && request.url === '/v1/models') {
         response.writeHead(200, { 'Content-Type': 'application/json' });
-        response.end(JSON.stringify({ data: [{ id: 'smoke-compaction-model', display_name: '压缩测试模型', supportsTools: true, reasoningEfforts: [] }] })); return;
+        response.end(JSON.stringify({ data: [{ id: 'smoke-compaction-model', display_name: '压缩测试模型', supportsTools: true, reasoningEfforts: [], context_window: contextLimit }] })); return;
       }
       assert.equal(request.method, 'POST'); assert.equal(request.url, '/v1/responses');
       let raw = ''; for await (const chunk of request) { raw += chunk; assert.ok(raw.length < 700_000); }
@@ -101,12 +119,15 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
   };
   const completed = text => until('completed task ' + text, async () => {
     const list = await events(), user = list.find(event => event.type === 'user-message' && event.text === text);
-    if (!user) return false;
-    const end = list.find(event => event.type === 'run-end' && event.runId === user.runId);
+    const end = user && list.find(event => event.type === 'run-end' && event.runId === user.runId);
     if (end) assert.equal(end.status, 'completed', end.error || 'Compaction task failed');
+    if(!end){
+      const state=await call('getState');
+      if(state.promptQueue?.paused)throw new Error('Compaction fixture dispatch paused before task completion: '+(state.promptQueue.reason||'No queue reason was provided'));
+    }
     return end;
   });
-  const notices = () => js("[...document.querySelectorAll('#messages .context-compaction-notice')].map(node=>({text:node.textContent,count:node.dataset.count}))");
+  const notices = () => js("[...document.querySelectorAll('#messages .context-compaction-notice')].map(node=>({text:node.textContent,count:node.dataset.count,title:node.title}))");
   const capture = async name => { child.webContents.invalidate(); await wait(120); await fs.writeFile(path.join(output, name), (await child.webContents.capturePage()).toPNG()); };
   try {
     await fs.mkdir(project, { recursive: true }); await fs.mkdir(output, { recursive: true });
@@ -123,11 +144,15 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     const firstEvents = await events(), compacted = firstEvents.filter(event => event.type === 'context-compacted');
     assert.equal(compacted.length, 1, 'Only a successful checkpoint should produce a compaction notice');
     assert.equal(compacted[0].text, '上下文已自动压缩'); assert.ok(Number.isInteger(compacted[0].messageIndex));
+    assertKnownBudget(compacted[0],'live successful compaction');
     assert.ok(firstEvents.some(event => event.type === 'context-compaction-start'));
-    assert.ok((await notices()).some(item => item.text.includes('上下文已自动压缩')));
+    const firstNotice=(await notices()).find(item=>item.text.includes('上下文已自动压缩'));
+    assert.ok(firstNotice,'Successful compaction notice is missing');
+    assertBudgetTitle(firstNotice.title,'live successful compaction');
     const stored = await until('checkpoint saved with full conversation', async () => { const saved = await savedSession(firstSession); return saved.contextCheckpoint?.count === 1 && saved.events.some(event => event.type === 'context-compacted') && saved; });
     assert.equal(stored.contextCheckpoint.version, 1); assert.ok(stored.contextCheckpoint.throughIndex >= 1);
     assert.ok(stored.contextCheckpoint.summary.includes('COMPACTION_SUMMARY_FACT_' + suffix));
+    assertKnownBudget(stored.events.find(event=>event.type==='context-compacted'),'persisted compaction');
     assert.ok(retainsFixture(stored), 'Compaction deleted the complete historical tool result');
     assert.ok(JSON.stringify(stored.messages).length > 180_000);
     assert.equal(Object.hasOwn(await call('getCurrentSession'), 'contextCheckpoint'), false, 'Private summary leaked through publicSession');
@@ -140,6 +165,9 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     await closeChild(); await createChild();
     await call('openProject', { path: project });
     await until('historical checkpoint notice restored', async () => (await call('getState')).sessionId === firstSession && (await notices()).some(item => item.text.includes('上下文已自动压缩')));
+    const restoredNotice=(await notices()).find(item=>item.text.includes('上下文已自动压缩'));
+    assertBudgetTitle(restoredNotice.title,'reopened historical compaction');
+    assert.equal(restoredNotice.title,firstNotice.title,'Reopening history lost the original capacity, threshold, or context estimate');
     assert.equal(Object.hasOwn(await call('getCurrentSession'), 'contextCheckpoint'), false);
     await capture('context-compaction-history.png');
     scene = 'followup'; sceneNormalRequests = 0;
@@ -166,6 +194,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.equal((await call('getState')).promptQueue.items.length, 0);
     const resumed = await savedSession(stoppedSession);
     assert.equal(resumed.contextCheckpoint.count, 1); assert.equal(resumed.events.filter(event => event.type === 'context-compacted').length, 1);
+    assertKnownBudget(resumed.events.find(event=>event.type==='context-compacted'),'resumed compaction');
     assert.equal(resumed.messages.filter(message => message.role === 'user' && message.content === queuedText).length, 1);
     assert.equal(resumed.events.filter(event => event.type === 'tool-start' && event.name === 'read_file').length, 1, 'Resuming compaction repeated the read tool');
     assert.ok(!resumed.events.some(event => ['approval-request', 'approval-auto'].includes(event.type)), 'Read-only compaction executed an unexpected mutating operation');
@@ -175,10 +204,13 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.equal(after.usageStats.day.totalTokens - before.usageStats.day.totalTokens, reported * 10);
     assert.equal(after.usageStats.day.unreportedRequests - before.usageStats.day.unreportedRequests, 1);
     assert.equal(await fs.readFile(path.join(project, 'large-context.txt'), 'utf8'), fixtureText);
-    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true, tokensRecorded: reported * 10, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
+    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, modelCapacityBudget:true,contextLimit,triggerTokens,targetTokens,budgetTooltipRestored:true,fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true, tokensRecorded: reported * 10, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
   } catch (error) {
-    const renderer = child && !child.isDestroyed() ? await js("({sessionId,running,promptSubmitting,notice:document.getElementById('notice-text').textContent,events:window.__compactionSmoke?.events?.filter(event=>['run-end','context-compaction-start','context-compacted'].includes(event.type)),notices:[...document.querySelectorAll('.context-compaction-notice')].map(node=>node.textContent)})").catch(() => null) : null;
-    console.error('COMPACTION_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, stack: error.stack, scene, problems, requests: requests.map(({ scene, summarizing, released, aborted, rawLength }) => ({ scene, summarizing, released, aborted, rawLength })), renderer }));
+    const current=child&&!child.isDestroyed()?await call('getState').catch(()=>null):null;
+    const state=current?{activeTask:current.activeTask,promptQueue:current.promptQueue,workspace:current.workspace,
+      settings:{provider:current.settings?.provider,model:current.settings?.model,apiProtocol:current.settings?.apiProtocol}}:null;
+    const renderer = child && !child.isDestroyed() ? await js("({sessionId,running,promptSubmitting,notice:document.getElementById('notice-text').textContent,events:window.__compactionSmoke?.events?.filter(event=>['run-end','context-compaction-start','context-compacted'].includes(event.type)),notices:[...document.querySelectorAll('.context-compaction-notice')].map(node=>({text:node.textContent,title:node.title}))})").catch(() => null) : null;
+    console.error('COMPACTION_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, stack: error.stack, scene, problems, requests: requests.map(({ scene, summarizing, released, aborted, rawLength }) => ({ scene, summarizing, released, aborted, rawLength })),state, renderer }));
     throw error;
   } finally {
     if (child && !child.isDestroyed()) await call('stopTask').catch(() => {});

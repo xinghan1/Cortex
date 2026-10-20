@@ -156,10 +156,13 @@ module.exports = async function smokeLiveFiles({ win, output, dataDir }) {
     // tool snapshot must reject the later approved stale write.
     finish(held, true);
     const approval = await until('AI write approval', async () => (await state()).pendingApprovals.find(item => item.kind === 'write' && item.path === 'conflict.txt'));
+    await until('AI write decision visible in composer', () => js("!document.getElementById('composer-approval').hidden&&document.getElementById('task-form').hidden&&!!document.querySelector('#composer-approval .approval-accept:not(:disabled)')"));
+    assert.equal(await js("document.querySelectorAll('#messages .approval-card').length"),0,'Pending stale-write approval should not be inserted into the conversation');
     await open('conflict.txt'); await edit('conflict.txt', manualText);
     assert.equal((await state()).activeTask.running, true); await capture('live-files-approval-manual-edit.png');
     await call('respondApproval', { id: approval.id, approved: true });
     const continuation = await requestFor('main', true);
+    assert.equal(await js("document.getElementById('composer-approval').hidden&&document.getElementById('composer-approval').childElementCount===0&&!document.getElementById('task-form').hidden"),true,'Resolved stale-write approval did not restore the composer');
     assert.equal(await fs.readFile(path.join(project, 'conflict.txt'), 'utf8'), manualText);
     const queueGate = gate('queue-gate.txt');
     await js("(()=>{window.__liveFilesSmoke.pendingCreate=window.forge.fileCreate({parent:'',name:'queue-gate.txt',type:'file'}).then(()=>true,error=>{throw error});return true;})()");

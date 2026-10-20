@@ -30,11 +30,11 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
   let installed = false, configured = false;
   const log = () => js('window.__activitySmoke.events');
   const seconds = text => {
-    assert.match(text, /已处理/u);
+    assert.match(text, /已处理|用时/u);
     let value = 0, matched = false;
-    for (const part of text.matchAll(/(\d+(?:\.\d+)?)\s*(小时|分钟|分|秒)/gu)) {
+    for (const part of text.matchAll(/(\d+(?:\.\d+)?)\s*(小时|分钟|分|秒|h|m|s)/gu)) {
       matched = true;
-      value += Number(part[1]) * (part[2] === '小时' ? 3600 : ['分钟', '分'].includes(part[2]) ? 60 : 1);
+      value += Number(part[1]) * (['小时','h'].includes(part[2]) ? 3600 : ['分钟', '分','m'].includes(part[2]) ? 60 : 1);
     }
     assert.ok(matched, 'Activity duration has no readable value: ' + text);
     return value;
@@ -42,8 +42,9 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
   const snapshot = runId => js(`(()=>{
     const block=document.querySelector('.task-activity[data-run-id=${JSON.stringify(runId)}]');
     if(!block)return null;
-    const elapsed=block.querySelector('.task-activity-elapsed'),speed=block.querySelector('.task-activity-speed');
-    return{status:block.dataset.status,phase:block.querySelector('.task-activity-phase')?.textContent||'',elapsed:elapsed?.textContent||'',speed:speed?.textContent||'',speedHidden:!speed||speed.hidden||!speed.getClientRects().length,speedAfterElapsed:!!elapsed&&!!speed&&!!(elapsed.compareDocumentPosition(speed)&Node.DOCUMENT_POSITION_FOLLOWING),central:!!block.closest('#messages'),currentSpeedInBlock:block.contains(document.getElementById('generation-speed')),headerSpeed:!!document.querySelector('.conversation-header #generation-speed')};
+    const elapsed=block.querySelector('.task-activity-elapsed'),stored=block.querySelector('.task-activity-speed');
+    const speed=document.getElementById('generation-speed'),metric=document.getElementById('session-speed');
+    return{status:block.dataset.status,phase:block.querySelector('.task-activity-phase')?.textContent||'',elapsed:elapsed?.textContent||'',speed:speed?.textContent||'',storedSpeed:stored?.textContent||'',speedHidden:!metric||metric.classList.contains('unknown'),speedInFooter:!!speed&&!!speed.closest('#session-metrics'),activitySpeedHidden:!stored||stored.hidden||!stored.getClientRects().length,central:!!block.closest('#messages'),currentSpeedInBlock:block.contains(speed),headerSpeed:!!document.querySelector('.conversation-header #generation-speed')};
   })()`);
   const phase = (runId, pattern, label) => until(label, async () => {
     const observed = await snapshot(runId);
@@ -118,8 +119,10 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
       window.__activitySmoke.off=window.forge.onEvent(event=>{
         window.__activitySmoke.events.push(event);
         if(event.type==='approval-request'&&event.kind==='command'&&event.command===${JSON.stringify(command)})queueMicrotask(()=>{
-          const card=[...document.querySelectorAll('.approval-card')].reverse().find(card=>card.querySelector('.approval-command')?.textContent===${JSON.stringify(command)});
-          const button=card?.querySelector('.approval-accept');if(button&&!button.disabled)button.click();
+          const slot=document.getElementById('composer-approval');
+          const card=[...slot.querySelectorAll('.approval-card')].find(card=>card.querySelector('.approval-command')?.textContent===${JSON.stringify(command)});
+          window.__activitySmoke.composerApproval=!!card&&!slot.hidden&&document.getElementById('task-form').hidden&&!document.querySelector('#messages .approval-card');
+          const button=card?.querySelector('.approval-accept');if(window.__activitySmoke.composerApproval&&button&&!button.disabled)button.click();
         });
       });
     })()`);
@@ -144,7 +147,7 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
       const observed = await snapshot(start.runId);
       return observed && !observed.speedHidden && /tok\/s/u.test(observed.speed) && observed;
     });
-    assert.ok(liveRate.speedAfterElapsed && liveRate.currentSpeedInBlock && !liveRate.headerSpeed);
+    assert.ok(liveRate.speedInFooter && liveRate.activitySpeedHidden && !liveRate.currentSpeedInBlock && !liveRate.headerSpeed);
     assert.match(liveRate.speed, /≈|估算/u);
     assert.ok(seconds(thinking.elapsed) >= initialSeconds);
     assert.ok(!(await js('document.body.innerText')).includes(privateReasoning));
@@ -165,7 +168,7 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
     assert.ok(Number.isInteger(firstEnd.messageIndex) && firstEnd.messageIndex >= firstEnd.messageStartIndex);
     const completed = await until('completed activity retained', async () => { const observed = await snapshot(start.runId); return observed?.status === 'completed' && !observed.speedHidden && observed; });
     assert.match(completed.speed, /tok\/s/u);
-    assert.ok(completed.speedAfterElapsed && !completed.headerSpeed);
+    assert.ok(completed.speedInFooter && completed.activitySpeedHidden && !completed.headerSpeed);
     assert.ok(Math.abs(seconds(completed.elapsed) - Math.floor(firstEnd.elapsedMs / 1000)) <= 1);
 
     // A fresh task has no valid rate yet; stop it while heartbeats keep the model connection alive.
@@ -192,6 +195,8 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
     const safeEvents = await log();
     assert.ok(!JSON.stringify(safeEvents).includes(privateReasoning), 'Raw private reasoning was emitted to renderer');
     assert.ok(safeEvents.some(event => event.type === 'approval-request' && event.runId === start.runId));
+    assert.equal(await js('window.__activitySmoke.composerApproval'), true, 'Real command approval was not presented in the composer');
+    assert.equal(await js("document.getElementById('composer-approval').hidden&&document.getElementById('composer-approval').childElementCount===0&&!document.getElementById('task-form').hidden"), true, 'Stopped task retained an approval overlay or hid the composer');
     assert.ok(safeEvents.some(event => event.type === 'tool-start' && event.runId === start.runId && event.name === 'run_command'));
     assert.ok(safeEvents.filter(event => event.type === 'telemetry').every(event => typeof event.runId === 'string'));
     const after = await call('getState');
@@ -213,16 +218,16 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
     const historicalCompleted = await until('completed activity restored from history', async () => { const observed = await snapshot(start.runId); return observed?.status === 'completed' && observed; });
     const historicalStopped = await until('stopped activity restored from history', async () => { const observed = await snapshot(stopStart.runId); return observed?.status === 'stopped' && observed; });
     assert.equal(historicalCompleted.elapsed, completed.elapsed);
-    assert.equal(historicalCompleted.speed, completed.speed);
-    assert.equal(historicalCompleted.speedHidden, false);
+    assert.equal(historicalCompleted.storedSpeed, completed.speed);
+    assert.equal(historicalCompleted.activitySpeedHidden, true);
     assert.equal(historicalStopped.elapsed, stopped.elapsed);
-    assert.equal(historicalStopped.speedHidden, true);
+    assert.equal(historicalStopped.speedHidden, true, 'The latest no-output historical task must not inherit an earlier output rate');
     assert.ok(!(await js('document.body.innerText')).includes(privateReasoning));
     assert.equal(await js('document.querySelectorAll(".task-activity[data-status=running]").length'), 0);
     await capture('activity-history.png');
     assert.equal(records.length, 3);
     assert.deepEqual(problems, []);
-    return { status: 'completed', realApi: false, modelRequests: records.length, waitingModel: true, privateThinking: true, realApprovedCommand: true, elapsedIncreases: true, speedFollowsElapsed: true, noRateWithoutOutput: true, completedAndStoppedFreeze: true, historicalFooters: true, tokensRecorded: 26, unreportedRequests: 1, screenshots: ['activity-thinking.png', 'activity-command.png', 'activity-history.png'] };
+    return { status: 'completed', realApi: false, modelRequests: records.length, waitingModel: true, privateThinking: true, realApprovedCommand: true, elapsedIncreases: true, speedInSessionMetrics: true, noRateWithoutOutput: true, completedAndStoppedFreeze: true, historicalFooters: true, tokensRecorded: 26, unreportedRequests: 1, screenshots: ['activity-thinking.png', 'activity-command.png', 'activity-history.png'] };
   } catch (error) {
     const cards = win.isDestroyed() ? [] : await js('[...document.querySelectorAll(".task-activity")].map(node=>({id:node.dataset.runId,status:node.dataset.status,text:node.textContent}))').catch(() => []);
     console.error('ACTIVITY_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, requests: records.length, problems, cards }));

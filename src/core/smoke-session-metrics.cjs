@@ -15,7 +15,9 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
   let installed = false;
   try {
     const reported = await js(`(() => {
-      window.__sessionMetricsSmoke = { state: appState, sessionId, tokenText: $('token-usage').textContent };
+      window.__sessionMetricsSmoke = { state: appState, sessionId, tokenText: $('token-usage').textContent,
+        rate: sessionTokenRate, telemetry: latestTelemetry, activity: activeTaskActivity, running,
+        runStatus: $('run-status').textContent };
       updateState({ ...appState, workspaceId: appState?.workspaceId || 'synthetic-metrics-workspace', sessionMetrics: ${JSON.stringify(metrics)} });
       return {
         rounds: $('session-rounds').textContent,
@@ -45,6 +47,64 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     assert.equal(reported.ariaValue, '25');
     assert.equal(reported.providerVisible, true);
     assert.equal(reported.tokenText, await js('window.__sessionMetricsSmoke.tokenText'));
+
+    const rates = await js(`(() => {
+      const read = () => ({ text: $('generation-speed').textContent, unknown: $('session-speed').classList.contains('unknown'), title: $('session-speed').title });
+      running = true;
+      activeTaskActivity = createTaskActivity({ runId: 'footer-rate-smoke' });
+      updateTelemetry({ runId: 'footer-rate-smoke', phase: 'waiting', tokensPerSecond: null });
+      const waiting = read();
+      updateTelemetry({ runId: 'footer-rate-smoke', phase: 'thinking', tokensPerSecond: 251.3, estimated: true, estimatedOutputTokens: 251, elapsedMs: 1000 });
+      const estimated = read();
+      handleEvent({ type: 'telemetry', workspaceId: 'different-rate-workspace', runId: 'footer-rate-smoke', phase: 'generating', tokensPerSecond: 999 });
+      const foreign = read();
+      const blocked = {};
+      for (const phase of ['tool', 'approval', 'waiting']) {
+        updateTelemetry({ runId: 'footer-rate-smoke', phase, tokensPerSecond: 251.3 });
+        blocked[phase] = read();
+      }
+      for (const invalid of [0, -1, NaN, Infinity, null]) {
+        updateTelemetry({ runId: 'footer-rate-smoke', phase: 'generating', tokensPerSecond: invalid });
+        if (!read().unknown) throw new Error('Invalid output rate displayed');
+      }
+      updateTelemetry({ runId: 'footer-rate-smoke', phase: 'generating', tokensPerSecond: 97.6, estimated: false, outputTokens: 976, elapsedMs: 10000 });
+      finishTaskActivity({ runId: 'footer-rate-smoke', status: 'completed', elapsedMs: 12000,
+        telemetry: { tokensPerSecond: 88.2, estimated: false, outputTokens: 1058 } });
+      const completed = read();
+      const oldLocationHidden = activeTaskActivity.speed.hidden && activeTaskActivity.separator.hidden;
+      running = false; activeTaskActivity = null;
+      renderHistoricalTaskActivity({ runId: 'footer-history-smoke', status: 'completed', elapsedMs: 2000,
+        telemetry: { tokensPerSecond: 48.1, estimated: false, outputTokens: 96 } });
+      const historical = read();
+      document.querySelector('.task-activity[data-run-id="footer-history-smoke"]').remove();
+      renderHistoricalTaskActivity({ runId: 'footer-unreported-smoke', status: 'stopped', elapsedMs: 1000 });
+      const unreported = read();
+      document.querySelector('.task-activity[data-run-id="footer-unreported-smoke"]').remove();
+      setSessionTokenRate({ tokensPerSecond: 41.2, outputTokens: 412 });
+      updateState({ ...appState, sessionId: 'footer-isolation-session' }, { syncActiveTask: false });
+      const otherSession = read();
+      setSessionTokenRate({ tokensPerSecond: 52.3, outputTokens: 523 });
+      updateState({ ...appState, workspaceId: 'footer-isolation-workspace' }, { syncActiveTask: false, allowWorkspaceChange: true });
+      const otherWorkspace = read();
+      updateState({ ...window.__sessionMetricsSmoke.state, sessionMetrics: ${JSON.stringify(metrics)} }, { syncActiveTask: false, allowWorkspaceChange: true });
+      setSessionTokenRate({ tokensPerSecond: 251.3, estimated: true, estimatedOutputTokens: 251, elapsedMs: 1000 });
+      return { waiting, estimated, foreign, blocked, completed, oldLocationHidden, historical, unreported, otherSession, otherWorkspace,
+        inMetrics: $('session-metrics').contains($('generation-speed')), uniqueSpeedId: document.querySelectorAll('#generation-speed').length === 1 };
+    })()`);
+    assert.equal(rates.waiting.text, '— tok/s');
+    assert.equal(rates.estimated.text, '≈251.3 tok/s');
+    assert.match(rates.estimated.title, /排除工具执行与审批等待/);
+    assert.match(rates.estimated.title, /估算速度不计入用量统计/);
+    assert.equal(rates.foreign.text, rates.estimated.text);
+    assert.ok(Object.values(rates.blocked).every(value => value.unknown && value.text === '— tok/s'));
+    assert.equal(rates.completed.text, '88.2 tok/s');
+    assert.equal(rates.oldLocationHidden, true);
+    assert.equal(rates.historical.text, '48.1 tok/s');
+    assert.equal(rates.unreported.unknown, true);
+    assert.equal(rates.otherSession.unknown, true);
+    assert.equal(rates.otherWorkspace.unknown, true);
+    assert.equal(rates.inMetrics, true);
+    assert.equal(rates.uniqueSpeedId, true);
 
     const isolation = await js(`(() => {
       const before = $('session-rounds').textContent;
@@ -112,12 +172,13 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       saved.layoutRule.sheet.deleteRule(saved.layoutRule.index);
       delete saved.layoutRule;
       updateState({ ...saved.state, sessionMetrics: ${JSON.stringify(metrics)} });
+      setSessionTokenRate({ tokensPerSecond: 251.3, estimated: true, estimatedOutputTokens: 754, elapsedMs: 3000 });
       return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     })()`);
     win.webContents.invalidate();
     await new Promise(resolve => setTimeout(resolve, 110));
     await fs.writeFile(path.join(output, 'session-metrics.png'), (await win.webContents.capturePage()).toPNG());
-    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true, estimatedContext: true, unknownContext: true, workspaceIsolation: true, narrowLayout: true, footerRightAligned:true, oldReviewHintRemoved:true };
+    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true, estimatedContext: true, unknownContext: true, workspaceIsolation: true, narrowLayout: true, footerRightAligned:true, oldReviewHintRemoved:true, outputSpeedInMetrics:true, ratePhaseGating:true, completedAndHistoricalRates:true, rateSessionIsolation:true };
   } finally {
     if (installed && !win.isDestroyed()) await js(`(() => {
       const saved = window.__sessionMetricsSmoke;
@@ -125,6 +186,9 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       if (saved.layoutRule) saved.layoutRule.sheet.deleteRule(saved.layoutRule.index);
       sessionId = saved.sessionId;
       updateState(saved.state);
+      running = saved.running; activeTaskActivity = saved.activity; latestTelemetry = saved.telemetry;
+      sessionTokenRate = saved.rate; renderSessionTokenRate();
+      $('run-status').textContent = saved.runStatus;
       $('token-usage').textContent = saved.tokenText;
       delete window.__sessionMetricsSmoke;
     })()`).catch(() => {});

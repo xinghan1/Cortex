@@ -101,11 +101,12 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     steeringAlreadyApplied = false;
     signal.throwIfAborted();
     const prepared = await prepareContext({ messages, checkpoint: contextCheckpoint, signal, redact,
-      summarize: async ({ source }) => {
+      modelCapabilities: config.modelCapabilities, systemMessages: [system], tools: toolDefinitions,
+      summarize: async ({ source, maxSummaryChars }) => {
         signal.throwIfAborted();
         emit({ type: 'context-compaction-start' });
         const summary = await askModel({ compaction: true, tools: [], requestMessages: [
-          { role: 'system', content: COMPACTION_PROMPT }, { role: 'user', content: source },
+          { role: 'system', content: `${COMPACTION_PROMPT}\n本次摘要最多 ${maxSummaryChars} 字符，请简洁保留必要事实。` }, { role: 'user', content: source },
         ] });
         signal.throwIfAborted();
         if (!summary?.message || typeof summary.message.content !== 'string' || !summary.message.content.trim()
@@ -130,24 +131,32 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     if (!message || !Array.isArray(message.toolCalls)) throw new Error('模型响应格式无效。');
     message.content = redact(message.content || '');
     messages.push(message);
-    emit({ type: 'assistant-message', text: message.content });
+    emit({ type: 'assistant-message', text: message.content, toolCallCount: message.toolCalls.length });
     if (!message.toolCalls.length) {
       if (await applySteering()) { steeringAlreadyApplied = true; continue; }
       telemetry.setPhase('completed'); return;
     }
     // Every requested call receives a result, including refusals and cancellation, so history remains valid.
     for (const call of message.toolCalls) {
-      let result;
+      let result, fileChange;
       if (signal.aborted) result = '操作已停止，未执行此工具。';
       else {
         telemetry.setPhase('tool');
-        emit({ type: 'tool-start', name: call.name, args: call.arguments });
-        try { result = await workspace.execute(call.name, call.arguments, { signal }); }
+        emit({ type: 'tool-start', name: call.name, args: call.arguments, toolCallId: call.id });
+        try { result = await workspace.execute(call.name, call.arguments, { signal, onFileChange: change => {
+          // Exact committed snapshots are local display metadata, never model
+          // output. Redact each field before publishing the public event.
+          if (change && typeof change.path === 'string' && (change.before === null || typeof change.before === 'string')
+              && (change.after === null || typeof change.after === 'string')) fileChange = {
+            path: redact(change.path), before: change.before === null ? null : redact(change.before),
+            after: change.after === null ? null : redact(change.after),
+          };
+        } }); }
         catch (error) { result = `工具执行失败：${error.message}`; }
       }
       result = redact(String(result));
       messages.push({ role: 'tool', toolCallId: call.id, content: result });
-      emit({ type: 'tool-result', name: call.name, result });
+      emit({ type: 'tool-result', name: call.name, result, toolCallId: call.id, ...(fileChange ? { fileChange } : {}) });
     }
     signal.throwIfAborted();
   }

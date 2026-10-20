@@ -11,6 +11,10 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
   const js = (code, target = win) => target.webContents.executeJavaScript(code);
   const call = (method, arg, target = win) => js(`window.forge[${JSON.stringify(method)}](${arg === undefined ? '' : JSON.stringify(arg)})`, target);
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const frames = (target = win) => js(`new Promise(resolve=>{
+    const timer=setTimeout(()=>resolve(false),1000);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timer);resolve(true);}));
+  })`, target);
   const until = async (label, predicate) => {
     for (let attempt = 0; attempt < 200; attempt++) {
       const value = await predicate();
@@ -60,10 +64,30 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
     assert.ok(observed.blank.header && observed.blank.region === 'drag', 'No blank draggable titlebar area remains');
   };
   const click = async (id, target = win) => {
-    const point = await js(`(()=>{const node=document.getElementById(${JSON.stringify(id)});if(!node||node.disabled)throw new Error('Window chrome click target unavailable');const r=node.getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`, target);
-    target.webContents.sendInputEvent({ type: 'mouseMove', ...point });
-    target.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
-    target.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
+    await prepareNativeInput(target);
+    const point = await js(`(()=>{const node=document.getElementById(${JSON.stringify(id)});if(!node||node.disabled)throw new Error('Window chrome click target unavailable');const r=node.getBoundingClientRect();if(r.width<=0||r.height<=0)throw new Error('Window chrome click target is not painted');const point={x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)},hit=document.elementFromPoint(point.x,point.y);if(hit!==node&&!node.contains(hit))throw new Error('Window chrome pointer target is covered: '+JSON.stringify({id:node.id,hit:hit?.id,point}));return{...point,clickCount:window.__windowChromeNativeInput.clicks.length};})()`, target);
+    const position = { x: point.x, y: point.y };
+    target.webContents.sendInputEvent({ type: 'mouseMove', ...position });
+    target.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...position });
+    target.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...position });
+    await until('trusted native click reaches ' + id, () => js(`window.__windowChromeNativeInput.clicks.slice(${point.clickCount}).some(event=>event.trusted&&event.id===${JSON.stringify(id)})`, target));
+  };
+  const prepareNativeInput = async (target = win) => {
+    // The whole regression reaches this helper after other native pointer
+    // fixtures. A hidden/restored Windows surface may still deliver a resize
+    // after its width first matches; menu.js correctly closes menus on resize.
+    // Settle that surface before testing a single genuine pointer click.
+    target.setOpacity(0); if(!target.isVisible())target.showInactive(); target.webContents.focus();
+    await js(`(()=>{
+      if(window.__windowChromeNativeInput)return;
+      const state=window.__windowChromeNativeInput={lastResize:performance.now(),resizes:[],clicks:[]};
+      state.onResize=()=>{state.lastResize=performance.now();state.resizes.push({at:state.lastResize,width:innerWidth,height:innerHeight});};
+      state.onClick=event=>state.clicks.push({id:event.target.closest?.('button')?.id||event.target.id||'',trusted:event.isTrusted,x:event.clientX,y:event.clientY});
+      window.addEventListener('resize',state.onResize);document.addEventListener('click',state.onClick,true);
+    })()`,target);
+    await until('native surface resize settles', () => js(`performance.now()-window.__windowChromeNativeInput.lastResize>=180`,target));
+    assert.equal(await frames(target),true,'Native pointer surface did not paint two frames');
+    await until('native surface remains settled after painting', () => js(`performance.now()-window.__windowChromeNativeInput.lastResize>=180`,target));
   };
   const escape = () => {
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
@@ -72,6 +96,24 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
   const f11 = () => {
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'F11' });
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'F11' });
+  };
+  const openPopup = async (triggerId, popupId, label) => {
+    await prepareNativeInput();
+    const closed = () => js(`document.getElementById('app-menu-popup').hidden&&document.getElementById('app-menu-submenu').hidden&&document.getElementById('project-dropdown').hidden`);
+    // Native mouseenter switches an already-open app menu before its click
+    // handler runs. Begin each opening check with no active popup, so a click
+    // cannot accidentally toggle the newly-hovered menu closed.
+    for(let attempt=0;attempt<4&&!await closed();attempt++){escape();await frames();}
+    assert.equal(await closed(),true,label+': previous popup did not close');
+    await click(triggerId);
+    let paintedSince = 0;
+    await until(label+' is painted below its active trigger',async()=>{
+      const painted=await js(`(()=>{const popup=document.getElementById(${JSON.stringify(popupId)}),trigger=document.getElementById(${JSON.stringify(triggerId)}),r=popup.getBoundingClientRect();return !popup.hidden&&trigger.getAttribute('aria-expanded')==='true'&&r.width>0&&r.height>0&&performance.now()-window.__windowChromeNativeInput.lastResize>=180;})()`);
+      if(!painted){paintedSince=0;return false;}
+      if(!paintedSince)paintedSince=Date.now();
+      return Date.now()-paintedSince>=100;
+    });
+    assert.equal(await frames(),true,label+': open popup did not paint');
   };
   const capture = async name => { win.webContents.invalidate(); await wait(100); await fs.writeFile(path.join(output, name), (await win.webContents.capturePage()).toPNG()); };
   try {
@@ -87,15 +129,13 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
     const bounds = win.getBounds(), content = win.getContentBounds();
     const insets = { top: content.y - bounds.y, left: content.x - bounds.x, height: bounds.height - content.height };
     assert.ok(insets.top <= insets.left + 8 && insets.height <= 24, 'A separate traditional caption frame still occupies content space');
-    await click('menu-file');
-    await until('native pointer opens menu', () => js("!document.getElementById('app-menu-popup').hidden"));
+    await openPopup('menu-file','app-menu-popup','native pointer opens menu');
     const menu = await js(`(()=>{const node=document.getElementById('app-menu-popup'),r=node.getBoundingClientRect();return{region:getComputedStyle(node).getPropertyValue('-webkit-app-region'),top:r.top,right:r.right,bottom:r.bottom,anchorBottom:document.getElementById('menu-file').getBoundingClientRect().bottom,width:innerWidth,height:innerHeight,items:node.querySelectorAll('[data-action]').length};})()`);
     popupObservations.push({ name: 'file-menu', ...menu });
     assert.equal(menu.region, 'no-drag');
     assert.ok(menu.items > 0 && menu.top >= menu.anchorBottom - 1 && menu.right <= menu.width && menu.bottom <= menu.height, 'File menu must open below its trigger within the viewport');
     escape(); await until('menu dismissed', () => js("document.getElementById('app-menu-popup').hidden"));
-    await click('project-switcher');
-    await until('native pointer opens project menu', () => js("!document.getElementById('project-dropdown').hidden"));
+    await openPopup('project-switcher','project-dropdown','native pointer opens project menu');
     const projectMenu = await js(`(()=>{const node=document.getElementById('project-dropdown'),r=node.getBoundingClientRect();return{region:getComputedStyle(node).getPropertyValue('-webkit-app-region'),top:r.top,right:r.right,bottom:r.bottom,anchorBottom:document.getElementById('project-switcher').getBoundingClientRect().bottom,width:innerWidth,height:innerHeight};})()`);
     popupObservations.push({ name: 'project-menu', ...projectMenu });
     assert.equal(projectMenu.region, 'no-drag');
@@ -132,13 +172,13 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
     const compact = await until('980px overlay layout settled', async () => { const value = await geometry(); return value.viewport.width >= 978 && value.viewport.width <= 982 && value; });
     validateNormal(compact);
     assert.equal(await js("document.getElementById('workspace-label').textContent"), path.basename(fixture));
-    await click('menu-view'); await until('large-text native pointer menu', () => js("!document.getElementById('app-menu-popup').hidden"));
+    await openPopup('menu-view','app-menu-popup','large-text native pointer menu');
     await capture('window-chrome-large-text.png');
     const largeMenu = await js(`(()=>{const node=document.getElementById('app-menu-popup'),r=node.getBoundingClientRect();return{top:r.top,right:r.right,bottom:r.bottom,anchorBottom:document.getElementById('menu-view').getBoundingClientRect().bottom,width:innerWidth,height:innerHeight,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth};})()`);
     popupObservations.push({ name: 'large-text-view-menu', ...largeMenu });
     assert.ok(largeMenu.top >= largeMenu.anchorBottom - 1 && largeMenu.right <= largeMenu.width && largeMenu.bottom <= largeMenu.height && largeMenu.scrollWidth <= largeMenu.clientWidth + 1, 'Large-text view menu must open below its trigger without viewport overflow');
     escape(); await until('large-text menu dismissed', () => js("document.getElementById('app-menu-popup').hidden"));
-    await click('project-switcher'); await until('large-text project menu opens', () => js("!document.getElementById('project-dropdown').hidden"));
+    await openPopup('project-switcher','project-dropdown','large-text project menu opens');
     const largeProject = await js(`(()=>{const node=document.getElementById('project-dropdown'),r=node.getBoundingClientRect();return{top:r.top,right:r.right,bottom:r.bottom,anchorBottom:document.getElementById('project-switcher').getBoundingClientRect().bottom,width:innerWidth,height:innerHeight,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth};})()`);
     popupObservations.push({ name: 'large-text-project-menu', ...largeProject });
     assert.ok(largeProject.top >= largeProject.anchorBottom - 1 && largeProject.right <= largeProject.width && largeProject.bottom <= largeProject.height && largeProject.scrollWidth <= largeProject.clientWidth + 1, 'Large-text project menu must open below its trigger without viewport overflow');
@@ -173,12 +213,14 @@ module.exports = async function smokeWindowChrome({ win, output, dataDir }) {
     return { status: 'completed', nativeOverlayApi: true, titlebarHeight: 44, normalOverlay: normal.area, compactOverlay: compact.area, traditionalFrameRemoved: true, frameInsets: insets, dragRegion: true, pointerMenus: true, captionSafetyRegion: true, maximizeRestore: true, minimizeRestore: true, minimizedOverlayVisible: minimized.visible, fullscreenRestore: true, fullscreenOverlayVisible: fullscreen.visible, compactLargeTextAndProject: true, nativeCloseFlushes: true, screenshots: ['window-chrome-large-text.png', 'window-chrome-projects.png'] };
   } catch (error) {
     const observed = win.isDestroyed() ? null : await geometry().catch(() => null);
-    console.error('WINDOW_CHROME_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, observed, popupObservations, bounds: win.isDestroyed() ? null : win.getBounds(), contentBounds: win.isDestroyed() ? null : win.getContentBounds() }));
+    const nativeInput=win.isDestroyed()?null:await js('window.__windowChromeNativeInput?{resizes:window.__windowChromeNativeInput.resizes,clicks:window.__windowChromeNativeInput.clicks}:null').catch(()=>null);
+    console.error('WINDOW_CHROME_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, observed, popupObservations,nativeInput, bounds: win.isDestroyed() ? null : win.getBounds(), contentBounds: win.isDestroyed() ? null : win.getContentBounds() }));
     throw error;
   } finally {
     releaseSave?.(); fs.rename = nativeRename;
     if (child && !child.isDestroyed()) child.destroy();
     if (!win.isDestroyed()) {
+      await js(`(()=>{const state=window.__windowChromeNativeInput;if(!state)return;window.removeEventListener('resize',state.onResize);document.removeEventListener('click',state.onClick,true);delete window.__windowChromeNativeInput;})()`).catch(()=>{});
       win.setOpacity(0);
       if (win.isFullScreen()) { win.setFullScreen(false); await until('cleanup fullscreen', () => !win.isFullScreen()).catch(() => {}); }
       if (win.isMinimized()) win.restore();
