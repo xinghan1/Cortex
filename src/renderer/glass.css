@@ -174,8 +174,6 @@ button:disabled:hover {
 }
 
 .session-menu-button {
-  padding-left: 7px;
-  margin-left: -7px;
   border-radius: var(--radius-control);
 }
 
@@ -523,10 +521,6 @@ button:disabled:hover {
 }
 
 .session-metrics {
-  padding: 7px 10px;
-  border-color: rgb(218 233 255 / 9%);
-  border-radius: 10px;
-  background: rgb(8 19 39 / 16%);
   color: #acbdd7;
 }
 

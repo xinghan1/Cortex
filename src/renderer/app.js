@@ -2579,7 +2579,7 @@ function clearConversation() {
   renderedUserMessageIds.clear();
   $('welcome').hidden = false;
   $('conversation-title').textContent = conversationTitle();
-  $('token-usage').textContent = '请检查生成的代码与命令';
+  $('token-usage').textContent = '';
   renderSessionMetrics(null);
   resetTelemetry();
   streamedMessage = null;

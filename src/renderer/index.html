@@ -99,18 +99,18 @@
                 </dialog>
               </div>
             </div>
-            <span id="token-usage">请检查生成的代码与命令</span>
-          </div>
-          <div id="session-metrics" class="session-metrics" role="group" aria-label="当前会话统计">
-            <div class="session-metrics-details">
-              <span id="session-rounds" class="session-metric" title="只统计已实际发送的用户消息，待发送内容不计入">— 轮对话</span>
-              <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">—</strong></span>
-              <span id="session-total" class="session-metric">本会话 <strong id="session-total-value">—</strong><span>Token</span></span>
+            <span id="token-usage" hidden></span>
+            <div id="session-metrics" class="session-metrics" role="group" aria-label="当前会话统计">
+              <div class="session-metrics-details">
+                <span id="session-rounds" class="session-metric" title="只统计已实际发送的用户消息，待发送内容不计入">— 轮对话</span>
+                <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">—</strong></span>
+                <span id="session-total" class="session-metric">本会话 <strong id="session-total-value">—</strong><span>Token</span></span>
+              </div>
+              <span id="session-context" class="session-context unknown" role="progressbar" aria-label="上下文使用率" aria-valuemin="0" aria-valuemax="100" aria-valuetext="上下文容量未知">
+                <svg class="session-context-ring" viewBox="0 0 28 28" aria-hidden="true"><circle class="session-context-track" cx="14" cy="14" r="11"/><circle id="session-context-progress" class="session-context-progress" cx="14" cy="14" r="11" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 14 14)"/></svg>
+                <span>上下文 <strong id="session-context-value">—</strong></span>
+              </span>
             </div>
-            <span id="session-context" class="session-context unknown" role="progressbar" aria-label="上下文使用率" aria-valuemin="0" aria-valuemax="100" aria-valuetext="上下文容量未知">
-              <svg class="session-context-ring" viewBox="0 0 28 28" aria-hidden="true"><circle class="session-context-track" cx="14" cy="14" r="11"/><circle id="session-context-progress" class="session-context-progress" cx="14" cy="14" r="11" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 14 14)"/></svg>
-              <span>上下文 <strong id="session-context-value">—</strong></span>
-            </span>
           </div>
         </div>
         <section id="terminal-panel" class="terminal-panel" aria-label="PowerShell 终端" hidden><div class="terminal-heading"><span>终端 <small>PowerShell · 每条命令从项目根目录启动</small></span><div><span id="terminal-status">准备就绪</span><button id="terminal-stop" class="button subtle" type="button" disabled>停止</button><button id="terminal-clear" class="button subtle" type="button">清除</button><button id="terminal-close" class="icon-button small" type="button" title="隐藏终端面板" aria-label="隐藏终端面板">×</button></div></div><div id="terminal-output" class="terminal-output" role="log" aria-live="polite"></div><form id="terminal-form" class="terminal-form"><label for="terminal-input">PS &gt;</label><input id="terminal-input" type="text" placeholder="输入 PowerShell 命令，执行前会请求确认" autocomplete="off" spellcheck="false" maxlength="16000"><button id="terminal-run" class="button" type="submit">运行</button></form></section>

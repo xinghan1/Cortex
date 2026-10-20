@@ -73,6 +73,18 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     assert.equal(isolation.unknownRing, true);
     assert.match(isolation.contextTitle, /未提供上下文容量/);
 
+    const desktopLayout = await js(`(() => {
+      const metrics=$('session-metrics'),footer=document.querySelector('.composer-footer');
+      const rect=metrics.getBoundingClientRect(),bounds=footer.getBoundingClientRect();
+      return { inFooter:footer.contains(metrics),rightAligned:Math.abs(rect.right-bounds.right)<=1,
+        oldHintVisible:document.body.innerText.includes('请检查生成的代码与命令'),
+        oldUsageHidden:$('token-usage').hidden };
+    })()`);
+    assert.equal(desktopLayout.inFooter, true, 'Session metrics must replace the old footer hint');
+    assert.equal(desktopLayout.rightAligned, true, 'Session metrics must align to the footer right');
+    assert.equal(desktopLayout.oldHintVisible, false);
+    assert.equal(desktopLayout.oldUsageHidden, true);
+
     const layout = await js(`(async () => {
       updateState({ ...appState, sessionMetrics: ${JSON.stringify(metrics)} });
       const sheet = [...document.styleSheets].find(value => value.href?.endsWith('/workbench.css'));
@@ -86,11 +98,15 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
         return item.left >= rect.left && item.right <= rect.right + 1 && item.top >= rect.top && item.bottom <= rect.bottom + 1;
       });
       const footer = document.querySelector('.composer-footer').getBoundingClientRect();
-      return { items, belowFooter: rect.top >= footer.bottom, width: rect.width, height: rect.height };
+      return { items, inFooter: $('session-metrics').parentElement === document.querySelector('.composer-footer'),
+        contained:rect.top>=footer.top-1&&rect.bottom<=footer.bottom+1,
+        rightAligned:Math.abs(rect.right-footer.right)<=1,width:rect.width,height:rect.height };
     })()`);
     assert.ok(layout.width <= 300);
     assert.ok(layout.items.every(Boolean), 'Narrow session metrics must wrap without overflow');
-    assert.equal(layout.belowFooter, true);
+    assert.equal(layout.inFooter, true);
+    assert.equal(layout.contained, true);
+    assert.equal(layout.rightAligned, true);
     await js(`(() => {
       const saved = window.__sessionMetricsSmoke;
       saved.layoutRule.sheet.deleteRule(saved.layoutRule.index);
@@ -101,7 +117,7 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     win.webContents.invalidate();
     await new Promise(resolve => setTimeout(resolve, 110));
     await fs.writeFile(path.join(output, 'session-metrics.png'), (await win.webContents.capturePage()).toPNG());
-    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true, estimatedContext: true, unknownContext: true, workspaceIsolation: true, narrowLayout: true };
+    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true, estimatedContext: true, unknownContext: true, workspaceIsolation: true, narrowLayout: true, footerRightAligned:true, oldReviewHintRemoved:true };
   } finally {
     if (installed && !win.isDestroyed()) await js(`(() => {
       const saved = window.__sessionMetricsSmoke;

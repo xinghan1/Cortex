@@ -242,10 +242,10 @@ html.browser-panel-open .messages {
   padding-right: 22px;
 }
 
-/* Current-session usage stays separate from the provider and last request. */
+/* Session statistics share the footer: provider/account left, live metrics right. */
 .composer-footer {
   flex-wrap: wrap;
-  row-gap: 4px;
+  row-gap: 5px;
 }
 
 .composer-footer #token-usage {
@@ -254,28 +254,31 @@ html.browser-panel-open .messages {
 
 .session-metrics {
   display: flex;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 5px 16px;
+  justify-content: flex-end;
+  gap: 4px 12px;
   min-width: 0;
-  margin-top: 7px;
-  padding: 5px 10px;
-  border: 1px solid #25272b;
-  border-radius: 8px;
-  background: #111214;
+  max-width: 100%;
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #858b94;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
 
 .session-metrics-details {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 18px;
+  justify-content: flex-end;
+  gap: 4px 12px;
   min-width: 0;
 }
 
@@ -300,12 +303,12 @@ html.browser-panel-open .messages {
 
 .session-context {
   flex-shrink: 0;
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .session-context-ring {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   fill: none;
   stroke-width: 2.5;
