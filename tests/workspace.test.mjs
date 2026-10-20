@@ -247,6 +247,27 @@ test('command rejection never starts a process', async t => {
   await assert.rejects(fs.access(path.join(root, 'sentinel.txt')));
 });
 
+test('command approval exposes a ten-minute default and cap while honoring explicit shorter timeouts without spawning', async t => {
+  const requests = [], { root, tools } = await fixture(t, { approve: async request => { requests.push(request); return false; } });
+  const cases = [
+    [{}, 600], [{ timeout_ms: 900_000 }, 600], [{ timeout_ms: NaN }, 600],
+    [{ timeout_ms: 45_000 }, 45], [{ timeout_ms: -1 }, 1],
+  ];
+  for (const [parameters, seconds] of cases) {
+    const result = await jsonResult(tools.execute('run_command', {
+      command: "Set-Content -LiteralPath 'timeout-sentinel.txt' -Value 'must not run'", ...parameters,
+    }));
+    assert.equal(result.denied, true);
+    assert.ok(requests.at(-1).detail.includes(`最长运行：${seconds} 秒`));
+  }
+  const definition = TOOL_DEFINITIONS.find(tool => tool.name === 'run_command');
+  assert.equal(definition.parameters.properties.timeout_ms.maximum, 600_000);
+  assert.equal(definition.parameters.required.includes('timeout_ms'), false);
+  assert.match(definition.description, /当前权限模式/);
+  assert.match(definition.description, /默认和最长均为 10 分钟/);
+  await assert.rejects(fs.access(path.join(root, 'timeout-sentinel.txt')));
+});
+
 test('approved commands run in the selected workspace and return stdout, stderr and exit status', { skip: !hasPowerShell }, async t => {
   const events = [];
   let approval;

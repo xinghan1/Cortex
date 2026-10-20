@@ -78,4 +78,4 @@ function approvalDecision(mode, request) {
   return 'ask';
 }
 
-module.exports = { APPROVAL_MODES, validateMode, approvalDecision };
+module.exports = { APPROVAL_MODES, validateMode, approvalDecision, safeRelativePath };

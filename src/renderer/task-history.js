@@ -5,8 +5,8 @@
 
   const messageFields = ['role', 'content', 'id', 'source', 'createdAt', 'attachments', 'toolCalls', 'localOnly'];
   const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry'];
-  const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'triggerChars', 'targetChars'];
-  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted']);
+  const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'status', 'reason', 'reviewReason', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'requestedTriggerTokens', 'effectiveTriggerTokens', 'triggerClamped', 'triggerClampReason', 'triggerFloorApplied', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'triggerChars', 'targetChars'];
+  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review']);
   const pick = (value, fields) => {
     const result = {};
     if (value && typeof value === 'object') for (const field of fields) if (Object.prototype.hasOwnProperty.call(value, field)) result[field] = value[field];
@@ -19,10 +19,51 @@
   };
   const fileChange = value => value && typeof value.path === 'string' && value.path
     && ['before', 'after'].every(key => value[key] === null || typeof value[key] === 'string') ? pick(value, ['path', 'before', 'after']) : null;
+  const agentFields = ['id', 'name', 'task', 'status', 'startedAt', 'endedAt', 'elapsedMs', 'summary', 'error', 'inputTokens', 'outputTokens'];
+  const agentActivityTypes = new Set(['message', 'assistant-message', 'text', 'tool-start', 'tool-result', 'command-output', 'status', 'progress']);
+  const privateAgentKeys = new Set(['providerstate', 'nativestate', 'reasoning', 'analysis', 'apikey', 'accesstoken', 'refreshtoken', 'authorization', 'credentials', 'credential', 'secret', 'headers', 'proto', 'constructor', 'prototype']);
+  function publicAgentValue(value, depth = 0, seen = new WeakSet()) {
+    if (value === null || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') return value.slice(0, 20000);
+    if (depth >= 6 || !value || typeof value !== 'object' || seen.has(value)) return undefined;
+    seen.add(value);
+    if (Array.isArray(value)) return value.slice(0, 100).map(item => publicAgentValue(item, depth + 1, seen) ?? null);
+    const clean = Object.create(null);
+    for (const [key, content] of Object.entries(value).slice(0, 100)) {
+      if (privateAgentKeys.has(key.toLowerCase().replace(/[-_]/g, ''))) continue;
+      const item = publicAgentValue(content, depth + 1, seen);
+      if (item !== undefined) clean[key] = item;
+    }
+    return clean;
+  }
+  function publicAgent(value) {
+    if (!value || typeof value !== 'object' || typeof value.id !== 'string' || !value.id) return null;
+    const clean = {};
+    for (const field of agentFields) {
+      if (!Object.prototype.hasOwnProperty.call(value, field)) continue;
+      if (['elapsedMs', 'inputTokens', 'outputTokens'].includes(field)) {
+        if (typeof value[field] === 'number' && Number.isFinite(value[field]) && value[field] >= 0) clean[field] = value[field];
+      } else if (typeof value[field] === 'string' || ['startedAt', 'endedAt'].includes(field) && typeof value[field] === 'number' && Number.isFinite(value[field])) clean[field] = typeof value[field] === 'string' ? value[field].slice(0, 16000) : value[field];
+    }
+    if (Array.isArray(value.activity)) clean.activity = value.activity.filter(item => item && typeof item === 'object' && agentActivityTypes.has(item.type)).slice(-100).map(item => {
+      const activity = pick(item, ['type']);
+      for (const field of ['name', 'toolCallId', 'text']) if (typeof item[field] === 'string') activity[field] = item[field].slice(0, 16000);
+      for (const field of ['args', 'result']) if (Object.prototype.hasOwnProperty.call(item, field)) {
+        const data = publicAgentValue(item[field]);
+        if (data !== undefined) activity[field] = data;
+      }
+      return activity;
+    });
+    return clean;
+  }
   const displayEvent = event => {
     const clean = pick(event, eventFields), change = fileChange(clean.fileChange);
     if (change) clean.fileChange = change;
     else delete clean.fileChange;
+    if (event.type === 'subagent-update') {
+      const agent = publicAgent(event.agent);
+      if (agent) clean.agent = agent;
+    }
     return { type: 'event', event: clean };
   };
   const validIndex = (index, length) => Number.isInteger(index) && index >= 0 && index < length;
@@ -94,13 +135,35 @@
     // last 150 session events, so message records remain the source of truth
     // for tool inputs/results. Event-only demo tools and approval/output
     // details supplement them, without duplicating real calls.
-    const events = Array.isArray(record.activityEvents) ? record.activityEvents
-      : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []);
+    const events = [...(Array.isArray(record.activityEvents) ? record.activityEvents
+      : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []))];
+    // Keep a child's latest public snapshot at its original position, while
+    // retaining surrounding parent messages and tool events in their order.
+    const agents = new Map();
+    for (let index = 0; index < events.length; index++) {
+      const value = events[index];
+      if (value?.type !== 'subagent-update' || !publicAgent(value.agent)) continue;
+      const previous = agents.get(value.agent.id);
+      agents.set(value.agent.id, { first: previous?.first ?? index, agent: value.agent });
+    }
+    // The per-session archive survives bounded event retention. It supplements
+    // an agent whose full event stream has already fallen out of that log.
+    for (const agent of Array.isArray(session.subagents) ? session.subagents : []) {
+      if (!publicAgent(agent) || agent.parentRunId !== (record.runId || record.id) || agents.has(agent.id)) continue;
+      const index = events.length;
+      events.push({ type: 'subagent-update', runId: record.runId || record.id, messageIndex: end, agent });
+      agents.set(agent.id, { first: index, agent });
+    }
     let currentCall = null, assistantCursor = start, anchor = start;
     const matchedResults = new Set();
     for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
-      const value = events[eventIndex];
+      let value = events[eventIndex];
       if (!value || typeof value !== 'object') continue;
+      if (value.type === 'subagent-update') {
+        const agent = agents.get(value.agent?.id);
+        if (!agent || agent.first !== eventIndex) continue;
+        value = { ...value, agent: agent.agent };
+      }
       if (value.type === 'assistant-message') {
         for (let index = assistantCursor; index <= end; index++) {
           if (messages[index]?.role === 'assistant' && messages[index].content === value.text) {
@@ -179,8 +242,20 @@
       }
       return items;
     };
+    const standaloneSubagents = record => {
+      const runId = record.runId || record.id;
+      if (typeof runId !== 'string' || !runId) return [];
+      const snapshots = new Map();
+      const saved = Array.isArray(record.activityEvents) ? record.activityEvents
+        : (Array.isArray(session.events) ? session.events.filter(value => value?.runId === runId) : []);
+      for (const value of saved) if (value?.type === 'subagent-update' && publicAgent(value.agent)) snapshots.set(value.agent.id, { ...value, runId });
+      for (const agent of Array.isArray(session.subagents) ? session.subagents : []) {
+        if (agent?.parentRunId === runId && publicAgent(agent) && !snapshots.has(agent.id)) snapshots.set(agent.id, { type: 'subagent-update', runId, agent });
+      }
+      return [...snapshots.values()].map(displayEvent);
+    };
     const appendLegacy = index => {
-      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: standaloneUndo(record), finalIndex: null, unanchored: true });
+      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: [...standaloneUndo(record), ...standaloneSubagents(record)], finalIndex: null, unanchored: true });
     };
     for (let index = 0; index < messages.length; index++) {
       const record = starts.get(index);

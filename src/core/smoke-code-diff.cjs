@@ -93,7 +93,9 @@ module.exports = async function smokeCodeDiff({ win, output }) {
     const card=document.querySelector(${JSON.stringify(selector)});if(!card)return null;
     const rows=[...card.querySelectorAll('.code-diff-row')].map(row=>({
       kind:row.dataset.kind,sign:row.querySelector('.code-diff-sign')?.textContent,
-      old:row.querySelector('.code-diff-old-line')?.textContent,new:row.querySelector('.code-diff-new-line')?.textContent,
+      lineNumber:row.querySelector('.code-diff-line-number')?.textContent,
+      lineNumberCount:row.querySelectorAll('.code-diff-line-number').length,
+      legacyLineNumberCount:row.querySelectorAll('.code-diff-old-line,.code-diff-new-line').length,
       text:row.querySelector('.code-diff-code')?.textContent,color:getComputedStyle(row).backgroundColor
     }));
     const scroll=card.querySelector('.code-diff-scroll');
@@ -103,6 +105,56 @@ module.exports = async function smokeCodeDiff({ win, output }) {
       unsafeElements:card.querySelectorAll('img[src="x"],script,svg[onload]').length,
       scroll:scroll&&{top:scroll.scrollTop,left:scroll.scrollLeft,height:scroll.clientHeight,width:scroll.clientWidth,scrollHeight:scroll.scrollHeight,scrollWidth:scroll.scrollWidth}}
   })()`);
+  const inspectEditSummary = selector => js(`(() => {
+    const card=document.querySelector(${JSON.stringify(selector)}),tool=card?.closest('.tool-card');
+    const row=tool?.querySelector(':scope > .tool-summary'),brief=row?.querySelector('.tool-edit-summary');
+    if(!brief)return null;
+    const file=brief.querySelector('.tool-edit-filename'),added=brief.querySelector('.tool-edit-added'),removed=brief.querySelector('.tool-edit-removed');
+    const rect=node=>{const value=node?.getBoundingClientRect();return value&&{left:value.left,right:value.right,top:value.top,width:value.width,height:value.height};};
+    const fileStyle=file&&getComputedStyle(file);
+    return {label:row.querySelector('.tool-title')?.textContent,toolOpen:tool.open,visible:(${visibleSource})(brief),
+      filename:file?.textContent,title:file?.title,added:added?.textContent,removed:removed?.textContent,
+      addedColour:added&&getComputedStyle(added).color,removedColour:removed&&getComputedStyle(removed).color,
+      row:rect(row),brief:rect(brief),file:rect(file),add:rect(added),remove:rect(removed),
+      addedVisible:(${visibleSource})(added),removedVisible:(${visibleSource})(removed),
+      fileOverflow:fileStyle&&{overflow:fileStyle.overflow,textOverflow:fileStyle.textOverflow,whiteSpace:fileStyle.whiteSpace,clientWidth:file.clientWidth,scrollWidth:file.scrollWidth}};
+  })()`);
+  const assertEditSummary = (summary, edit, added, removed, visible = true) => {
+    assert.ok(summary, 'A committed edit needs a filename/count summary beside its operation label');
+    assert.equal(summary.label, '已编辑的文件');
+    assert.equal(summary.filename, edit.path.replace(/\\/g, '/').split('/').at(-1), 'The edit summary should use the filename');
+    assert.equal(summary.title, edit.path, 'The full edited path must remain available in the filename tooltip');
+    assert.equal(summary.added, added, 'Collapsed edit additions must match the actual diff card');
+    assert.equal(summary.removed, removed, 'Collapsed edit deletions must match the actual diff card');
+    assert.equal(summary.visible, visible);
+    if (visible) {
+      assert.equal(summary.addedVisible, true); assert.equal(summary.removedVisible, true);
+      assert.ok(Math.abs(summary.file.top - summary.add.top) < Math.max(summary.file.height, summary.add.height), 'Filename and counts should occupy the same summary line');
+      assert.ok(summary.remove.right <= summary.row.right + 1, 'Edit counts must fit inside their operation summary');
+    }
+    const rgb = colour => colour.match(/[\d.]+/g)?.map(Number) || [];
+    const green = rgb(summary.addedColour), red = rgb(summary.removedColour);
+    assert.ok(green[1] > green[0] && green[1] > green[2], 'The collapsed addition count must be green');
+    assert.ok(red[0] > red[1] && red[0] > red[2], 'The collapsed deletion count must be red');
+  };
+  const assertSingleLineNumbers = card => {
+    for (const row of card.rows) {
+      assert.equal(row.legacyLineNumberCount, 0, 'The diff must not render separate old/new line-number columns');
+      if (row.kind === 'gap' || row.kind === 'notice') {
+        assert.equal(row.lineNumberCount, 0, 'Diff notices must not claim a source line number');
+        continue;
+      }
+      assert.equal(row.lineNumberCount, 1, 'Every code row needs exactly one line-number column');
+      assert.match(row.lineNumber?.trim() || '', /^\d+$/, 'Every code row needs a valid source line number');
+      const expectedSign = row.kind === 'add' ? '+' : row.kind === 'remove' ? '−' : '';
+      assert.equal(row.sign?.trim(), expectedSign, 'Single-column line numbers must preserve addition/deletion markers');
+    }
+  };
+  const assertLineNumber = (card, kind, text, expected) => {
+    const row = card.rows.find(value => value.kind === kind && value.text === text);
+    assert.ok(row, `Expected ${kind} row: ${text}`);
+    assert.equal(row.lineNumber?.trim(), String(expected), `${kind} row has the wrong source line number: ${text}`);
+  };
   const originalWindow = { bounds: win.getBounds(), opacity: win.getOpacity(), visible: win.isVisible() };
   let installed = false, stage = 'renderer ready';
   try {
@@ -139,28 +191,51 @@ module.exports = async function smokeCodeDiff({ win, output }) {
     await emit({ type: 'tool-result', name: 'write_file', toolCallId, result: { path: filePath, written: true }, fileChange });
     const liveSelector = rootSelector + ' .code-diff-card';
     await until('successful edit diff attached', () => inspectCard(liveSelector));
+    assert.equal(await js(`document.querySelector(${JSON.stringify(rootSelector + ' .file-edit-card')}).open`), false, 'A newly completed file edit must stay collapsed until opened by the user');
     await js(`(() => {const group=document.querySelector(${JSON.stringify(rootSelector)});group.open=true;for(const node of group.querySelectorAll('details.tool-card'))node.open=true;})()`);
     const live = await until('live code diff painted', async () => { const value = await inspectCard(liveSelector); return value?.visible && value; });
     assert.ok(live.path.includes('main.cjs'), 'Edited file header is missing its filename');
+    assert.equal(live.added, '+8'); assert.equal(live.removed, '-2');
+    assertEditSummary(await inspectEditSummary(liveSelector), fileChange, live.added, live.removed);
     assert.ok(live.rows.some(row => row.kind === 'add' && row.text?.includes("title: 'Synora code'")));
     assert.ok(live.rows.some(row => row.kind === 'remove' && row.text?.includes("title: 'AI code'")));
-    assert.ok(live.rows.filter(row => row.kind === 'add').every(row => row.sign?.trim() === '+' && /^\d+$/.test(row.new?.trim() || '')), 'Added lines need + markers and new line numbers');
-    assert.ok(live.rows.filter(row => row.kind === 'remove').every(row => /^[-−]$/.test(row.sign?.trim() || '') && /^\d+$/.test(row.old?.trim() || '')), 'Removed lines need minus markers and old line numbers');
+    assertSingleLineNumbers(live);
+    assertLineNumber(live, 'add', "    title: 'Synora code',", 7);
+    assertLineNumber(live, 'add', '    frame: false,', 8);
+    assertLineNumber(live, 'add', "    titleBarStyle: 'hidden',", 9);
+    assertLineNumber(live, 'remove', "    title: 'AI code',", 7);
+    assertLineNumber(live, 'remove', '    frame: true,', 8);
+    assertLineNumber(live, 'context', '    backgroundColor: "#171717",', 15);
     const channels = color => color.match(/[\d.]+/g)?.map(Number) || [];
     const green = channels(live.rows.find(row => row.kind === 'add').color);
     const red = channels(live.rows.find(row => row.kind === 'remove').color);
     assert.ok(green[1] > green[0] && green[1] > green[2], 'Added lines must have a green background: ' + JSON.stringify(green));
     assert.ok(red[0] > red[1] && red[0] > red[2], 'Removed lines must have a red background: ' + JSON.stringify(red));
+    const liveColours = await js(`(() => {
+      const card=document.querySelector(${JSON.stringify(liveSelector)});
+      return ['keyword','string','number','property'].map(kind=>{
+        const node=card.querySelector('.syntax-'+kind);
+        return {kind,text:node?.textContent,colour:node&&getComputedStyle(node).color};
+      });
+    })()`);
+    assert.ok(liveColours.every(value => value.text && value.colour), 'Diff syntax colours are missing: ' + JSON.stringify(liveColours));
+    assert.equal(new Set(liveColours.map(value => value.colour)).size, 4, 'Keywords, strings, numbers and properties need distinct colours');
 
     stage = 'successful targeted replacement';
     await emit({ type: 'tool-start', name: 'replace_in_file', toolCallId: replaceCallId, args: replaceArgs });
     await emit({ type: 'tool-result', name: 'replace_in_file', toolCallId: replaceCallId, result: { path: replaceChange.path, written: true }, fileChange: replaceChange });
     assert.equal(await js('document.querySelectorAll("#messages .code-diff-card").length'), 2, 'A committed targeted replacement should also display its diff');
+    const replacementSelector = rootSelector + ' .file-edit-card:nth-of-type(2) .code-diff-card';
+    const replacement = await inspectCard(replacementSelector);
+    assert.ok(replacement, 'The targeted replacement diff is missing');
+    assert.equal(replacement.added, '+1'); assert.equal(replacement.removed, '-1');
+    assertEditSummary(await inspectEditSummary(replacementSelector), replaceChange, replacement.added, replacement.removed);
     stage = 'denied and failed writes';
     for (const [suffix, result] of [['denied', { denied: true }], ['failed', { error: 'DISPLAY_ONLY_EXPECTED_WRITE_FAILURE' }]]) {
       const id = 'smoke-code-diff-' + suffix;
       await emit({ type: 'tool-start', name: 'replace_in_file', toolCallId: id, args: { path: suffix + '.js', old_text: 'old', new_text: 'new' } });
       await emit({ type: 'tool-result', name: 'replace_in_file', toolCallId: id, result });
+      assert.equal(await js(`document.querySelectorAll(${JSON.stringify(rootSelector + ' .tool-card:not(.file-edit-card) .tool-edit-summary')}).length`), 0, 'Denied or failed writes must not claim successful edit counts');
     }
     assert.equal(await js('document.querySelectorAll("#messages .code-diff-card").length'), 2, 'Rejected or failed writes must not be displayed as edited code');
     stage = 'completion and disclosure';
@@ -188,11 +263,31 @@ module.exports = async function smokeCodeDiff({ win, output }) {
     assert.equal(small.rows.filter(row => row.kind === 'add').length, 2);
     assert.equal(small.rows.filter(row => row.kind === 'remove').length, 2);
     assert.ok(small.rows.some(row => row.kind === 'context' && row.text === 'console.log(title);'));
+    assertSingleLineNumbers(small);
+    assertLineNumber(small, 'remove', "const title = '旧版';", 1);
+    assertLineNumber(small, 'add', "const title = 'Synora code';", 1);
+    assertLineNumber(small, 'remove', 'const enabled = false;', 2);
+    assertLineNumber(small, 'add', 'const enabled = true;', 2);
+    assertLineNumber(small, 'context', 'console.log(title);', 3);
     assert.equal(small.exact, 'true');
     await until('copy callback', () => js(`window.__codeDiffCopied === ${JSON.stringify(smallAfter)}`));
     const unsafe = await inspectCard('#code-diff-smoke-unsafe');
     assert.equal(unsafe.unsafeElements, 0); assert.ok(unsafe.text.includes('<img src=x'));
     assert.equal(await js('window.__codeDiffUnsafe || null'), null, 'Code and paths must never execute as HTML');
+    const markdownHighlight = await js(`(() => {
+      const host=document.createElement('div');host.id='code-diff-smoke-markdown';
+      ForgeMarkdown.renderMarkdown(host,${JSON.stringify('```js\nconst value = "<img src=x onerror=bad()>";\nif (value) return pick(value) + 3;\n```')});
+      $('code-diff-smoke-fixtures').append(host);
+      const code=host.querySelector('.message-code code');
+      return {text:code.textContent,unsafe:host.querySelectorAll('img,script').length,
+        kinds:[...new Set([...code.querySelectorAll('.syntax-token')].map(node=>node.className))],
+        colours:[...new Set([...code.querySelectorAll('.syntax-token')].map(node=>getComputedStyle(node).color))]};
+    })()`);
+    assert.equal(markdownHighlight.unsafe, 0);
+    assert.ok(markdownHighlight.text.includes('<img src=x onerror=bad()>'));
+    assert.ok(markdownHighlight.kinds.some(value => value.includes('syntax-control')));
+    assert.ok(markdownHighlight.kinds.some(value => value.includes('syntax-function')));
+    assert.ok(markdownHighlight.colours.length >= 6, 'Fenced code should distinguish several readable syntax colours');
 
     stage = 'native long diff scrolling';
     const longAfter = ['const longLine = "' + 'long-code-fragment-'.repeat(300) + '";', ...Array.from({ length: 120 }, (_, index) => `const item${index + 1} = ${index + 1};`)].join('\n');
@@ -240,15 +335,56 @@ module.exports = async function smokeCodeDiff({ win, output }) {
     const restored = await inspectCard(liveSelector);
     assert.equal(restored.visible, false); assert.equal(restored.added, live.added); assert.equal(restored.removed, live.removed);
     assert.ok(restored.rows.some(row => row.kind === 'add' && row.text?.includes("title: 'Synora code'")));
-    await js(`(() => {const group=document.querySelector(${JSON.stringify(rootSelector)});group.open=true;group.querySelector('details.tool-card').open=true;group.scrollIntoView({block:'start'});$('conversation-title').textContent='文件修改记录';})()`);
+    assertSingleLineNumbers(restored);
+    assert.deepEqual(restored.rows.map(row => [row.kind, row.lineNumber, row.sign, row.text]), live.rows.map(row => [row.kind, row.lineNumber, row.sign, row.text]), 'History must restore the same single-column source line numbers and markers');
+    assertEditSummary(await inspectEditSummary(liveSelector), fileChange, live.added, live.removed, false);
+    await js(`(() => {const group=document.querySelector(${JSON.stringify(rootSelector)});group.open=true;for(const tool of group.querySelectorAll('details.tool-card'))tool.open=false;group.scrollIntoView({block:'start'});$('conversation-title').textContent='文件修改记录';})()`);
+    await until('collapsed edit summaries painted', async () => (await inspectEditSummary(liveSelector))?.visible);
+    const collapsedMain = await inspectEditSummary(liveSelector), collapsedReplacement = await inspectEditSummary(replacementSelector);
+    assert.equal(collapsedMain.toolOpen, false); assert.equal(collapsedReplacement.toolOpen, false);
+    assertEditSummary(collapsedMain, fileChange, live.added, live.removed);
+    assertEditSummary(collapsedReplacement, replaceChange, replacement.added, replacement.removed);
+    assert.equal((await inspectCard(liveSelector)).visible, false, 'The edit summary must remain visible while the individual code diff is closed');
+    await capture('code-diff-collapsed-summaries.png');
+
+    stage = 'long filenames and unknown edit counts';
+    const longEditPath = 'src/renderer/' + 'readable-long-file-name-'.repeat(14) + 'theme.css';
+    await js(`(() => {
+      const host=document.createElement('div');host.id='code-diff-summary-fixtures';host.className='task-activity-events';
+      const edits=[{path:${JSON.stringify(longEditPath)},before:'old line\\n',after:'new first\\nnew second\\n'},
+        {path:'src/large-file.js',before:'a'.repeat(1024*1024+1),after:'b'}];
+      for(let i=0;i<edits.length;i++){
+        const edit=edits[i],tool=createToolCard({name:'write_file',args:{path:edit.path},toolCallId:'summary-fixture-'+i});
+        tool.card.id='code-diff-summary-fixture-'+i;host.append(tool.card);
+        completeTool({name:'write_file',toolCallId:'summary-fixture-'+i,result:{written:true,path:edit.path},fileChange:edit},{tools:[tool],updateActivity:false});
+      }
+      $('messages').append(host);applyTextScale(130);host.scrollIntoView({block:'center'});
+    })()`);
+    win.setContentSize(900, 1000); await frames();
+    const longSelector = '#code-diff-summary-fixture-0 .code-diff-card';
+    const longSummary = await until('narrow long filename summary painted', async () => { const value = await inspectEditSummary(longSelector); return value?.visible && value; });
+    assertEditSummary(longSummary, { path: longEditPath }, '+2', '-1');
+    assert.equal(longSummary.toolOpen, false);
+    assert.equal(longSummary.fileOverflow.textOverflow, 'ellipsis', 'Long filenames need an ellipsis');
+    assert.match(longSummary.fileOverflow.overflow, /hidden|clip/);
+    assert.equal(longSummary.fileOverflow.whiteSpace, 'nowrap');
+    assert.ok(longSummary.fileOverflow.scrollWidth > longSummary.fileOverflow.clientWidth, 'The long filename fixture should actually exercise truncation');
+    assertEditSummary(await inspectEditSummary('#code-diff-summary-fixture-1 .code-diff-card'), { path: 'src/large-file.js' }, '+—', '-—');
+    await js(`$('code-diff-summary-fixtures').remove();applyTextScale(100)`);
+    win.setContentSize(1440, 1000); await frames();
+    await js(`(() => {const group=document.querySelector(${JSON.stringify(rootSelector)});group.querySelector('details.tool-card').open=true;group.scrollIntoView({block:'start'});})()`);
     await until('restored diff painted', async () => (await inspectCard(liveSelector))?.visible);
     await capture('code-diff-preview.png');
     const result = {
       status: 'completed', realApi: false, realCommands: false, realFileMutations: false, systemClipboardTouched: false,
-      successfulEditsOnly: true, greenAdditions: true, redDeletions: true, lineNumbers: true, exactCounts: true,
+      successfulEditsOnly: true, greenAdditions: true, redDeletions: true, lineNumbers: true, singleLineNumberColumn: true,
+      additionsUseNewLineNumber: true, deletionsUseOldLineNumber: true, followingContextUsesNewLineNumber: true, exactCounts: true,
       independentDisclosure: true, copyCallback: true, htmlRenderedAsText: true, historyReconstruction: true,
+      distinctSyntaxColours: true, markdownCodeHighlighted: true,
+      collapsedEditFilenamesAndCounts: true, editCountsMatchDiffs: true, editSummaryColors: true,
+      historicalEditSummaries: true, longFilenameEllipsisAtLargeFont: true, unknownEditCountsPreserved: true,
       nativeVerticalScroll: vertical.top, nativeHorizontalScroll: horizontal.left,
-      syntheticEventCount: events.length, screenshots: ['code-diff-preview.png'],
+      syntheticEventCount: events.length, screenshots: ['code-diff-preview.png', 'code-diff-collapsed-summaries.png'],
     };
     await fs.writeFile(path.join(output, 'code-diff-smoke-result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;

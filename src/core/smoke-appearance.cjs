@@ -89,14 +89,15 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
       }
     }
   };
-  const key = code => {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: code });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: code });
+  const key = (code, modifiers = []) => {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: code, modifiers });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: code, modifiers });
   };
   const click = async selector => {
     const point = await js(`(() => {
       const node = document.querySelector(${JSON.stringify(selector)});
       if (!node || node.disabled || !node.getClientRects().length) throw new Error('Appearance control unavailable: ' + ${JSON.stringify(selector)});
+      node.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
       const rect = node.getBoundingClientRect();
       return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
     })()`);
@@ -105,22 +106,28 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
   };
   const menu = async action => {
-    await click('#menu-view');
-    await until('view menu open', () => js("!document.getElementById('app-menu-popup').hidden"));
+    await click('#menu-appearance');
+    await until('appearance menu open', () => js("!document.getElementById('app-menu-popup').hidden"));
     await click(`#app-menu-popup [data-action="${action}"]`);
   };
+  const panelControls = [
+    { id:'panel-frost', field:'panelFrost' },
+    { id:'panel-transparency', field:'panelTransparency' },
+  ];
   const snapshot = () => js(`(() => {
     const layer = document.getElementById('app-background'), style = getComputedStyle(layer);
     const rect = node => { const r = node.getBoundingClientRect(); return { x:r.x, y:r.y, width:r.width, height:r.height, right:r.right, bottom:r.bottom }; };
     const surfaces = Object.fromEntries(['.sidebar', '.conversation', '.preview-panel', '.composer'].map(selector => {
       const node = document.querySelector(selector), s = getComputedStyle(node);
-      return [selector, { ...rect(node), opacity:Number(s.opacity), blur:s.backdropFilter, background:s.backgroundColor, border:parseFloat(s.borderTopWidth), color:s.color }];
+      return [selector, { ...rect(node), opacity:Number(s.opacity), blur:s.backdropFilter, filter:s.filter, background:s.backgroundColor, backgroundImage:s.backgroundImage, border:parseFloat(s.borderTopWidth), color:s.color }];
     }));
     return {
       viewport:{width:innerWidth,height:innerHeight}, horizontalOverflow:document.documentElement.scrollWidth > innerWidth + 1,
       layer:{...rect(layer),opacity:Number(style.opacity),pointerEvents:style.pointerEvents,custom:style.backgroundImage.includes('data:image/'),defaultImage:style.backgroundImage.includes('aurora-background.svg')},
       transparency:Number(document.getElementById('background-transparency').value),
       label:document.getElementById('background-transparency-value').value,
+      panels:Object.fromEntries(${JSON.stringify(panelControls)}.map(({id,field})=>[field,{value:Number(document.getElementById(id).value),label:document.getElementById(id+'-value').value}])),
+      panelOpacity:Number(getComputedStyle(document.documentElement).getPropertyValue('--panel-opacity')),
       dialog:{...rect(document.getElementById('appearance-dialog')),open:document.getElementById('appearance-dialog').open},
       composer:rect(document.getElementById('task-input')),surfaces
     };
@@ -133,6 +140,7 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     assert.equal(value.layer.pointerEvents, 'none', 'Decorative background intercepts input');
     for (const [selector, surface] of Object.entries(value.surfaces)) {
       assert.equal(surface.opacity, 1, selector + ' faded its text together with the background');
+      assert.equal(surface.filter, 'none', selector + ' blurred its text instead of the backdrop');
       assert.ok(surface.width > 0 && surface.height > 0, selector + ' has no usable area');
     }
     if (threePanes) {
@@ -144,6 +152,50 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     return value;
   };
   const saved = () => fs.readFile(path.join(dataDir, 'appearance.json'), 'utf8').then(JSON.parse);
+  const colorAlpha = color => { const values=color.match(/[\d.]+/g)||[];return values.length===4?Number(values[3]):1; };
+  const assertPanels = async (values, label) => {
+    const observed = await snapshot();
+    for (const { field } of panelControls) {
+      assert.equal(observed.panels[field].value, values[field], label + ': wrong slider value for ' + field);
+      assert.equal(observed.panels[field].label, `${values[field]}%`, label + ': wrong visible value for ' + field);
+    }
+    assert.ok(Math.abs(observed.panelOpacity-(100-values.panelTransparency)/100)<0.005,label+': shared panel opacity variable is wrong');
+    for (const selector of ['.sidebar','.conversation','.preview-panel']) {
+      const value = values.panelFrost;
+      const surface = observed.surfaces[selector];
+      if (value === 0) assert.equal(surface.blur, 'none', label + ': zero must disable backdrop filtering for ' + selector);
+      else {
+        const blur = /\bblur\(([\d.]+)px\)/.exec(surface.blur);
+        assert.ok(blur && Math.abs(Number(blur[1]) - value * 0.4) < 0.01, label + ': incorrect blur for ' + selector + ': ' + surface.blur);
+      }
+      assert.equal(surface.opacity, 1, label + ': content opacity changed for ' + selector);
+      assert.equal(surface.filter, 'none', label + ': content itself was blurred for ' + selector);
+      if (values.panelTransparency===0) assert.equal(colorAlpha(surface.background),1,label+': opaque panel must have an opaque material on '+selector);
+      if (values.panelTransparency===100) {
+        assert.equal(colorAlpha(surface.background),0,label+': clear panel retained its background on '+selector);
+        const colors=surface.backgroundImage.match(/rgba?\([^)]*\)/g)||[];
+        assert.ok(colors.every(color=>colorAlpha(color)===0),label+': clear panel retained visible gradient colors on '+selector+': '+surface.backgroundImage);
+      }
+    }
+    return observed;
+  };
+  const panelsSaved = async values => {
+    await js('window.synoraAppearance.settled()');
+    await until('all independent panel settings durably saved', async () => {
+      const state = await call('getAppearance'), disk = await saved();
+      return Object.entries(values).every(([field,value]) => state[field] === value && disk[field] === value);
+    });
+  };
+  const nativeSliderKey = async (id, keyCode, expected) => {
+    await js(`(() => { const slider=document.getElementById(${JSON.stringify(id)});slider.scrollIntoView({block:'nearest'});slider.focus(); })()`);
+    key(keyCode);
+    await until('native frost key applied', () => js(`document.activeElement.id===${JSON.stringify(id)}&&Number(document.activeElement.value)===${expected}`));
+  };
+  const nativeSliderValue = async (id,value) => {
+    await nativeSliderKey(id,'Home',0);
+    for(let count=0;count<value;count++)key('Right');
+    await until('native slider reaches '+value,()=>js(`Number(document.getElementById(${JSON.stringify(id)}).value)===${value}`));
+  };
   const fixtureMessages = () => js(`(() => {
     if (window.__appearanceSmoke) return;
     const welcome=document.getElementById('welcome'),messages=document.getElementById('messages');
@@ -164,7 +216,9 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
   })()`);
   const imageDigest = value => createHash('sha256').update(value || '').digest('hex');
   const sameAppearance = (actual, expected) => actual.backgroundTransparency === expected.backgroundTransparency
-    && actual.backgroundName === expected.backgroundName && imageDigest(actual.backgroundImage) === imageDigest(expected.backgroundImage);
+    && actual.backgroundName === expected.backgroundName && imageDigest(actual.backgroundImage) === imageDigest(expected.backgroundImage)
+    && panelControls.every(({field}) => actual[field] === expected[field])
+    && actual.backgroundPreset===expected.backgroundPreset && actual.conversationTextColor===expected.conversationTextColor;
   const suffix = randomUUID();
   const project = path.join(dataDir, 'appearance-project-' + suffix, '极光工作室');
   const fixture = path.join(dataDir, '磨砂背景 ' + suffix + '.png');
@@ -181,8 +235,10 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     await fs.writeFile(invalidFixture, 'An invalid PNG fixture, never an executable.\n');
     await js('window.synoraAppearance.ready');
     await call('resetBackground');
+    await call('setAppearance', { panelFrost:70, panelTransparency:30 });
     const defaults = await call('getAppearance');
     assert.equal(defaults.backgroundImage, null); assert.equal(defaults.backgroundName, ''); assert.equal(defaults.backgroundTransparency, 28);
+    assert.equal(defaults.panelFrost,70);assert.equal(defaults.panelTransparency,30);
     await call('openProject', { path: project });
     win.setSize(1440, 1000);
     await until('fixture file tree', () => js("!!document.querySelector('.file-row[data-path=\"theme.css\"]')"));
@@ -201,20 +257,86 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     await fixtureMessages();
     await capture('appearance-default-conversation.png');
 
-    const menuItems = await js(`(() => {
+    const viewItems = await js(`(() => {
       document.getElementById('menu-view').click();
       const items = [...document.querySelectorAll('#app-menu-popup [data-action]')].map(node => ({ action:node.dataset.action, disabled:node.disabled }));
       document.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape', bubbles:true }));
       return items;
     })()`);
-    for (const action of ['import-background', 'appearance-settings']) assert.ok(menuItems.some(item => item.action === action && !item.disabled), 'Missing accessible view menu action: ' + action);
+    for (const action of ['import-background', 'appearance-settings', 'frost-settings']) assert.equal(viewItems.some(item => item.action === action), false, 'Appearance action remained in the View menu: ' + action);
+    await click('#menu-appearance');
+    await until('new appearance menu is visible', () => js("!document.getElementById('app-menu-popup').hidden"));
+    const menuItems = await js("[...document.querySelectorAll('#app-menu-popup [data-action]')].map(node=>({action:node.dataset.action,disabled:node.disabled}))");
+    assert.deepEqual(menuItems.map(item=>item.action),['import-background','appearance-settings'],'Appearance menu must contain only the two background/settings actions');
+    assert.ok(menuItems.every(item=>!item.disabled),'Appearance actions should be enabled');
+    await capture('appearance-menu.png');
+    key('Escape');
+    await until('appearance menu closes', () => js("document.getElementById('app-menu-popup').hidden"));
+    await js("document.getElementById('task-input').focus()");
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Alt'});
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['alt']});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['alt']});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Alt'});
+    await until('Alt+A opens and focuses the appearance menu', () => js("!document.getElementById('app-menu-popup').hidden&&document.getElementById('menu-appearance').getAttribute('aria-expanded')==='true'&&document.activeElement.closest('#app-menu-popup')?.id==='app-menu-popup'"));
+    key('Escape');
+    await until('Escape closes keyboard appearance menu', () => js("document.getElementById('app-menu-popup').hidden"));
+    const sendButton = await js(`(() => {
+      const button=document.getElementById('send-button');
+      return {icon:!!button.querySelector('svg.send-plane-icon path'),label:button.getAttribute('aria-label'),title:button.title,text:button.textContent.trim()};
+    })()`);
+    assert.equal(sendButton.icon, true, 'Send button is missing its paper-plane SVG icon');
+    assert.equal(sendButton.label, '发送任务');
+    assert.ok(sendButton.title.includes('Ctrl + Enter'), 'Send keyboard shortcut hint changed');
+    assert.equal(sendButton.text, '', 'Old arrow text remains beside the paper-plane icon');
     // The actual keyboard event activates the focused menu trigger.
-    await js("document.getElementById('menu-view').focus()"); key('Enter');
-    await until('keyboard opens view menu', () => js("!document.getElementById('app-menu-popup').hidden"));
+    await js("document.getElementById('menu-appearance').focus()"); key('Enter');
+    await until('keyboard opens appearance menu', () => js("!document.getElementById('app-menu-popup').hidden"));
     await click('#app-menu-popup [data-action="appearance-settings"]');
     await until('appearance modal open', () => js("document.getElementById('appearance-dialog').open"));
+    assert.equal(await js("!!document.getElementById('background-transparency-help')||document.getElementById('appearance-dialog').textContent.includes('拖动即时预览，自动保存到本机。')"), false, 'Removed transparency hint is still visible or referenced');
+    assert.equal(await js("!!document.getElementById('background-transparency').getAttribute('aria-describedby')?.includes('background-transparency-help')"), false, 'Transparency range points to the removed hint');
+    assert.equal(await js("!!document.querySelector('#sidebar-frost,#conversation-frost,#preview-frost')||typeof window.synoraAppearance.openFrost!=='undefined'"),false,'Old per-pane controls or redundant API remain');
+    const sliderRanges = await js(`${JSON.stringify(panelControls)}.map(({id})=>{const slider=document.getElementById(id);return {id,min:slider.min,max:slider.max,step:slider.step,type:slider.type};})`);
+    for (const range of sliderRanges) assert.deepEqual(range, {id:range.id,min:'0',max:'100',step:'1',type:'range'}, 'Frost strength is not an accessible integer range');
+    await assertPanels({panelFrost:70,panelTransparency:30}, 'Initial global panel settings');
     await geometry(true);
     await capture('appearance-settings-default.png');
+
+    const clearPanels = {panelFrost:0,panelTransparency:100};
+    await nativeSliderKey('panel-frost','Home',0);await nativeSliderKey('panel-transparency','End',100);
+    await assertPanels(clearPanels, 'Native sliders make all panels clear');
+    await panelsSaved(clearPanels);
+    await click('#appearance-close');
+    await until('zero-frost modal closes', () => js("!document.getElementById('appearance-dialog').open"));
+    await geometry(true); await capture('appearance-frost-clear.png');
+    await js("window.aiCodeCommands.execute('pin-summary')");
+    await until('clear right pane unpinned',()=>js("!window.aiCodeCommands.getState().previewPinned"));
+    await assertPanels(clearPanels,'Floating right pane is also fully clear');
+    await js("window.aiCodeCommands.execute('pin-summary')");
+    await until('clear right pane repinned',()=>js("window.aiCodeCommands.getState().previewPinned"));
+    await menu('appearance-settings');
+    await until('panel settings reopen', () => js("document.getElementById('appearance-dialog').open"));
+    const opaquePanels = {panelFrost:100,panelTransparency:0};
+    await nativeSliderKey('panel-frost','End',100);await nativeSliderKey('panel-transparency','Home',0);
+    await assertPanels(opaquePanels, 'Native sliders make all panel materials opaque and fully frosted');
+    await panelsSaved(opaquePanels);
+    await click('#appearance-close');
+    await until('maximum-frost modal closes', () => js("!document.getElementById('appearance-dialog').open"));
+    await geometry(true); await capture('appearance-frost-strong.png');
+    // The detached right pane has its own CSS selector. Its material must use
+    // the same stored right-pane strength in both pinned and floating layouts.
+    await js("window.aiCodeCommands.execute('pin-summary')");
+    await until('right pane unpinned', () => js("!window.aiCodeCommands.getState().previewPinned"));
+    await assertPanels(opaquePanels, 'Floating right pane uses global panel settings');
+    await js("window.aiCodeCommands.execute('pin-summary')");
+    await until('right pane repinned', () => js("window.aiCodeCommands.getState().previewPinned"));
+    await menu('appearance-settings');
+    await until('frost controls reopen', () => js("document.getElementById('appearance-dialog').open"));
+    await click('#frost-reset');
+    await panelsSaved({panelFrost:70,panelTransparency:0});
+    await assertPanels({panelFrost:70,panelTransparency:0}, 'Frost reset preserves panel transparency');
+    assert.equal((await call('getAppearance')).backgroundTransparency, 28, 'Frost reset changed the independent image transparency');
+    await nativeSliderValue('panel-transparency',30);await panelsSaved({panelFrost:70,panelTransparency:30});
     key('Escape');
     await until('native Escape closes modal', () => js("!document.getElementById('appearance-dialog').open"));
 
@@ -267,6 +389,34 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     }
     await js('window.synoraAppearance.settled()');
     await until('last slider intent wins', async () => (await call('getAppearance')).backgroundTransparency === 58 && (await saved()).backgroundTransparency === 58);
+    // Frost and panel material transparency are independent global controls;
+    // the background image keeps its own transparency setting.
+    await nativeSliderValue('panel-frost',35);await nativeSliderValue('panel-transparency',61);
+    const mixedPanels = {panelFrost:35,panelTransparency:61};
+    await assertPanels(mixedPanels, 'Independent mixed global panel settings');
+    await panelsSaved({...mixedPanels,backgroundTransparency:58});
+    assert.equal((await call('getAppearance')).backgroundTransparency, 58, 'Panel controls changed the image transparency');
+    // Multiple controls can queue commits before an earlier IPC reply returns.
+    // The final intent for every field must survive the serialized replies.
+    await js(`(() => {
+      for (const [id,value] of [['panel-frost',61],['panel-transparency',24],['background-transparency',83],['panel-frost',35],['panel-transparency',61],['background-transparency',58]]) {
+        const slider=document.getElementById(id);slider.value=String(value);
+        slider.dispatchEvent(new Event('input',{bubbles:true}));
+        slider.dispatchEvent(new Event('change',{bubbles:true}));
+      }
+    })()`);
+    await assertPanels(mixedPanels, 'Immediate preview after interleaved slider changes');
+    await panelsSaved({...mixedPanels,backgroundTransparency:58});
+    assert.equal((await call('getAppearance')).backgroundTransparency, 58, 'Interleaved frost changes lost the previous transparency');
+    // This IPC mutation bypasses the sliders, exercising the main-process
+    // appearance notification also used to synchronize other open windows.
+    await call('setAppearance', {panelFrost:90});
+    await until('external appearance event updates the slider', () => js("Number(document.getElementById('panel-frost').value)===90"));
+    await assertPanels({...mixedPanels,panelFrost:90}, 'External appearance notification');
+    await call('setAppearance', {panelFrost:35});
+    await until('external appearance event restores the slider', () => js("Number(document.getElementById('panel-frost').value)===35"));
+    await assertPanels(mixedPanels, 'External appearance notification preserves panel transparency');
+    await geometry(true); await capture('appearance-settings-frost-mixed.png');
     const beforeInvalid = await call('getAppearance');
     chooserReply = { canceled:false, filePaths:[invalidFixture] };
     await click('#background-import');
@@ -281,11 +431,13 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
     win.webContents.reload(); await loaded; await js('window.synoraAppearance.ready');
     const restored = await call('getAppearance');
     assert.equal(sameAppearance(restored, beforeInvalid), true, 'Appearance changed after renderer reload');
+    await assertPanels(mixedPanels, 'Global panel settings restored after renderer reload');
     const restoredView = await until('background restored without original image', async () => { const value=await snapshot();return value.layer.custom && Math.abs(value.layer.opacity-0.42)<0.005 && value; });
     await until('reloaded workbench ready', () => js("!!document.querySelector('.file-row[data-path=\"theme.css\"]')"));
     await click('.file-row[data-path="theme.css"]');
     await until('reloaded editor open', () => js("!document.getElementById('preview-panel').hidden&&!document.getElementById('file-preview').hidden"));
     await js("if(!window.aiCodeCommands.getState().previewPinned)window.aiCodeCommands.execute('pin-summary')");
+    await assertPanels(mixedPanels, 'Restored global settings apply when right editor opens');
     await fixtureMessages();
     await geometry(true); await capture('appearance-restored-desktop.png');
     win.setSize(980, 740);
@@ -300,7 +452,13 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
       return state.backgroundImage===null&&state.backgroundName===''&&state.backgroundTransparency===28
         && await js("document.getElementById('appearance-dialog').getAttribute('aria-busy')==='false'&&getComputedStyle(document.getElementById('app-background')).backgroundImage.includes('aurora-background.svg')");
     });
-    assert.equal(sameAppearance(await saved(), defaults), true, 'Reset did not persist the default image and transparency');
+    assert.equal(sameAppearance(await saved(), {...defaults,...mixedPanels}), true, 'Background reset did not preserve independent global panel settings');
+    await assertPanels(mixedPanels, 'Background reset preserves panel settings');
+    await click('#frost-reset');
+    await panelsSaved({panelFrost:70,panelTransparency:61});
+    await assertPanels({panelFrost:70,panelTransparency:61}, 'Final frost reset preserves panel transparency');
+    await nativeSliderValue('panel-transparency',30);await panelsSaved({panelFrost:70,panelTransparency:30});
+    assert.equal(sameAppearance(await saved(), defaults), true, 'Frost reset changed the default image or transparency');
     key('Escape');
     await until('compact modal closes', () => js("!document.getElementById('appearance-dialog').open"));
     return {
@@ -309,6 +467,11 @@ module.exports = async function smokeAppearance({ win, output, dataDir }) {
       importedImageSavedLocally:true, independentOfOriginalFile:true, rendererReloadRestoresAppearance:true,
       immediateTransparencyPreview:true, keyboardTransparency:true, transparencyEndpoints:true,
       rapidFinalIntentSaved:true, resetRestoresDefault:true, decorativeImageExcludedFromModelState:true,
+      separateAppearanceMenu:true, nativeAltAAppearanceMenu:true, appearanceRemovedFromView:true, paperPlaneSendIcon:true, removedTransparencyHint:true,
+      nativeFrostSliderEndpoints:true,nativePanelTransparencyEndpoints:true,globalFrostAcrossAllPanes:true,independentPanelAndImageTransparency:true,rapidPanelEditsPreserved:true,
+      externalAppearanceEventsApplied:true,
+      rendererReloadRestoresPanelSettings:true,pinnedAndFloatingPanelsShareSettings:true,frostResetPreservesPanelTransparency:true,frostResetPreservesBackground:true,
+      backgroundResetPreservesPanelSettings:true,clearFrostDisablesBackdropFilter:true,fullyTransparentPanelMaterials:true,opaquePanelMaterials:true,contentTextNeverFiltered:true,
       chooserCalls, desktop:{width:defaultView.viewport.width,height:defaultView.viewport.height},
       compact:{width:compactView.viewport.width,height:compactView.viewport.height},
       defaultOpacity:defaultView.layer.opacity, importedOpacity:restoredView.layer.opacity,

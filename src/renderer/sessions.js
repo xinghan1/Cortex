@@ -26,12 +26,65 @@
       popup.setAttribute('role', 'menu'); popup.setAttribute('aria-label', '当前项目会话');
       document.body.append(popup);
       let state = {}, request = 0, submitting = false, busy = false, rows = [];
+      const renameDialog = el('dialog', 'file-name-dialog session-rename-dialog'); renameDialog.id = 'session-rename-dialog';
+      renameDialog.setAttribute('aria-labelledby', 'session-rename-title');
+      const renameForm = el('form'); renameForm.id = 'session-rename-form';
+      const renameHeader = el('div', 'dialog-header'), renameTitle = el('h2', '', '重命名会话'); renameTitle.id = 'session-rename-title'; renameHeader.append(renameTitle);
+      const renameLabel = el('label', 'form-field'), renameInput = el('input'); renameInput.id = 'session-rename-input';
+      renameInput.type = 'text'; renameInput.autocomplete = 'off'; renameInput.maxLength = 160; renameInput.required = true;
+      renameInput.setAttribute('aria-describedby', 'session-rename-hint session-rename-error');
+      renameLabel.append(el('span', '', '会话标题'), renameInput);
+      const renameHint = el('p', 'session-rename-hint', '最多 80 个字符'); renameHint.id = 'session-rename-hint';
+      const renameError = el('p', 'form-error'); renameError.id = 'session-rename-error'; renameError.setAttribute('role', 'alert'); renameError.hidden = true;
+      const renameFooter = el('div', 'dialog-footer'), renameCancel = el('button', 'button subtle', '取消'), renameSave = el('button', 'button solid', '保存');
+      renameCancel.id = 'session-rename-cancel'; renameCancel.type = 'button'; renameSave.id = 'session-rename-save'; renameSave.type = 'submit';
+      renameFooter.append(renameCancel, renameSave); renameForm.append(renameHeader, renameLabel, renameHint, renameError, renameFooter); renameDialog.append(renameForm); document.body.append(renameDialog);
+      let renameId = null, renameRoot = '', renameSaving = false;
       const workspace = value => typeof value === 'string' ? value : value?.root || '';
       const enabled = () => [...popup.querySelectorAll('button:not(:disabled)')];
       const close = (restore = false) => {
         ++request; popup.hidden = true; trigger.setAttribute('aria-expanded', 'false');
         if (restore) trigger.focus({ preventScroll: true });
       };
+      const closeRename = (restore = false) => {
+        renameId = null;
+        if (renameDialog.open) renameDialog.close();
+        if (restore && !trigger.disabled) trigger.focus({ preventScroll: true });
+      };
+      const openRename = () => {
+        if (busy || submitting || renameSaving || !state.sessionId) return;
+        close(); renameId = state.sessionId; renameRoot = workspace(state.workspace);
+        renameInput.value = state.sessionTitle || title.textContent || '新会话'; renameError.hidden = true;
+        renameInput.disabled = renameCancel.disabled = renameSave.disabled = false;
+        renameDialog.showModal(); renameInput.focus(); renameInput.select();
+      };
+      renameCancel.addEventListener('click', () => closeRename(true));
+      renameDialog.addEventListener('cancel', event => { event.preventDefault(); if (!renameSaving) closeRename(true); });
+      renameForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (renameSaving || !renameId || busy) return;
+        const id = renameId, root = renameRoot, value = renameInput.value.trim();
+        if (!value || [...value].length > 80 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(renameInput.value)) {
+          renameError.textContent = !value ? '请输入会话标题。' : '会话标题最多 80 个字符，且不能包含换行或控制字符。'; renameError.hidden = false; renameInput.focus(); return;
+        }
+        if (id !== state.sessionId || root !== workspace(state.workspace)) { closeRename(); return; }
+        renameSaving = true; renameInput.disabled = renameCancel.disabled = renameSave.disabled = true; renameError.hidden = true;
+        try {
+          const result = await bridge.renameSession({ id, title: value });
+          if (id === state.sessionId && root === workspace(state.workspace)) {
+            state = { ...state, sessionTitle: result.title };
+            title.textContent = result.title; trigger.title = result.title;
+            rows = rows.map(row => row.id === id ? { ...row, title: result.title } : row);
+            if (renameId === id) closeRename(true);
+          }
+        } catch (error) {
+          if (renameId === id && renameDialog.open) { renameError.textContent = error?.message || '会话重命名失败。'; renameError.hidden = false; }
+          else notice(error?.message || '会话重命名失败。', true);
+        } finally {
+          renameSaving = false; renameInput.disabled = renameCancel.disabled = renameSave.disabled = false;
+          if (renameDialog.open) renameInput.focus();
+        }
+      });
       let positionStyle;
       const position = () => {
         if (popup.hidden) return;
@@ -58,11 +111,11 @@
         const button = el('button', 'session-history-item'); button.type = 'button'; button.dataset.sessionId = record.id;
         button.setAttribute('role', 'menuitemradio'); button.setAttribute('aria-checked', String(current));
         const copy = el('span', 'session-history-copy');
-        copy.append(el('span', 'session-history-preview', record.preview || '当前会话'));
+        copy.append(el('span', 'session-history-preview', record.title || record.preview || '当前会话'));
         const label = dateLabel(record.updatedAt);
         if (label || current) copy.append(el('small', 'session-history-meta', `${current ? '当前会话' : '历史会话'}${label ? ' · ' + label : ''}`));
         button.append(copy, el('span', 'session-history-check', current ? '✓' : ''));
-        button.title = record.preview || '当前会话';
+        button.title = record.title || record.preview || '当前会话';
         button.addEventListener('click', () => current ? close(true) : action(() => onSelect(record.id)));
         return button;
       };
@@ -70,9 +123,11 @@
         popup.replaceChildren();
         const create = el('button', 'session-new-button', '＋ 新建会话'); create.type = 'button'; create.dataset.action = 'new-session'; create.setAttribute('role', 'menuitem');
         create.addEventListener('click', () => action(onNew)); popup.append(create);
+        const rename = el('button', 'session-rename-button', '重命名会话…'); rename.type = 'button'; rename.dataset.action = 'rename-session'; rename.setAttribute('role', 'menuitem');
+        rename.disabled = !state.sessionId; rename.addEventListener('click', openRename); popup.append(rename);
         popup.append(el('h2', 'session-list-heading', '当前项目的历史会话'));
         if (state.sessionId && !rows.some(row => row.id === state.sessionId)) {
-          popup.append(sessionButton({ id: state.sessionId, preview: state.temporary === true ? '当前临时会话' : '当前会话' }, true));
+          popup.append(sessionButton({ id: state.sessionId, title: state.sessionTitle || '新会话' }, true));
         }
         if (loading) popup.append(el('p', 'session-list-status', '正在加载…'));
         else if (failed) popup.append(el('p', 'session-list-status', '历史会话加载失败，请重试。'));
@@ -123,11 +178,13 @@
           const rootChanged = workspace(state.workspace) !== workspace(next?.workspace);
           const sessionChanged = state.sessionId !== next?.sessionId;
           state = next || {};
+          title.textContent = state.sessionTitle || '新会话';
+          trigger.title = state.sessionTitle || '历史会话与新建会话';
           const queue = state.promptQueue || state.queue;
           busy = state.busy === true || state.authBusy === true || state.activeTask?.running === true
             || (Array.isArray(queue) ? queue.length > 0 : (queue?.items?.length || queue?.pending?.length || 0) > 0);
           trigger.disabled = busy || submitting;
-          if (busy || rootChanged || sessionChanged) close();
+          if (busy || rootChanged || sessionChanged) { close(); closeRename(); }
         }
       };
     }

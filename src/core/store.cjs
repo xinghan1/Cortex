@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { aggregateSessionUsage, createSessionMetrics } = require('./session-metrics.cjs');
+const { normalizeSessionTitle, sessionTitle } = require('./session-title.cjs');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const EFFORTS = {
@@ -43,9 +44,11 @@ function hasImage(message) {
 }
 
 function meaningfulSession(data) {
-  return data.demo !== true && Array.isArray(data.messages) && data.messages.some(message =>
+  let named = false;
+  try { named = typeof data.customTitle === 'string' && Boolean(normalizeSessionTitle(data.customTitle)); } catch { /* Invalid optional names do not make an empty session meaningful. */ }
+  return data.demo !== true && Array.isArray(data.messages) && (named || data.messages.some(message =>
     message && ['user', 'assistant'].includes(message.role) && typeof message.content === 'string'
-      && (message.content.trim() || hasImage(message)));
+      && (message.content.trim() || hasImage(message))));
 }
 
 function normalizeUsage(record) {
@@ -66,7 +69,7 @@ function normalizeUsage(record) {
     reported, partial: record.partial === true, status: record.status,
     ...(reported && validTokens(record.cachedInputTokens) && record.cachedInputTokens <= record.inputTokens
       ? { cachedInputTokens: record.cachedInputTokens } : {}),
-    ...(record.purpose === 'context-compaction' ? { purpose: 'context-compaction' } : {}),
+    ...(['context-compaction', 'approval-review'].includes(record.purpose) ? { purpose: record.purpose } : {}),
     ...(record.historicalApproximate === true ? { historicalApproximate: true } : {}),
   };
 }
@@ -226,7 +229,7 @@ class Store {
         const summary = firstPrompt?.content || (data.messages.some(hasImage) ? '图片消息' : '历史会话');
         const preview = [...this.redact(summary).replace(/[\u0000-\u001f\u007f\s]+/gu, ' ').trim()].slice(0, 80).join('');
         sessions.push({
-          id: data.id, title: selected.title, preview,
+          id: data.id, title: this.sessionTitle(data), preview,
           createdAt: isoDate(data.createdAt) ? new Date(data.createdAt).toISOString() : null,
           updatedAt: new Date(data.updatedAt).toISOString(),
         });
@@ -244,8 +247,31 @@ class Store {
     return data;
   }
   createSession(workspace = null) { const now = new Date().toISOString(); return { id: randomUUID(), title: '新会话', createdAt: now, updatedAt: now, workspace, messages: [], events: [] }; }
+  sessionTitle(session) { return sessionTitle(session, value => this.redact(value)); }
+  async renameSession(session, title) {
+    if (!session || !UUID.test(session.id)) throw new Error('会话 ID 无效，未保存。');
+    const customTitle = normalizeSessionTitle(title);
+    let latest = session;
+    if (session.temporary !== true) {
+      try { latest = await this.getSession(session.id); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const identity = value => projectIdentity(value)?.key ?? value;
+      if (identity(latest.workspace) !== identity(session.workspace)) throw new Error('会话所属项目已变化，标题未保存。');
+    }
+    // History can be open in another window while its original keeps growing.
+    // A name edit must never replace those newer messages with this snapshot.
+    const next = { ...latest, customTitle };
+    next.title = this.sessionTitle(next);
+    if (session.temporary !== true) await this.saveSession(next);
+    else next.updatedAt = new Date().toISOString();
+    session.customTitle = next.customTitle;
+    session.title = next.title;
+    session.updatedAt = next.updatedAt;
+    return { id: session.id, title: next.title };
+  }
   async saveSession(session) {
     if (!/^[a-f0-9-]{36}$/.test(String(session?.id))) throw new Error('会话 ID 无效，未保存。');
+    session.title = this.sessionTitle(session);
     session.updatedAt = new Date().toISOString();
     await this.write(path.join('sessions', `${session.id}.json`), JSON.parse(this.redact(JSON.stringify(session))));
   }

@@ -30,7 +30,7 @@ test('current project lists all meaningful sessions while project switcher remai
   await history(store, { workspace: 'C:/Different/Demo' });
   const items = await store.listProjectSessions('C:/Projects/./Demo/');
   assert.deepEqual(items.map(item => item.id), [newer.id, older.id]);
-  assert.ok(items.every(item => item.title === 'Demo'));
+  assert.deepEqual(items.map(item => item.title), ['较新的任务', '较早的任务']);
   assert.equal(items[0].preview, '较新的任务');
   const grouped = await store.listSessions();
   assert.equal(grouped.length, 3);
@@ -47,6 +47,7 @@ test('project session metadata contains no bodies, events, attachments, workspac
   const [item] = await store.listProjectSessions(source.workspace);
   assert.deepEqual(Object.keys(item).sort(), ['createdAt', 'id', 'preview', 'title', 'updatedAt']);
   assert.equal(item.preview, '[已隐藏密钥] 请完成任务');
+  assert.equal(item.title, '[已隐藏密钥] 请完成任务');
   assert.ok(!JSON.stringify(item).includes('private-model-key'));
   assert.ok(!JSON.stringify(item).includes('ASSISTANT_PRIVATE_BODY'));
   assert.ok(!JSON.stringify(item).includes('INTERNAL_TOOL_RESULT'));
@@ -125,4 +126,104 @@ test('obsolete maxSteps setting is ignored while legacy provider and encrypted k
   await restored.saveSettings({ provider: 'openai', maxSteps: 30 });
   const next = JSON.parse(await fs.readFile(path.join(store.dir, 'settings.json'), 'utf8'));
   assert.equal(Object.hasOwn(next, 'maxSteps'), false); assert.equal(restored.key('openai'), 'legacy-secret');
+});
+
+test('legacy project titles resolve from the first prompt and never alter project grouping', async t => {
+  const store = await fixture(t);
+  const source = await history(store, { title: 'Demo', messages: [{ role: 'user', content: '\n 生成我的博客网站\t' }, { role: 'user', content: '后续的问题' }] });
+  assert.equal(store.sessionTitle(await store.getSession(source.id)), '生成我的博客网站');
+  assert.equal((await store.listProjectSessions(source.workspace))[0].title, '生成我的博客网站');
+  assert.equal((await store.listSessions())[0].title, 'Demo');
+  const disk = JSON.parse(await fs.readFile(path.join(store.dir, 'sessions', source.id + '.json'), 'utf8'));
+  assert.equal(disk.title, 'Demo', 'Reading legacy history does not rewrite it');
+});
+
+test('derived titles preserve Unicode and literal markup while limiting to 40 characters', async t => {
+  const store = await fixture(t);
+  const source = await history(store, { messages: [{ role: 'user', content: '<img> ' + '😀'.repeat(90) }] });
+  const title = store.sessionTitle(await store.getSession(source.id));
+  assert.equal([...title].length, 40); assert.ok(title.startsWith('<img> 😀'));
+  assert.equal(title.includes('\ufffd'), false);
+  const image = store.createSession(source.workspace);
+  image.messages.push({ role: 'user', content: '', attachments: [{ dataUrl: 'data:image/png;base64,AAAA' }] }, { role: 'user', content: '后面的文本' });
+  assert.equal(store.sessionTitle(image), '图片消息');
+});
+
+test('manual titles persist across restarts and subsequent saves without changing content or usage', async t => {
+  const store = await fixture(t);
+  const source = await history(store, { events: [{ type: 'run-end', status: 'completed' }], usageBaseline: { inputTokens: 7 } });
+  const original = structuredClone(source);
+  const result = await store.renameSession(source, '  我的 Java 工程 😀  ');
+  assert.deepEqual(result, { id: source.id, title: '我的 Java 工程 😀' });
+  assert.deepEqual(source.messages, original.messages); assert.deepEqual(source.events, original.events); assert.deepEqual(source.usageBaseline, original.usageBaseline);
+  source.messages.push({ role: 'user', content: '另一个任务' }); await store.saveSession(source);
+  const restored = new Store(store.dir, crypto); await restored.init();
+  const loaded = await restored.getSession(source.id);
+  assert.equal(loaded.title, '我的 Java 工程 😀'); assert.equal(loaded.customTitle, loaded.title);
+  assert.equal((await restored.listProjectSessions(source.workspace))[0].title, loaded.title);
+  assert.equal((await restored.listSessions())[0].title, 'Demo');
+});
+
+test('empty named chats remain selectable and temporary names never write a history file', async t => {
+  const store = await fixture(t), named = store.createSession('C:/Projects/Demo');
+  await store.renameSession(named, '稍后继续的会话');
+  assert.equal((await store.listProjectSessions(named.workspace))[0].id, named.id);
+  const temporary = { ...store.createSession(named.workspace), temporary: true };
+  await store.renameSession(temporary, '临时标题');
+  assert.equal(temporary.customTitle, '临时标题');
+  await assert.rejects(fs.access(path.join(store.dir, 'sessions', temporary.id + '.json')), { code: 'ENOENT' });
+});
+
+test('rename rejects invalid names atomically and accepts exactly 80 Unicode characters', async t => {
+  const store = await fixture(t), source = await history(store);
+  const old = structuredClone(source), filename = path.join(store.dir, 'sessions', source.id + '.json'), bytes = await fs.readFile(filename, 'utf8');
+  for (const title of ['', '  ', null, 9, 'bad\nname', 'bad\0name', '\ttrimmed', 'x'.repeat(81), '😀'.repeat(81)]) {
+    await assert.rejects(store.renameSession(source, title));
+    assert.deepEqual(source, old); assert.equal(await fs.readFile(filename, 'utf8'), bytes);
+  }
+  await store.renameSession(source, '😀'.repeat(80));
+  assert.equal([...(await store.getSession(source.id)).title].length, 80);
+});
+
+test('custom title metadata redacts secrets and ignores damaged optional names', async t => {
+  const store = await fixture(t);
+  await store.saveSettings({ provider: 'deepseek', apiKey: 'session-secret-key' });
+  const source = await history(store);
+  await store.renameSession(source, '<script> session-secret-key </script>');
+  const [record] = await store.listProjectSessions(source.workspace);
+  assert.equal(record.title, '<script> [已隐藏密钥] </script>');
+  assert.ok(!JSON.stringify(record).includes('session-secret-key'));
+  const loaded = await store.getSession(source.id);
+  assert.equal(loaded.customTitle, record.title);
+  loaded.customTitle = 'bad\nname';
+  assert.equal(store.sessionTitle(loaded), '第一条提示词');
+});
+
+test('renaming an old snapshot preserves newer disk messages, events and accounting metadata', async t => {
+  const store = await fixture(t), source = await history(store), snapshot = await store.getSession(source.id);
+  const snapshotMessages = structuredClone(snapshot.messages);
+  const newer = { ...source, messages: [...source.messages, { role: 'assistant', content: '新完成的回复' }], events: [{ type: 'run-end', status: 'completed', elapsedMs: 4000 }], usageBaseline: { inputTokens: 900 }, contextCheckpoint: { throughIndex: 1 }, futureMetadata: { preserve: true } };
+  await store.saveSession(newer);
+  await store.renameSession(snapshot, '从另一个窗口重命名');
+  const saved = await store.getSession(source.id);
+  for (const field of ['messages', 'events', 'usageBaseline', 'contextCheckpoint', 'futureMetadata']) assert.deepEqual(saved[field], newer[field], field);
+  assert.equal(saved.customTitle, '从另一个窗口重命名');
+  assert.deepEqual(snapshot.messages, snapshotMessages, 'A title change does not silently advance the visible historical snapshot');
+  assert.equal(snapshot.customTitle, saved.customTitle);
+});
+
+test('rename refuses mismatched projects and corrupt persisted sessions without overwriting either copy', async t => {
+  const store = await fixture(t), source = await history(store), snapshot = structuredClone(source), filename = path.join(store.dir, 'sessions', source.id + '.json');
+  for (const bytes of [JSON.stringify({ ...source, workspace: 'C:/OtherProject' }), '{damaged-json', JSON.stringify({ ...source, messages: 'corrupt' })]) {
+    await fs.writeFile(filename, bytes);
+    await assert.rejects(store.renameSession(snapshot, '不能覆盖'));
+    assert.deepEqual(snapshot, source); assert.equal(await fs.readFile(filename, 'utf8'), bytes);
+  }
+});
+
+test('failed title persistence leaves in-memory title and existing history unchanged', async t => {
+  const store = await fixture(t), source = await history(store), before = structuredClone(source), filename = path.join(store.dir, 'sessions', source.id + '.json'), bytes = await fs.readFile(filename, 'utf8');
+  store.write = async () => { throw new Error('Injected atomic save failure'); };
+  await assert.rejects(store.renameSession(source, '未保存的名字'), /Injected atomic save failure/u);
+  assert.deepEqual(source, before); assert.equal(await fs.readFile(filename, 'utf8'), bytes);
 });

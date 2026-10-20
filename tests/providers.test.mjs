@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { requestModel } from '../src/core/providers.mjs';
+import { ModelCatalog, deriveModelCapabilities } from '../src/core/model-catalog.mjs';
 
 const model = 'user-selected-model';
 const apiKey = 'test-secret-key-do-not-print';
@@ -741,6 +742,56 @@ test('catalog capabilities reject unsupported efforts, tools and protocols local
     await assert.rejects(requestModel(options(undefined, { provider: 'deepseek', fetchImpl, ...extra })), error => error.code === code);
   }
   assert.equal(requests, 0);
+});
+
+test('text-only catalog capabilities serialize actual independent text requests across provider protocols', async () => {
+  const textMessages = [{ role: 'system', content: '[APPROVAL_REVIEW] Return JSON.' }, { role: 'user', content: 'Review a project operation.' }];
+  for (const [provider, apiProtocol] of [['relay', 'responses'], ['relay', 'chat-completions'], ['openai', 'responses'], ['deepseek', undefined], ['anthropic', undefined]]) {
+    const normalized = deriveModelCapabilities(provider, model, { supportsTools: false });
+    const capabilities = deriveModelCapabilities(provider, model, JSON.parse(JSON.stringify(normalized)));
+    let calls = 0;
+    const result = await requestModel(options('https://fixture.invalid/v1', { provider, apiProtocol, tools: [], messages: textMessages,
+      modelCapabilities: capabilities, fetchImpl: async (_url, init) => {
+        calls++;
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model); assert.equal(body.tools, undefined, 'Text-only requests must not serialize any function schemas');
+        assert.ok(!JSON.stringify(body).includes('function_call'));
+        const content = '{"decision":"allow","reason":"本地测试"}';
+        const payload = provider === 'anthropic' ? { content: [{ type: 'text', text: content }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 } }
+          : apiProtocol === 'responses' ? { status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] }], usage: { input_tokens: 10, output_tokens: 5 } }
+          : { choices: [{ message: { content }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      } }));
+    assert.equal(calls, 1); assert.equal(JSON.parse(result.message.content).decision, 'allow');
+    assert.deepEqual(result.message.toolCalls, []);
+  }
+});
+
+test('text-only allowance never admits tools or tool history, nor hard text incompatibilities', async () => {
+  const textMessages = [{ role: 'user', content: 'Review this operation.' }];
+  const textCapabilities = deriveModelCapabilities('relay', model, { supportsTools: false });
+  let calls = 0;
+  const fetchImpl = async () => { calls++; throw new Error('Must not request'); };
+  for (const extra of [
+    { messages: textMessages, tools },
+    { messages: history, tools: [] },
+    { messages: [{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'read_file', arguments: { path: 'a.txt' } }] }], tools: [] },
+    { messages: [{ role: 'tool', toolCallId: 'c', content: 'file text' }], tools: [] },
+  ]) await assert.rejects(requestModel(options('https://fixture.invalid/v1', { provider: 'relay', modelCapabilities: textCapabilities, fetchImpl, ...extra })), { code: 'MODEL_INCOMPATIBLE' });
+  for (const [provider, id, metadata] of [
+    ['openai', 'text-embedding-3-small', { officialSource: true }],
+    ['relay', 'not-text', { output_modalities: ['image'] }],
+    ['relay', 'retired', { lifecycle: 'retired' }],
+    ['relay', 'explicit-denial', { compatible: false }],
+  ]) await assert.rejects(requestModel(options('https://fixture.invalid/v1', { provider, model: id, tools: [], messages: textMessages,
+    modelCapabilities: deriveModelCapabilities(provider, id, metadata), fetchImpl })), { code: 'MODEL_INCOMPATIBLE' });
+  const catalog = await new ModelCatalog().list({ provider: 'relay', baseUrl: 'https://fixture.invalid/v1', apiKey,
+    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: 'denied', compatible: false, textCompatible: true, supportsTools: false }] })) });
+  await assert.rejects(requestModel(options('https://fixture.invalid/v1', { provider: 'relay', tools: [], messages: textMessages,
+    modelCapabilities: deriveModelCapabilities('relay', 'denied', catalog.models[0]), fetchImpl })), { code: 'MODEL_INCOMPATIBLE' });
+  await assert.rejects(requestModel(options('https://fixture.invalid/v1', { provider: 'relay', tools: [], messages: textMessages,
+    modelCapabilities: { textCompatible: 'true' }, fetchImpl })), { code: 'INVALID_MODEL_CONFIG' });
+  assert.equal(calls, 0);
 });
 
 test('catalog capabilities preserve default and map supported DeepSeek none without guessing legacy aliases', async () => {

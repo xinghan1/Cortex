@@ -30,6 +30,8 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
     full: { marker: 'PERMISSIONS_FULL_' + suffix, command: "Write-Output 'PERMISSIONS_COMMAND_OK'" },
   };
   const records = [], problems = [];
+  let releaseInitialRequest, initialRequestHeld = false;
+  const initialRequestGate = new Promise(resolve => { releaseInitialRequest = resolve; });
   const log = () => js('window.__permissionSmoke.events');
   const state = () => call('getState');
   const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part?.text || '').join('\n') : '';
@@ -59,6 +61,10 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
         else assert.equal(result.path, 'note.txt');
       }
       records.push({ name, continuation: !!returned });
+      // Change permission modes while the first model response is in flight,
+      // before it proposes any write. Returning to request mode before release
+      // preserves the existing explicit-approval fixture below.
+      if (name === 'request' && !returned) { initialRequestHeld = true; await initialRequestGate; }
       const outputItems = returned
         ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '权限测试已完成：' + name }] }]
         : [{ type: 'function_call', call_id: callId, name: name === 'full' ? 'run_command' : 'write_file', arguments: JSON.stringify(name === 'full' ? { command: scenario.command, timeout_ms: 5000 } : { path: 'note.txt', content: scenario.content }) }];
@@ -148,6 +154,12 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
     await js("(()=>{window.__permissionSmoke={events:[]};window.__permissionSmoke.off=window.forge.onEvent(event=>window.__permissionSmoke.events.push(event));return true;})()");
     installed = true;
     await start('request');
+    await until('initial request held before tool proposal', () => initialRequestHeld);
+    assert.equal(await js("document.getElementById('permission-trigger').disabled"), false);
+    await choose('assist'); await modeReady('assist');
+    await selectFull(); await modeReady('full');
+    await choose('request'); await modeReady('request');
+    releaseInitialRequest();
     await until('explicit project write approval', async () => (await log()).find(event => event.type === 'approval-request' && event.kind === 'write'));
     assert.equal(await fs.readFile(path.join(fixture, 'note.txt'), 'utf8'), 'Original permission fixture\n');
     await wait(100);
@@ -161,9 +173,7 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
         pendingButtons:!!card?.querySelector('.approval-accept:not(:disabled)')&&!!card?.querySelector('.approval-reject:not(:disabled)')};
     })()`);
     assert.deepEqual(approvalPlacement, {slotVisible:true,formHidden:true,cards:1,chatCards:0,actionsVisible:true,pendingButtons:true}, 'Write approval must temporarily replace the composer without hiding the decision controls');
-    assert.equal(await js("document.getElementById('permission-trigger').disabled"), true);
-    await rejected('setPermissionMode', { mode: 'assist' });
-    await rejected('setPermissionMode', { mode: 'full', confirmed: true });
+    assert.equal(await js("document.getElementById('permission-trigger').disabled"), false);
     assert.equal((await state()).permissionMode, 'request');
     await js("(()=>{const button=document.querySelector('#composer-approval .approval-accept:not(:disabled)');if(!button)throw new Error('Composer approval button unavailable');button.click();})()");
     const requested = await completed('request');
@@ -186,12 +196,13 @@ module.exports = async function smokePermissions({ win, output, dataDir }) {
     assert.equal((await call('getState', undefined, win)).permissionMode, parentMode);
     assert.equal(win.isDestroyed(), false);
     assert.deepEqual(problems, []); assert.equal(records.length, 6);
-    return { status: 'completed', realApi: false, defaultRequest: true, actualMenu: true, riskDialogCentered: true, cancelPreservesMode: true, confirmRequired: true, currentWindowOnly: true, newWindowDefaultsRequest: true, busyChangeRejected: true, explicitWriteWaited: true, composerApprovalVisible:true,composerRestored:true, assistWriteAutomatic: true, fullCommandAutomatic: true, projectSwitchResets: true, modelRequests: records.length, screenshots: ['permissions-menu.png', 'permissions-risk.png'] };
+    return { status: 'completed', realApi: false, defaultRequest: true, actualMenu: true, riskDialogCentered: true, cancelPreservesMode: true, confirmRequired: true, currentWindowOnly: true, newWindowDefaultsRequest: true, busyChangeSupported: true, explicitWriteWaited: true, composerApprovalVisible:true,composerRestored:true, assistWriteAutomatic: true, fullCommandAutomatic: true, projectSwitchResets: true, modelRequests: records.length, screenshots: ['permissions-menu.png', 'permissions-risk.png'] };
   } catch (error) {
     const current = child && !child.isDestroyed() ? await state().catch(() => null) : null;
     console.error('PERMISSIONS_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, stack: error.stack, records, problems, state: current ? { permissionMode: current.permissionMode, workspace: current.workspace, activeTask: current.activeTask, queueLength: current.promptQueue?.items?.length, model: current.settings?.model } : null }));
     throw error;
   } finally {
+    releaseInitialRequest();
     if (child && !child.isDestroyed()) {
       if (installed) await js('window.__permissionSmoke?.off?.()').catch(() => {});
       await call('stopTask').catch(() => {});

@@ -93,6 +93,7 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
     result.supportsImages = metadata.input_modalities.includes('image');
   }
   if (typeof metadata.compatible === 'boolean') result.compatible = metadata.compatible;
+  if (typeof metadata.textCompatible === 'boolean') result.textCompatible = metadata.textCompatible;
   if (typeof metadata.compatibilityReason === 'string' && metadata.compatibilityReason.length <= 500) result.compatibilityReason = metadata.compatibilityReason;
 
   if (metadata.officialSource === true) {
@@ -109,14 +110,22 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
     // https://developers.openai.com/api/docs/guides/audio
     // https://developers.openai.com/api/docs/guides/image-generation
     if (provider === 'openai' && /^(?:text-embedding-|text-search-|text-similarity-|whisper-|tts-|gpt-image-|dall-e-|sora-|omni-moderation-|text-moderation-|gpt-audio(?:-|$)|gpt-realtime(?:-|$)|gpt-4o-(?:realtime|audio|transcribe|mini-transcribe|mini-tts))/.test(id)) {
-      result.compatible = false; result.supportsTools = false;
+      result.compatible = false; result.supportsTools = false; result.textCompatible = false;
       result.compatibilityReason = '此模型使用嵌入、音频、图像、视频或审核等专用接口，不能用于当前文本编程工具流程。';
       supported = [];
     }
   }
   const noText = ['input_modalities', 'output_modalities'].some(key =>
     Array.isArray(metadata[key]) && metadata[key].length > 0 && metadata[key].every(item => typeof item === 'string') && !metadata[key].includes('text'));
-  if (noText || metadata.lifecycle === 'retired' || result.supportsTools === false || result.compatible === false) {
+  // `compatible` describes the coding/tool loop. A text-only model can still
+  // answer a separate tools:[] request. Preserve that distinction when these
+  // normalized capabilities pass through derive again (e.g. a cached catalog).
+  const normalizedTextOnly = metadata.compatible === false && metadata.supportsTools === false && metadata.textCompatible === true;
+  const textDenied = noText || metadata.lifecycle === 'retired' || result.textCompatible === false
+    || metadata.compatible === false && !normalizedTextOnly;
+  if (textDenied) result.textCompatible = false;
+  else if (result.supportsTools === false) result.textCompatible = true;
+  if (textDenied || result.supportsTools === false || result.compatible === false) {
     result.compatible = false; result.supportsTools = false;
     result.compatibilityReason ||= metadata.lifecycle === 'retired' ? '服务商目录将此模型标记为已退役。'
       : noText ? '模型目录未声明支持当前流程所需的文本输入和输出。' : '模型元数据声明不支持当前工具调用流程。';
@@ -174,7 +183,12 @@ function normalizeModel(provider, item, officialSource, secrets) {
   }
   const name = [item.display_name, item.name, item.displayName].find(value => typeof value === 'string' && value.trim() && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value));
   const model = { id: item.id, displayName: name || item.id,
-    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource }),
+    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource,
+      // Raw server `compatible:false` is an explicit protocol denial. Only our
+      // previously normalized text-only result may carry that flag alongside
+      // textCompatible:true; contradictory raw advertisements cannot override it.
+      ...(item.compatible === false ? { textCompatible: false } : {}),
+    }),
   };
   if (containsCredential(model, secrets)) throw failure('CATALOG_UNSAFE_RESPONSE', '模型目录回显了不安全的凭据信息，已拒绝展示。');
   return model;

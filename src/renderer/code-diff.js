@@ -169,21 +169,10 @@
 
   // Tokenise conservatively. The source always remains text nodes; no model or
   // file text is interpreted as HTML. Single very long lines are also bounded.
-  function highlight(document, node, text, language) {
+  function highlight(document, node, text, language, state, budget) {
     const clipped = text.length > 16000 ? text.slice(0, 16000) : text;
-    if (!language) node.appendChild(document.createTextNode(clipped));
-    else {
-      const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*$|#[^\n]*$|\b(?:const|let|var|function|return|if|else|for|while|class|new|async|await|import|from|export|default|throw|try|catch|finally|def|self|None|True|False|public|private|static|void|int|boolean|package|extends|implements|interface|type|true|false|null|undefined)\b|\b\d+(?:\.\d+)?\b)/g;
-      let previous = 0;
-      for (const match of clipped.matchAll(pattern)) {
-        if (match.index > previous) node.appendChild(document.createTextNode(clipped.slice(previous, match.index)));
-        const token = match[0];
-        const kind = /^["'`]/.test(token) ? 'string' : /^(?:\/\/|#)/.test(token) ? 'comment' : /^\d/.test(token) ? 'number' : 'keyword';
-        node.appendChild(element(document, 'span', `code-diff-token-${kind}`, token));
-        previous = match.index + token.length;
-      }
-      if (previous < clipped.length) node.appendChild(document.createTextNode(clipped.slice(previous)));
-    }
+    if (globalThis.ForgeSyntax?.append) globalThis.ForgeSyntax.append(document, node, clipped, language, state, budget);
+    else node.appendChild(document.createTextNode(clipped));
     if (text.length > clipped.length) node.appendChild(element(document, 'span', 'code-diff-inline-note', ` … 本行预览省略 ${text.length - clipped.length} 个字符`));
   }
 
@@ -233,21 +222,34 @@
     scroll.setAttribute('role', 'region');
     scroll.setAttribute('aria-label', `${path} 的差异预览，可滚动查看`);
     const table = element(document, 'div', 'code-diff-lines');
-    const language = /\.(?:[cm]?js|[cm]?ts|jsx|tsx|json[5c]?|java|py|cs|c|h|cc|cpp|hpp|go|rs|php|rb|sh|ps1|css|scss|html?|vue|svelte|ya?ml|toml)$/i.test(path);
+    const language = globalThis.ForgeSyntax?.languageForPath(path) || '';
+    const oldState = {}, newState = {};
+    const highlightBudget = { remainingCharacters: 160000, remainingTokens: 12000 };
     const rows = diff.rows.length ? diff.rows : [{ kind: 'notice', text: '文件内容未发生变化。' }];
     for (const row of rows) {
       const line = element(document, 'div', `code-diff-row code-diff-${row.kind}`);
       line.dataset.kind = row.kind;
-      if (row.kind === 'gap' || row.kind === 'notice') line.appendChild(element(document, 'span', 'code-diff-note-text', row.text));
+      if (row.kind === 'gap' || row.kind === 'notice') {
+        line.appendChild(element(document, 'span', 'code-diff-note-text', row.text));
+        // A skipped hunk can contain a comment terminator. Do not carry an
+        // uncertain lexical state over an unrendered section.
+        delete oldState.commentEnd; delete oldState.quote;
+        delete newState.commentEnd; delete newState.quote;
+      }
       else {
-        const oldNumber = element(document, 'span', 'code-diff-old-line', row.oldLine === null ? '' : String(row.oldLine));
-        const newNumber = element(document, 'span', 'code-diff-new-line', row.newLine === null ? '' : String(row.newLine));
-        oldNumber.setAttribute('aria-hidden', 'true'); newNumber.setAttribute('aria-hidden', 'true');
+        const number = row.kind === 'remove' ? row.oldLine : row.newLine;
+        const lineNumber = element(document, 'span', 'code-diff-line-number', String(number));
+        lineNumber.setAttribute('aria-hidden', 'true');
+        lineNumber.title = `${row.kind === 'remove' ? '删除前第' : '当前第'} ${number} 行`;
         const sign = element(document, 'span', 'code-diff-sign', row.kind === 'add' ? '+' : row.kind === 'remove' ? '−' : ' ');
         sign.setAttribute('aria-label', row.kind === 'add' ? '新增' : row.kind === 'remove' ? '删除' : '未改动');
         const code = element(document, 'code', 'code-diff-code');
-        highlight(document, code, row.text, language);
-        line.append(oldNumber, newNumber, sign, code);
+        highlight(document, code, row.text, language, row.kind === 'remove' ? oldState : newState, highlightBudget);
+        if (row.kind === 'context') {
+          delete oldState.commentEnd; delete oldState.quote;
+          Object.assign(oldState, newState);
+        }
+        line.append(lineNumber, sign, code);
         if (row.noNewline && row.kind !== 'context') {
           const note = element(document, 'span', 'code-diff-no-newline', '末尾无换行');
           note.title = '这一侧文件末尾没有换行符';

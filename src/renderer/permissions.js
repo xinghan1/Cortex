@@ -2,7 +2,7 @@
   'use strict';
   const options = [
     ['request', '请求批准', '文件修改、命令和网页操作先由你确认。'],
-    ['assist', '帮我批准', '自动批准低风险项目修改和少量只读命令，其余操作仍询问。'],
+    ['assist', '帮我批准', '低风险操作直接通过，其余交给独立 AI 审查；需要你决定时再询问。'],
     ['full', '完全控制', '自动批准文件修改、终端命令和网页操作。']
   ];
   const el = (tag, className, text) => {
@@ -12,15 +12,16 @@
     return node;
   };
   window.ForgePermissions = Object.freeze({
-    create({ bridge, notice, isCurrentWorkspace = () => true, getWorkspaceId = () => '' }) {
+    create({ bridge, notice, onOpen = () => {}, isCurrentWorkspace = () => true, getWorkspaceId = () => '' }) {
       const wrap = el('div', 'permission-control');
-      const trigger = el('button', 'permission-trigger', '请求批准 ⌄');
+      const trigger = el('button', 'permission-trigger', '请求批准');
       trigger.id = 'permission-trigger'; trigger.type = 'button';
       trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
       const popup = el('section', 'permission-popup'); popup.id = 'permission-popup'; popup.hidden = true;
       popup.setAttribute('role', 'menu'); popup.setAttribute('aria-label', '操作权限');
       popup.append(el('div', 'permission-heading', '如何批准 Synora code 操作？'));
       let mode = 'request', busy = false, saving = false;
+      let reviewerModel = '', reviewerOptions = [];
       const close = () => { popup.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
       const dialog = el('dialog', 'permission-danger-dialog'); dialog.id = 'permission-danger-dialog';
       const heading = el('h2', '', '启用完全控制？'); heading.id = 'permission-danger-title';
@@ -34,8 +35,11 @@
       const confirm = el('button', 'button permission-danger-confirm', '启用完全控制'); confirm.id = 'permission-danger-confirm'; confirm.type = 'button';
       actions.append(cancel, confirm); dialog.append(actions); document.body.append(dialog);
       const buttons = [];
+      const reviewerField = el('label', 'approval-reviewer-field', '审批模型');
+      const reviewerSelect = el('select'); reviewerSelect.id = 'approval-review-model';
+      reviewerSelect.setAttribute('aria-label', '独立 AI 审批模型'); reviewerField.append(reviewerSelect);
       const render = () => {
-        trigger.textContent = `${options.find(option => option[0] === mode)?.[1] || '请求批准'} ⌄`;
+        trigger.textContent = options.find(option => option[0] === mode)?.[1] || '请求批准';
         trigger.dataset.mode = mode; trigger.disabled = busy || saving;
         for (const button of buttons) {
           const selected = button.dataset.mode === mode;
@@ -44,6 +48,21 @@
           button.disabled = busy || saving;
         }
         confirm.disabled = busy || saving;
+        const signature = JSON.stringify([reviewerModel, reviewerOptions]);
+        if (reviewerSelect.dataset.options !== signature) {
+          reviewerSelect.replaceChildren();
+          const follow = el('option', '', '跟随当前模型（独立 AI）'); follow.value = ''; reviewerSelect.append(follow);
+          for (const model of reviewerOptions) {
+            const option = el('option', '', model.displayName || model.id); option.value = model.id;
+            option.disabled = model.textCompatible === false || model.compatible === false && model.textCompatible !== true;
+            reviewerSelect.append(option);
+          }
+          if (reviewerModel && !reviewerOptions.some(model => model.id === reviewerModel)) {
+            const option = el('option', '', reviewerModel); option.value = reviewerModel; reviewerSelect.append(option);
+          }
+          reviewerSelect.dataset.options = signature; reviewerSelect.value = reviewerModel;
+        }
+        reviewerSelect.disabled = busy || saving;
       };
       const save = async (next, confirmed = false) => {
         if (busy || saving) return;
@@ -68,12 +87,24 @@
         });
         buttons.push(button); popup.append(button);
       }
+      popup.append(reviewerField);
+      reviewerSelect.addEventListener('change', async () => {
+        if (busy || saving) return;
+        const workspaceId = getWorkspaceId();
+        saving = true; render();
+        try {
+          const result = await bridge.setApprovalReviewer({ model: reviewerSelect.value || null });
+          if (workspaceId === getWorkspaceId()) reviewerModel = result.model || '';
+        } catch (error) { if (workspaceId === getWorkspaceId()) notice(error.message || '审批模型切换失败。', true); }
+        finally { saving = false; reviewerSelect.dataset.options = ''; render(); }
+      });
       wrap.append(trigger, popup); document.querySelector('.composer-context').append(wrap);
       trigger.addEventListener('click', () => {
         popup.hidden = !popup.hidden; trigger.setAttribute('aria-expanded', String(!popup.hidden));
-        if (!popup.hidden) buttons.find(button => button.dataset.mode === mode)?.focus();
+        if (!popup.hidden) { buttons.find(button => button.dataset.mode === mode)?.focus(); void onOpen(); }
       });
       popup.addEventListener('keydown', event => {
+        if (event.target === reviewerSelect) return;
         if (event.key === 'Escape') { event.preventDefault(); close(); trigger.focus(); }
         if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
           event.preventDefault(); const index = buttons.indexOf(document.activeElement);
@@ -85,13 +116,15 @@
       confirm.addEventListener('click', () => save('full', true));
       bridge.onEvent(event => {
         if (!isCurrentWorkspace(event)) return;
-        if (event.type === 'run-start' || event.type === 'terminal-start') { busy = true; close(); render(); }
+        if (event.type === 'run-start' || event.type === 'terminal-start') { close(); render(); }
         if (event.type === 'run-end' || event.type === 'terminal-end') { busy = false; render(); }
       });
       render();
       return { close, update(state) {
         mode = options.some(option => option[0] === state.permissionMode) ? state.permissionMode : 'request';
-        busy = state.activeTask?.running === true || (state.promptQueue?.items?.length || 0) > 0;
+        busy = state.chatgpt?.session?.status === 'connecting';
+        reviewerModel = state.approvalReviewer?.model || '';
+        reviewerOptions = Array.isArray(state.modelCatalog?.models) ? state.modelCatalog.models.map(({ id, displayName, compatible, textCompatible }) => ({ id, displayName, compatible, textCompatible })) : [];
         if (busy) close(); render();
       } };
     }

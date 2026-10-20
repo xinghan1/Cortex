@@ -279,17 +279,19 @@ function validateCapabilities(capabilities, reasoningEffort, messages, tools) {
   if (!isObject(capabilities) || (capabilities.reasoningEfforts !== undefined
       && (!Array.isArray(capabilities.reasoningEfforts)
         || capabilities.reasoningEfforts.some(value => typeof value !== 'string')))
-      || (capabilities.supportsImages !== undefined && typeof capabilities.supportsImages !== 'boolean')) {
+      || (capabilities.supportsImages !== undefined && typeof capabilities.supportsImages !== 'boolean')
+      || (capabilities.textCompatible !== undefined && typeof capabilities.textCompatible !== 'boolean')) {
     fail('模型能力信息无效，请刷新模型列表。', 'INVALID_MODEL_CONFIG');
   }
-  if (capabilities.compatible === false) {
+  const usesTools = tools.length > 0 || messages.some(message => message.role === 'tool' || message.toolCalls?.length);
+  if (capabilities.textCompatible === false || capabilities.compatible === false
+      && !(capabilities.textCompatible === true && !usesTools)) {
     fail('此模型不支持当前供应商的文本代理协议，请从模型列表选择兼容模型。', 'MODEL_INCOMPATIBLE');
   }
   if (capabilities.supportsImages === false && messages.some(message => message.attachments?.length)) {
     fail('所选模型明确不支持图片输入；本会话包含图片，请选择支持图片的模型或新建纯文字会话。', 'MODEL_IMAGES_UNSUPPORTED');
   }
-  if (capabilities.supportsTools === false && (tools.length || messages.some(message =>
-    message.role === 'tool' || message.toolCalls?.length))) {
+  if (capabilities.supportsTools === false && usesTools) {
     fail('此模型不支持工具调用，无法运行代码代理；请选择支持工具的模型。', 'MODEL_TOOLS_UNSUPPORTED');
   }
   if (reasoningEffort !== 'default' && Array.isArray(capabilities.reasoningEfforts)

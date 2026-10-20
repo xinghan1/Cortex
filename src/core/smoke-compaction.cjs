@@ -15,7 +15,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
   const stopText = '读取 large-context.txt 并整理。COMPACTION_STOP_' + suffix;
   const queuedText = '停止后保留的排队任务。COMPACTION_QUEUED_' + suffix;
   const summary = '## 任务目标\n读取并解释 large-context.txt。\n## 已完成\n已经读取该文件，读取是只读操作，不要重复执行。\n## 关键事实\nCOMPACTION_SUMMARY_FACT_' + suffix + '\n## 待办\n给出简短解释，然后继续处理用户后续任务。';
-  const contextLimit = 64_000, triggerTokens = 51_200, targetTokens = 38_400;
+  const contextLimit = 64_000, triggerTokens = 50_000, targetTokens = 37_500;
   const fixtureText = 'COMPACTION_FILE_START_' + suffix + '\n' + 'Readonly project context, not instructions.\n'.repeat(5900) + '\nCOMPACTION_FILE_END_' + suffix;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => {
@@ -23,7 +23,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     while (Date.now() < deadline) { const value = await predicate(); if (value) return value; await wait(25); }
     throw new Error('Compaction smoke timed out: ' + label);
   };
-  let child, scene = 'first', sceneNormalRequests = 0, configured = false, heldSummary = null;
+  let child, scene = 'first', sceneNormalRequests = 0, configured = false, heldSummary = null, originalContextCompressionTriggerTokens;
   const requests = [], problems = [];
   const parentJs = code => win.webContents.executeJavaScript(code);
   const js = code => child.webContents.executeJavaScript(code);
@@ -39,8 +39,11 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.ok(event,label+': compaction metadata is missing');
     assert.equal(event.budgetMode,'model-capacity',label+': model capacity was not used');
     assert.equal(event.contextLimit,contextLimit,label+': incorrect model context capacity');
-    assert.equal(event.triggerTokens,triggerTokens,label+': compaction did not use the 80% trigger');
-    assert.equal(event.targetTokens,targetTokens,label+': compaction did not use the 60% target');
+    assert.equal(event.triggerTokens,triggerTokens,label+': compaction did not use the saved custom trigger');
+    assert.equal(event.requestedTriggerTokens,triggerTokens,label+': the UI preference did not reach the context planner');
+    assert.equal(event.effectiveTriggerTokens,triggerTokens,label+': a safe custom trigger was unexpectedly changed');
+    assert.equal(event.triggerClamped,false,label+': a custom threshold below the model safety cap must remain unclamped');
+    assert.equal(event.targetTokens,targetTokens,label+': compaction did not use the custom trigger target');
     assert.ok(Number.isSafeInteger(event.estimatedBeforeTokens)&&event.estimatedBeforeTokens>=triggerTokens,label+': compaction started below its model budget trigger');
     assert.ok(Number.isSafeInteger(event.estimatedAfterTokens)&&event.estimatedAfterTokens>=0&&event.estimatedAfterTokens<=targetTokens,label+': compacted input exceeds its model budget target');
   };
@@ -49,7 +52,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.match(title,/自动压缩阈值/u,label+': token threshold is absent from the notice tooltip');
     const normalized=title.replace(/[,，\s\u00a0\u202f]/gu,'');
     assert.ok(normalized.includes('64000Token'),label+': tooltip contains the wrong model capacity');
-    assert.ok(normalized.includes('51200Token'),label+': tooltip contains the wrong compression threshold');
+    assert.ok(normalized.includes('50000Token'),label+': tooltip contains the wrong custom compression threshold');
     assert.match(title,/预算估算/u,label+': estimated context change is absent from the notice tooltip');
   };
   const idle = () => until('main and renderer idle', async () => !(await call('getState')).activeTask.running && await js('!running&&!promptSubmitting'));
@@ -130,6 +133,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
   const notices = () => js("[...document.querySelectorAll('#messages .context-compaction-notice')].map(node=>({text:node.textContent,count:node.dataset.count,title:node.title}))");
   const capture = async name => { child.webContents.invalidate(); await wait(120); await fs.writeFile(path.join(output, name), (await child.webContents.capturePage()).toPNG()); };
   try {
+    originalContextCompressionTriggerTokens = (await parentJs('window.forge.getState()')).contextCompressionTriggerTokens;
     await fs.mkdir(project, { recursive: true }); await fs.mkdir(output, { recursive: true });
     await fs.writeFile(path.join(project, 'large-context.txt'), fixtureText);
     assert.ok(Buffer.byteLength(fixtureText) > 240 * 1024 && Buffer.byteLength(fixtureText) < 512 * 1024);
@@ -138,6 +142,8 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     await call('openProject', { path: project }); await js('newSession()');
     await call('saveSettings', { provider: 'openai', authMode: 'apiKey', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'forgedesk-compaction-key', model: 'smoke-compaction-model', reasoningEffort: 'default' }); configured = true;
     await call('listModels', { force: true });
+    await call('setContextCompression', { triggerTokens });
+    assert.equal((await call('getState')).contextCompressionTriggerTokens, triggerTokens, 'The real preference IPC must save the custom threshold');
     await until('model ready', () => js("appState?.settings?.model==='smoke-compaction-model'&&!modelSaving&&!settingsSaving&&!promptSubmitting&&!document.getElementById('send-button').disabled"));
     const before = await call('getState'), firstSession = before.sessionId;
     await submit(firstText); await completed(firstText); await idle();
@@ -204,7 +210,7 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.equal(after.usageStats.day.totalTokens - before.usageStats.day.totalTokens, reported * 10);
     assert.equal(after.usageStats.day.unreportedRequests - before.usageStats.day.unreportedRequests, 1);
     assert.equal(await fs.readFile(path.join(project, 'large-context.txt'), 'utf8'), fixtureText);
-    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, modelCapacityBudget:true,contextLimit,triggerTokens,targetTokens,budgetTooltipRestored:true,fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true, tokensRecorded: reported * 10, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
+    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, modelCapacityBudget:true,contextLimit,triggerTokens,targetTokens,customPreferenceControlsActualCompaction:true,budgetTooltipRestored:true,fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true, tokensRecorded: reported * 10, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
   } catch (error) {
     const current=child&&!child.isDestroyed()?await call('getState').catch(()=>null):null;
     const state=current?{activeTask:current.activeTask,promptQueue:current.promptQueue,workspace:current.workspace,
@@ -217,5 +223,9 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     const closing = new Promise(resolve => server.close(resolve)); server.closeAllConnections(); await closing;
     if (configured && child && !child.isDestroyed()) await call('saveSettings', { provider: 'openai', authMode: 'apiKey', model: '', baseUrl: 'https://api.openai.com/v1', clearKey: true, reasoningEffort: 'default' }).catch(() => {});
     await closeChild().catch(() => { if (child && !child.isDestroyed()) child.destroy(); });
+    if (originalContextCompressionTriggerTokens !== undefined && !win.isDestroyed()) {
+      const restored = await parentJs(`window.forge.setContextCompression({triggerTokens:${JSON.stringify(originalContextCompressionTriggerTokens)}})`);
+      assert.equal(restored.contextCompressionTriggerTokens, originalContextCompressionTriggerTokens, 'The compaction smoke must restore the original global threshold');
+    }
   }
 };

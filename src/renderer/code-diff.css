@@ -127,8 +127,7 @@
   white-space: pre;
 }
 
-.code-diff-card .code-diff-old-line,
-.code-diff-card .code-diff-new-line,
+.code-diff-card .code-diff-line-number,
 .code-diff-card .code-diff-sign,
 .code-diff-card .code-diff-code,
 .code-diff-card .code-diff-no-newline {
@@ -142,10 +141,9 @@
   vertical-align: top;
 }
 
-.code-diff-card .code-diff-old-line,
-.code-diff-card .code-diff-new-line {
-  flex: 0 0 45px;
-  min-width: 37px;
+.code-diff-card .code-diff-line-number {
+  flex: 0 0 calc(6ch + 16px);
+  min-width: calc(6ch + 16px);
   color: #8293aa;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -176,21 +174,21 @@
   background: rgb(210 66 77 / 21%);
 }
 
-.code-diff-card .code-diff-add .code-diff-old-line {
+.code-diff-card .code-diff-add .code-diff-line-number {
   box-shadow: inset 3px 0 0 #49ce82;
 }
 
-.code-diff-card .code-diff-remove .code-diff-old-line {
+.code-diff-card .code-diff-remove .code-diff-line-number {
   box-shadow: inset 3px 0 0 #ee737d;
 }
 
 .code-diff-card .code-diff-add .code-diff-sign,
-.code-diff-card .code-diff-add .code-diff-new-line {
+.code-diff-card .code-diff-add .code-diff-line-number {
   color: #7de4a5;
 }
 
 .code-diff-card .code-diff-remove .code-diff-sign,
-.code-diff-card .code-diff-remove .code-diff-old-line {
+.code-diff-card .code-diff-remove .code-diff-line-number {
   color: #ff9da4;
 }
 
@@ -213,20 +211,35 @@
   font-size: 10px;
 }
 
-.code-diff-card .code-diff-token-keyword {
-  color: #c6a0f6;
-}
+/* Native disclosure keeps keyboard/focus behavior and reverses smoothly on
+   repeated clicks. Animate intrinsic height instead of guessing a max-height. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
+    .file-edit-card {
+      interpolate-size: allow-keywords;
+    }
 
-.code-diff-card .code-diff-token-string {
-  color: #bbd98c;
-}
+    .file-edit-card::details-content {
+      block-size: 0;
+      opacity: 0;
+      overflow: clip;
+      content-visibility: hidden;
+      transition:
+        block-size 280ms var(--ease-glass, cubic-bezier(.22, .68, .2, 1)),
+        opacity 200ms ease,
+        content-visibility 280ms allow-discrete;
+    }
 
-.code-diff-card .code-diff-token-comment {
-  color: #8b9e93;
-}
+    .file-edit-card[open]::details-content {
+      block-size: auto;
+      opacity: 1;
+      content-visibility: visible;
+    }
 
-.code-diff-card .code-diff-token-number {
-  color: #efb87d;
+    .task-activity-events .file-edit-card > .tool-summary::after {
+      transition: transform 280ms var(--ease-glass, cubic-bezier(.22, .68, .2, 1));
+    }
+  }
 }
 
 @media (max-width: 600px) {
@@ -235,10 +248,9 @@
     padding-inline: 9px;
   }
 
-  .code-diff-card .code-diff-old-line,
-  .code-diff-card .code-diff-new-line {
-    flex-basis: 35px;
-    min-width: 29px;
+  .code-diff-card .code-diff-line-number {
+    flex-basis: calc(6ch + 10px);
+    min-width: calc(6ch + 10px);
     padding-inline: 5px;
   }
 }

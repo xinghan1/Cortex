@@ -30,7 +30,8 @@
 }
 
 .task-activity-summary:focus-visible,
-.task-activity-events .tool-summary:focus-visible {
+.task-activity-events .tool-summary:focus-visible,
+.technical-details-summary:focus-visible {
   outline: 2px solid #accbff;
   outline-offset: 3px;
 }
@@ -216,12 +217,81 @@
   color: #b7d2ff;
 }
 
+.file-edit-card > .tool-summary .tool-title {
+  flex: 0 1 auto;
+}
+
+.tool-edit-summary {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-edit-filename {
+  min-width: 0;
+  max-width: 280px;
+  overflow: hidden;
+  color: #c4d4eb;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-edit-added,
+.tool-edit-removed {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tool-edit-added {
+  color: #5ce194;
+}
+
+.tool-edit-removed {
+  color: #ff7e85;
+}
+
 .task-activity-events .tool-details {
   margin: 3px 0 9px 26px;
-  padding: 10px 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* Technical payloads remain available without filling the conversation. */
+
+.tool-technical-details {
+  min-width: 0;
+  margin: 4px 0 8px;
+  padding: 0 12px;
   border: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
   border-radius: 8px;
   background: rgb(5 15 33 / 26%);
+}
+
+.technical-details-summary {
+  padding: 7px 0;
+  color: #a9bdd9;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.technical-details-summary:hover {
+  color: #e0ecff;
+}
+
+.tool-technical-details > pre {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.tool-card[data-status='failed'] .tool-badge {
+  color: #efb2bf;
 }
 
 .task-activity-events .tool-details pre {
@@ -229,8 +299,100 @@
   line-height: 1.7;
 }
 
-.task-activity-events .command-output {
+/* The expanded command reads as a result, while its JSON stays optional. */
+
+.command-result {
+  min-width: 0;
+  margin: 5px 0 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
+  border-radius: 10px;
+  background: rgb(5 15 33 / 26%);
+}
+
+.command-result-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-bottom: 9px;
+}
+
+.command-result-status {
+  color: #cedcf0;
+  font-weight: 600;
+}
+
+.command-result[data-status='success'] .command-result-status {
+  color: #8be3af;
+}
+
+.command-result[data-status='failed'] .command-result-status,
+.command-result[data-status='timeout'] .command-result-status,
+.command-result[data-status='output-limit'] .command-result-status {
+  color: #ffacb5;
+}
+
+.command-result-meta,
+.command-result-explanation,
+.command-result-empty {
+  color: #abbcd4;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.command-result-explanation,
+.command-result-empty {
+  margin: 6px 0;
+}
+
+.command-result-section {
+  min-width: 0;
+  margin-top: 9px;
+}
+
+.command-result-section .tool-label {
+  margin: 0 0 5px;
+}
+
+.task-activity-events .command-result pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border: 1px solid rgb(215 231 255 / 7%);
+  border-radius: 7px;
+  background: rgb(3 12 26 / 35%);
+  color: #cbd9eb;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.command-result pre > code {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.task-activity-events .command-result .command-result-stderr {
+  border-left-color: #e3b77f;
+}
+
+.command-output-disclosure {
+  min-width: 0;
   margin: 6px 0 10px 26px;
+  padding: 0 12px;
+  border: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
+  border-radius: 8px;
+  background: rgb(5 15 33 / 20%);
+}
+
+.command-output-disclosure > .command-output {
+  margin: 4px 0 10px;
   border-color: var(--line-soft, rgb(215 231 255 / 10%));
   font-size: 11px;
 }
@@ -259,7 +421,7 @@
   }
 
   .task-activity-events .tool-details,
-  .task-activity-events .command-output {
+  .task-activity-events .command-output-disclosure {
     margin-left: 0;
   }
 }

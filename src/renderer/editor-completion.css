@@ -1,0 +1,69 @@
+.editor-completion-list {
+  position: absolute;
+  z-index: 5;
+  overflow: auto;
+  border: 1px solid rgb(189 214 250 / 28%);
+  border-radius: 10px;
+  background: rgb(17 29 48 / 98%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%), 0 12px 32px rgb(0 4 16 / 40%);
+  color: #e9f1ff;
+  font: 12px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  user-select: none;
+  overscroll-behavior: contain;
+}
+
+.editor-completion-option {
+  display: grid;
+  grid-template-columns: 22px minmax(50px, 1fr) minmax(35px, 1.2fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.editor-completion-option[aria-selected='true'] {
+  background: rgb(120 172 255 / 23%);
+  box-shadow: inset 2px 0 0 #a9ccff;
+}
+
+.completion-kind {
+  color: #c9adff;
+  font: 600 11px/19px Consolas, monospace;
+  text-align: center;
+  border: 1px solid rgb(202 173 255 / 24%);
+  border-radius: 4px;
+}
+
+.completion-kind[data-kind='snippet'] { color: #eac487; border-color: rgb(234 196 135 / 24%); }
+.completion-kind[data-kind='function'],
+.completion-kind[data-kind='method'] { color: #9ccbff; border-color: rgb(156 203 255 / 24%); }
+.completion-kind[data-kind='variable'],
+.completion-kind[data-kind='property'] { color: #8addbe; border-color: rgb(138 221 190 / 24%); }
+.completion-kind[data-kind='tag'],
+.completion-kind[data-kind='attribute'] { color: #eaa58c; border-color: rgb(234 165 140 / 24%); }
+
+.completion-label,
+.completion-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.completion-label { font-family: var(--mono, Consolas, monospace); }
+.completion-detail { color: #9fb3ce; font-size: 11px; text-align: right; }
+.completion-help {
+  position: sticky;
+  bottom: 0;
+  padding: 6px 9px;
+  border-top: 1px solid rgb(189 214 250 / 12%);
+  background: #18263b;
+  color: #99aecb;
+  font-size: 10px;
+}
+
+@media (forced-colors: active) {
+  .editor-completion-list { background: Canvas; color: CanvasText; border-color: CanvasText; }
+  .editor-completion-option[aria-selected='true'] { background: Highlight; color: HighlightText; }
+  .completion-detail, .completion-help, .completion-kind { color: inherit; }
+}

@@ -20,13 +20,15 @@
       ['settings', '设置…', 'Ctrl+,', locked]
     ],
     view: [
-      ['import-background', '导入背景图…'], ['appearance-settings', '外观与背景…'], null,
       ['toggle-sidebar', '侧边栏', 'Ctrl+Shift+S', null, 'sidebarVisible'], ['toggle-terminal', '终端面板', 'Ctrl+J', null, 'terminalVisible'], ['pin-summary', '固定摘要到右侧', '', null, 'previewPinned'], null,
       ['open-terminal', '打开终端', 'Ctrl+`', (state) => state.busy || !state.hasWorkspace], ['toggle-navigation', '文件导航面板', 'Ctrl+Shift+E', null, 'previewVisible'], ['switch-focus', '切换对话与标签', 'Ctrl+Alt+B'], ['browser', '浏览器', '', null, null, [['open-browser', '打开内置浏览器'], ['open-link', '打开链接…']]], null,
       ['find', '查找…', 'Ctrl+F'], ['back', '返回', 'Ctrl+[', (state) => locked(state) || !state.canBack], ['forward', '前进', 'Ctrl+]', (state) => locked(state) || !state.canForward],
       ['previous-sidebar', '上一个侧边栏项目', 'Ctrl+Alt+[', locked], ['next-sidebar', '下一个侧边栏项目', 'Ctrl+Alt+]', locked], ['previous-tab', '上一个标签', 'Ctrl+Shift+['], ['next-tab', '下一个标签', 'Ctrl+Shift+]'], null,
       ['zoom-in', '放大文字', 'Ctrl+Shift+='], ['zoom-out', '缩小文字', 'Ctrl+-'], ['zoom-reset', '实际文字大小', 'Ctrl+0'], null,
       ['fullscreen', '全屏', 'F11', null, 'fullscreen']
+    ],
+    appearance: [
+      ['import-background', '导入背景图…'], ['appearance-settings', '外观与背景…']
     ],
     help: [['guide', '使用说明'], ['about', '关于 Synora code']]
   };
@@ -223,7 +225,7 @@
       return;
     }
     if (event.altKey && !event.ctrlKey && !event.shiftKey) {
-      const name = { f: 'file', e: 'edit', v: 'view', h: 'help' }[event.key.toLowerCase()];
+      const name = { f: 'file', e: 'edit', v: 'view', a: 'appearance', h: 'help' }[event.key.toLowerCase()];
       if (name) { event.preventDefault(); if (!activeMenu && !keyboardMode) savedFocus = document.activeElement; openMenu(name, true); return; }
     }
     if (event.key === 'Escape' && keyboardMode && !activeMenu) { event.preventDefault(); closeMenus(true); return; }

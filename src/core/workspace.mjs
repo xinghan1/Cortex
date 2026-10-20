@@ -9,6 +9,8 @@ import { withFileCommit } from './file-commit.mjs';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const DEFAULT_COMMAND_TIMEOUT = 600_000;
+const MAX_COMMAND_TIMEOUT = 600_000;
 const MAX_LIST_ENTRIES = 500;
 const WINDOWS_SYSTEM = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 const POWERSHELL = process.platform === 'win32'
@@ -57,10 +59,10 @@ export const TOOL_DEFINITIONS = [
     }, ['path', 'old_text', 'new_text']),
   },
   {
-    name: 'run_command', description: '请求用户明确审批后在项目目录运行 PowerShell 命令。命令没有系统沙箱；默认 60 秒，最长 120 秒，输出最多 64 KB。',
+    name: 'run_command', description: '按当前权限模式审批后在项目目录运行 PowerShell 命令。命令没有系统沙箱；默认和最长均为 10 分钟，只有需要更短时才设置 timeout_ms，输出最多 64 KB。',
     parameters: objectSchema({
       command: { type: 'string' },
-      timeout_ms: { type: 'integer', minimum: 1000, maximum: 120000 },
+      timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_COMMAND_TIMEOUT },
     }, ['command']),
   },
   {
@@ -417,9 +419,9 @@ export class WorkspaceTools {
     return this.#write(input, content.slice(0, index) + new_text + content.slice(index + old_text.length), signal, content, { onFileChange });
   }
 
-  async #command({ command, timeout_ms = 60000 }, signal) {
+  async #command({ command, timeout_ms = DEFAULT_COMMAND_TIMEOUT }, signal) {
     if (typeof command !== 'string' || !command.trim() || command.includes('\0') || command.length > 16000) throw new Error('请提供 1 至 16000 个字符的 PowerShell 命令。');
-    const timeout = Math.min(120000, Math.max(1000, Number.isFinite(timeout_ms) ? timeout_ms : 60000));
+    const timeout = Math.min(MAX_COMMAND_TIMEOUT, Math.max(1000, Number.isFinite(timeout_ms) ? timeout_ms : DEFAULT_COMMAND_TIMEOUT));
     await this.#resolve('', { allowRoot: true });
     abortIfNeeded(signal);
     const approved = await this.approve({

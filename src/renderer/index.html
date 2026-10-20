@@ -12,16 +12,34 @@
   <link rel="stylesheet" href="./glass.css">
   <link rel="stylesheet" href="./file-icons.css">
   <link rel="stylesheet" href="./task-history.css">
+  <link rel="stylesheet" href="./subagents.css">
   <link rel="stylesheet" href="./code-diff.css">
   <link rel="stylesheet" href="./composer-approval.css">
+  <link rel="stylesheet" href="./syntax-highlight.css">
+  <link rel="stylesheet" href="./editor-highlight.css">
+  <link rel="stylesheet" href="./editor-completion.css">
+  <link rel="stylesheet" href="./conversation-colors.css">
+  <link rel="stylesheet" href="./background-presets.css">
+  <link rel="stylesheet" href="./usage-dashboard.css">
+  <link rel="stylesheet" href="./context-settings.css">
+  <script src="./syntax-highlight.js" defer></script>
+  <script src="./editor-highlight.js" defer></script>
+  <script src="./code-completion.js" defer></script>
+  <script src="./editor-completion.js" defer></script>
+  <script src="./conversation-colors.js" defer></script>
+  <script src="./background-presets.js" defer></script>
   <script src="./markdown.js" defer></script>
   <script src="./permissions.js" defer></script>
   <script src="./browser.js" defer></script>
   <script src="./sessions.js" defer></script>
   <script src="./file-icons.js" defer></script>
   <script src="./task-history.js" defer></script>
+  <script src="./subagents.js" defer></script>
   <script src="./code-diff.js" defer></script>
+  <script src="./command-result.js" defer></script>
   <script src="./app.js" defer></script>
+  <script src="./usage-dashboard.js" defer></script>
+  <script src="./context-settings.js" defer></script>
   <script src="./appearance.js" defer></script>
   <script src="./menu.js" defer></script>
 </head>
@@ -33,7 +51,13 @@
         <img class="brand-logo" src="./synora-logo.png" alt="" aria-hidden="true" width="30" height="30">
       </div>
       <div class="project-switcher-wrap"><button id="project-switcher" class="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false"><span id="project-avatar" class="project-avatar">AI</span><span id="workspace-label">选择项目</span><span class="project-chevron">⌄</span></button><section id="project-dropdown" class="project-dropdown" role="menu" aria-label="项目与历史" hidden><div class="project-dropdown-actions"><button id="project-open" type="button" role="menuitem">▱ <span>打开项目…</span><small>Ctrl+O</small></button><button id="project-create" type="button" role="menuitem">＋ <span>新建项目…</span></button></div><div id="project-current-section"><h2>当前项目</h2><div id="project-current-list"></div></div><h2>最近项目与历史</h2><div id="session-list" class="recent-project-list"></div></section></div>
-      <nav id="app-menu-bar" class="app-menu-bar" role="menubar" aria-label="应用菜单"><button id="menu-file" class="app-menu-trigger" data-menu="file" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">文件</button><button id="menu-edit" class="app-menu-trigger" data-menu="edit" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">编辑</button><button id="menu-view" class="app-menu-trigger" data-menu="view" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">视图</button><button id="menu-help" class="app-menu-trigger" data-menu="help" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">帮助</button></nav>
+      <nav id="app-menu-bar" class="app-menu-bar" role="menubar" aria-label="应用菜单">
+        <button id="menu-file" class="app-menu-trigger" data-menu="file" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">文件</button>
+        <button id="menu-edit" class="app-menu-trigger" data-menu="edit" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">编辑</button>
+        <button id="menu-view" class="app-menu-trigger" data-menu="view" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">视图</button>
+        <button id="menu-appearance" class="app-menu-trigger" data-menu="appearance" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">外观</button>
+        <button id="menu-help" class="app-menu-trigger" data-menu="help" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">帮助</button>
+      </nav>
     </header>
 
     <div class="workspace-layout">
@@ -43,11 +67,11 @@
           <div class="project-title"><strong id="project-name">未选择项目</strong><button id="undo-change" class="icon-button small" title="撤销上次文件修改（当前启动期间）" aria-label="撤销上次文件修改" disabled>↶</button><button id="refresh-files" class="icon-button small" title="刷新文件树" aria-label="刷新文件树">↻</button></div>
           <div id="file-tree" class="file-tree" role="tree" aria-label="项目文件" tabindex="0"><div class="sidebar-empty"><p>未打开项目</p><button id="open-workspace-sidebar" class="button">选择文件夹</button></div></div>
         </section>
-        <section class="usage-stats" aria-label="Token 用量统计">
+        <section id="usage-stats-button" class="usage-stats" role="button" tabindex="0" aria-label="打开 Token 用量与活动统计">
           <div class="usage-heading"><span>Token 用量</span><span id="usage-updated" title="仅累计本应用 API 回报的用量">ⓘ</span></div>
-          <div id="usage-day-row" class="usage-row" tabindex="0"><span>今日</span><strong id="usage-day">—</strong></div>
-          <div id="usage-week-row" class="usage-row" tabindex="0"><span>本周</span><strong id="usage-week">—</strong></div>
-          <div id="usage-month-row" class="usage-row" tabindex="0"><span>本月</span><strong id="usage-month">—</strong></div>
+          <div id="usage-day-row" class="usage-row"><span>今日</span><strong id="usage-day">—</strong></div>
+          <div id="usage-week-row" class="usage-row"><span>本周</span><strong id="usage-week">—</strong></div>
+          <div id="usage-month-row" class="usage-row"><span>本月</span><strong id="usage-month">—</strong></div>
         </section>
         <div class="sidebar-footer"><span>本地项目</span><span id="version-label">v0.1</span></div>
       </aside>
@@ -70,13 +94,14 @@
           <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button small" aria-label="关闭提示">×</button></div>
           <section id="pending-prompts" class="pending-prompts" aria-label="待发送内容" hidden><div class="pending-heading"><div><strong id="pending-count">待发送</strong><span id="pending-status"></span></div><button id="resume-pending" class="button" type="button" hidden>继续发送</button></div><div id="pending-items" class="pending-items"></div></section>
           <section id="composer-approval" class="composer-approval" aria-label="待批准的操作" aria-live="polite" hidden></section>
+          <div id="approval-live-controls" class="approval-live-controls" aria-label="运行中的模型和权限" hidden></div>
           <form id="task-form" class="composer">
             <label for="task-input" class="sr-only">输入编程任务</label>
             <div id="attachment-drafts" class="attachment-drafts" aria-label="待发送图片" hidden></div>
             <input id="attachment-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
             <textarea id="task-input" placeholder="描述需要完成的任务…" rows="2" spellcheck="false"></textarea>
             <div class="composer-toolbar"><div class="composer-context"><button id="attach-images" class="attach-images" type="button" title="添加图片（PNG / JPEG / WebP，最多 4 张，每张 2 MiB）；也可粘贴截图" aria-label="添加照片或截图"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13l6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9 M6 15l8-8"/></svg></button><div id="composer-model-control" class="composer-model-control">
-              <button id="model-reasoning-trigger" class="model-reasoning-pill" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reasoning-popup"><span id="composer-model-name">选择模型</span><span class="pill-separator">·</span><span id="composer-reasoning-label">默认</span><span class="pill-chevron">⌃</span></button>
+              <button id="model-reasoning-trigger" class="model-reasoning-pill" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reasoning-popup"><span id="composer-model-name">选择模型</span><span class="pill-separator">·</span><span id="composer-reasoning-label">默认</span></button>
               <section id="reasoning-popup" class="reasoning-popup" role="dialog" aria-label="模型与推理强度" hidden>
                 <div id="reasoning-popup-main">
                   <div class="reasoning-popup-heading"><output id="reasoning-value" class="reasoning-value popup-reasoning-value" for="reasoning-effort">默认</output><button id="reasoning-default" class="reasoning-default popup-reasoning-reset active" type="button" aria-label="恢复模型默认推理强度" title="恢复默认" aria-pressed="true">↺</button></div>
@@ -87,7 +112,7 @@
                 <div id="model-list-panel" class="model-list-panel" hidden><div class="model-list-heading"><button id="model-list-back" class="icon-button small" type="button" aria-label="返回推理设置">‹</button><strong>选择模型</strong><button id="model-list-refresh" class="icon-button small" type="button" title="刷新模型目录" aria-label="刷新模型目录">↻</button></div><input id="model-search" class="model-search" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型"><p id="model-list-status" class="model-list-status" role="status"></p><div id="model-list" class="model-list" role="listbox" aria-label="可选模型"></div><div class="model-list-footer"><button id="model-list-retry" class="text-button" type="button" hidden>重试</button><button id="model-open-settings" class="text-button" type="button">模型设置</button></div></div>
                 <div class="reasoning-popup-footer"><button id="reasoning-open-settings" class="reasoning-settings-button" type="button"><span>模型设置</span><span aria-hidden="true">⚙</span></button></div>
               </section>
-            </div></div><div class="send-actions"><span class="keyboard-hint">Ctrl + Enter</span><button id="stop-button" class="button stop-button" type="button" hidden>停止</button><button id="send-button" class="send-button" type="submit" title="发送任务（Ctrl + Enter）" aria-label="发送任务">↑</button></div></div>
+            </div></div><div class="send-actions"><span class="keyboard-hint">Ctrl + Enter</span><button id="stop-button" class="button stop-button" type="button" hidden>停止</button><button id="send-button" class="send-button" type="submit" title="发送任务（Ctrl + Enter）" aria-label="发送任务"><svg class="send-plane-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3"/></svg></button></div></div>
           </form>
           <div class="composer-footer">
             <div class="composer-footer-account">
@@ -115,10 +140,22 @@
                 <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">—</strong></span>
                 <span id="session-total" class="session-metric">本会话 <strong id="session-total-value">—</strong><span>Token</span></span>
               </div>
-              <span id="session-context" class="session-context unknown" role="progressbar" aria-label="上下文使用率" aria-valuemin="0" aria-valuemax="100" aria-valuetext="上下文容量未知">
-                <svg class="session-context-ring" viewBox="0 0 28 28" aria-hidden="true"><circle class="session-context-track" cx="14" cy="14" r="11"/><circle id="session-context-progress" class="session-context-progress" cx="14" cy="14" r="11" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 14 14)"/></svg>
-                <span>上下文 <strong id="session-context-value">—</strong></span>
-              </span>
+              <div id="session-context-control" class="session-context-control">
+                <button id="session-context-trigger" class="session-context-trigger" type="button" aria-label="上下文与自动压缩设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="context-settings-popup">
+                  <span id="session-context" class="session-context unknown" role="progressbar" aria-label="上下文使用率" aria-valuemin="0" aria-valuemax="100" aria-valuetext="上下文容量未知">
+                    <svg class="session-context-ring" viewBox="0 0 28 28" aria-hidden="true"><circle class="session-context-track" cx="14" cy="14" r="11"/><circle id="session-context-progress" class="session-context-progress" cx="14" cy="14" r="11" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 14 14)"/></svg>
+                    <span>上下文 <strong id="session-context-value">—</strong></span>
+                  </span><span class="context-settings-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <section id="context-settings-popup" class="context-settings-popup" role="dialog" aria-labelledby="context-settings-title" hidden>
+                  <div class="context-settings-heading"><strong id="context-settings-title">自动压缩上下文</strong><button id="context-settings-close" class="icon-button small" type="button" aria-label="关闭上下文设置">×</button></div>
+                  <p class="context-settings-description">整理历史对话、代码分析和任务进度，保留主要工作信息继续编程。完整记录仍保存在本机。</p>
+                  <label for="context-trigger-input">自动压缩阈值（Token）</label>
+                  <input id="context-trigger-input" type="number" inputmode="numeric" min="1000" max="16000000" step="1" value="850000" aria-describedby="context-trigger-error">
+                  <p id="context-trigger-error" class="context-trigger-error" role="status" hidden></p>
+                  <div class="context-settings-actions"><button id="context-trigger-reset" class="button subtle" type="button">恢复默认</button><button id="context-trigger-save" class="button solid" type="button">保存</button></div>
+                </section>
+              </div>
             </div>
           </div>
         </div>
@@ -130,7 +167,7 @@
         <div class="preview-tabs"><button id="file-preview-tab" class="preview-tab active">文件</button><button id="changes-preview-tab" class="preview-tab">变更 <span id="change-count">0</span></button><button id="browser-preview-tab" class="preview-tab">浏览器</button></div>
         <section id="browser-preview" class="browser-preview" aria-label="内置浏览器" hidden><form id="browser-toolbar" class="browser-toolbar"><button id="browser-back" class="icon-button small" type="button" aria-label="网页后退" disabled>←</button><button id="browser-forward" class="icon-button small" type="button" aria-label="网页前进" disabled>→</button><button id="browser-reload" class="icon-button small" type="button" aria-label="刷新网页">↻</button><label class="sr-only" for="browser-address">网页地址</label><input id="browser-address" class="browser-address" type="text" placeholder="输入网址…" autocomplete="off" spellcheck="false"><button class="button subtle" type="submit">前往</button></form><div id="browser-status" class="browser-status" role="status"></div><div id="browser-viewport" class="browser-viewport"><div id="browser-empty" class="browser-empty">在此打开网页，或从 HTML 文件打开项目预览。<br>AI 可通过浏览器工具读取、点击及输入。</div></div></section>
         <div id="preview-empty" class="preview-empty"><p>从左侧打开文件，在此编辑。</p></div>
-        <div id="file-preview" class="file-preview" hidden><div class="file-preview-heading"><span id="preview-filename"></span><div class="editor-file-actions"><span id="editor-dirty" hidden>待保存</span><button id="save-file" class="button subtle" type="button" title="已启用自动保存；Ctrl+S 立即保存或重试" disabled>保存</button><button id="reveal-file" class="icon-button small" title="在系统中打开文件" aria-label="在系统中打开文件">↗</button></div></div><textarea id="file-content" class="code-content file-editor" aria-label="文件内容编辑器" spellcheck="false" wrap="off"></textarea><div id="editor-status" class="editor-status" role="status" aria-live="polite">自动保存已开启 · UTF-8</div></div>
+        <div id="file-preview" class="file-preview" hidden><div class="file-preview-heading"><span id="preview-filename"></span><div class="editor-file-actions"><span id="editor-dirty" hidden>待保存</span><button id="save-file" class="button subtle" type="button" title="已启用自动保存；Ctrl+S 立即保存或重试" disabled>保存</button><button id="reveal-file" class="icon-button small" title="在系统中打开文件" aria-label="在系统中打开文件">↗</button></div></div><div class="file-code-editor"><div id="file-line-numbers" class="file-line-numbers" aria-hidden="true"><pre id="file-line-number-content"></pre></div><pre id="file-highlight" class="file-highlight" aria-hidden="true"><code id="file-highlight-code"></code></pre><textarea id="file-content" class="code-content file-editor" aria-label="文件内容编辑器" spellcheck="false" wrap="off"></textarea></div><div id="editor-status" class="editor-status" role="status" aria-live="polite">自动保存已开启 · UTF-8</div></div>
         <div id="changes-preview" class="changes-preview" hidden><div id="changes-empty" class="preview-empty compact"><p>暂无文件变更提议。</p></div><div id="change-list"></div></div>
       </aside>
     </div>
@@ -143,12 +180,53 @@
       <div class="appearance-preview" aria-hidden="true"><div class="appearance-preview-glass"><span></span><span></span><span></span></div></div>
       <div class="appearance-meta"><strong id="background-name">极光 · 默认背景</strong><p id="background-description">柔和蓝紫渐变，专注于眼前的创作。</p></div>
     </div>
+    <section class="background-presets-settings" aria-labelledby="background-presets-title">
+      <h3 id="background-presets-title">背景风格</h3>
+      <div id="background-preset-options" class="background-preset-options" role="group" aria-labelledby="background-presets-title">
+        <button class="background-preset-option" data-background-preset="aurora" type="button" aria-pressed="true"><span class="background-preset-swatch preset-aurora" aria-hidden="true"></span><span>蓝紫极光</span></button>
+        <button class="background-preset-option" data-background-preset="rose" type="button" aria-pressed="false"><span class="background-preset-swatch preset-rose" aria-hidden="true"></span><span>玫瑰红</span></button>
+        <button class="background-preset-option" data-background-preset="amber" type="button" aria-pressed="false"><span class="background-preset-swatch preset-amber" aria-hidden="true"></span><span>暖金</span></button>
+        <button class="background-preset-option" data-background-preset="forest" type="button" aria-pressed="false"><span class="background-preset-swatch preset-forest" aria-hidden="true"></span><span>森林绿</span></button>
+        <button class="background-preset-option" data-background-preset="ocean" type="button" aria-pressed="false"><span class="background-preset-swatch preset-ocean" aria-hidden="true"></span><span>海蓝</span></button>
+        <button class="background-preset-option" data-background-preset="snow" type="button" aria-pressed="false"><span class="background-preset-swatch preset-snow" aria-hidden="true"></span><span>霜白</span></button>
+        <button class="background-preset-option" data-background-preset="midnight" type="button" aria-pressed="false"><span class="background-preset-swatch preset-midnight" aria-hidden="true"></span><span>深夜黑</span></button>
+        <button class="background-preset-option" data-background-preset="orange" type="button" aria-pressed="false"><span class="background-preset-swatch preset-orange" aria-hidden="true"></span><span>橙色</span></button>
+        <button class="background-preset-option" data-background-preset="purple" type="button" aria-pressed="false"><span class="background-preset-swatch preset-purple" aria-hidden="true"></span><span>紫色</span></button>
+        <button class="background-preset-option" data-background-preset="olive" type="button" aria-pressed="false"><span class="background-preset-swatch preset-olive" aria-hidden="true"></span><span>橄榄绿</span></button>
+        <button class="background-preset-option" data-background-preset="pink" type="button" aria-pressed="false"><span class="background-preset-swatch preset-pink" aria-hidden="true"></span><span>粉色</span></button>
+        <button class="background-preset-option" data-background-preset="magenta" type="button" aria-pressed="false"><span class="background-preset-swatch preset-magenta" aria-hidden="true"></span><span>品红</span></button>
+        <button class="background-preset-option" data-background-preset="cyan" type="button" aria-pressed="false"><span class="background-preset-swatch preset-cyan" aria-hidden="true"></span><span>青色</span></button>
+      </div>
+    </section>
     <div class="appearance-slider">
       <div class="appearance-slider-heading"><label for="background-transparency">背景透明度</label><output id="background-transparency-value" for="background-transparency">28%</output></div>
-      <input id="background-transparency" type="range" min="0" max="100" step="1" value="28" aria-describedby="background-transparency-help">
+      <input id="background-transparency" type="range" min="0" max="100" step="1" value="28">
       <div class="appearance-slider-labels"><span>鲜明</span><span>淡雅</span></div>
-      <p id="background-transparency-help">拖动即时预览，自动保存到本机。</p>
     </div>
+    <section id="panel-frost-settings" class="panel-frost-settings" aria-labelledby="panel-frost-title">
+      <div class="frost-settings-heading"><h3 id="panel-frost-title">面板磨砂</h3><button id="frost-reset" class="button subtle" type="button">恢复默认磨砂</button></div>
+      <div class="appearance-slider frost-slider">
+        <div class="appearance-slider-heading"><label for="panel-frost">磨砂强度</label><output id="panel-frost-value" for="panel-frost">70%</output></div>
+        <input id="panel-frost" type="range" min="0" max="100" step="1" value="70">
+        <div class="appearance-slider-labels"><span>清透</span><span>柔和</span></div>
+      </div>
+      <div class="appearance-slider frost-slider">
+        <div class="appearance-slider-heading"><label for="panel-transparency">面板透明度</label><output id="panel-transparency-value" for="panel-transparency">30%</output></div>
+        <input id="panel-transparency" type="range" min="0" max="100" step="1" value="30">
+        <div class="appearance-slider-labels"><span>不透明</span><span>透明</span></div>
+      </div>
+    </section>
+    <section class="panel-text-colors-settings" aria-labelledby="conversation-text-colors-title">
+      <h3 id="conversation-text-colors-title">会话字体颜色</h3>
+      <div id="conversation-text-colors" class="text-color-options" role="group" aria-labelledby="conversation-text-colors-title">
+        <button class="text-color-option" data-text-color="red" type="button" aria-pressed="false"><span class="text-color-swatch text-color-red" aria-hidden="true"></span><span>红色</span></button>
+        <button class="text-color-option" data-text-color="yellow" type="button" aria-pressed="false"><span class="text-color-swatch text-color-yellow" aria-hidden="true"></span><span>黄色</span></button>
+        <button class="text-color-option" data-text-color="green" type="button" aria-pressed="false"><span class="text-color-swatch text-color-green" aria-hidden="true"></span><span>绿色</span></button>
+        <button class="text-color-option" data-text-color="blue" type="button" aria-pressed="false"><span class="text-color-swatch text-color-blue" aria-hidden="true"></span><span>蓝色</span></button>
+        <button class="text-color-option" data-text-color="white" type="button" aria-pressed="true"><span class="text-color-swatch text-color-white" aria-hidden="true"></span><span>白色</span></button>
+        <button class="text-color-option" data-text-color="black" type="button" aria-pressed="false"><span class="text-color-swatch text-color-black" aria-hidden="true"></span><span>黑色</span></button>
+      </div>
+    </section>
     <div class="appearance-actions"><button id="background-import" class="button solid" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>导入背景图…</button><button id="background-reset" class="button subtle" type="button">恢复默认背景</button></div>
     <p class="appearance-file-hint">支持 PNG、JPEG、WebP · 最大 12 MB · 仅用于本机界面</p>
     <p id="appearance-status" class="appearance-status" role="status" hidden></p>

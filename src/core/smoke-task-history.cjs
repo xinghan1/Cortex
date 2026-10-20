@@ -29,9 +29,13 @@ module.exports = async function smokeTaskHistory({ win, output }) {
   const unsafePath = 'src/<img src=x onerror=window.__taskHistoryUnsafe=1>.md';
   const finalText = '已完成界面调整，并验证文件与命令结果。';
   const commentary = '我会先查看项目文件，再修改样式并执行检查。';
+  const commandLog = 'TASK_HISTORY_SMOKE_OK\n<img src=x onerror=window.__taskHistoryUnsafe=1>\n';
+  const commandStderr = 'TASK_HISTORY_STDERR_DETAIL\n';
+  const failureStderr = 'TASK_HISTORY_EXPECTED_COMMAND_FAILURE\n    at DISPLAY_ONLY_PRIVATE_STACK_FRAME\n';
   const readResult = { path: unsafePath, content: '# 示例文件\n正文。' };
   const writeResult = { path: 'src/renderer/task-history.css', written: true };
-  const commandResult = { exitCode: 0, stdout: 'TASK_HISTORY_SMOKE_OK\n', stderr: '' };
+  const commandResult = { exitCode: 0, stdout: commandLog, stderr: commandStderr };
+  const failedCommandResult = { exitCode: 1, stdout: '', stderr: failureStderr };
   const screenshotResult = { path: 'artifacts/task-history.png', width: 1440, height: 1000 };
   const startedAt = Date.now() - elapsedMs;
   const toolCall = (id, name, args) => ({ id, name, arguments: args });
@@ -49,7 +53,7 @@ module.exports = async function smokeTaskHistory({ win, output }) {
   ];
   const completedRecord = { runId, status: 'completed', startedAt, endedAt: startedAt + elapsedMs, elapsedMs, messageStartIndex: 0, messageIndex: 9, telemetry: { tokensPerSecond: 42.5, outputTokens: 850, elapsedMs, estimated: false } };
   const stoppedRecord = { runId: stoppedId, status: 'stopped', startedAt: startedAt + elapsedMs + 1000, endedAt: startedAt + elapsedMs + 6000, elapsedMs: 5000, messageStartIndex: 10, messageIndex: 11 };
-  const failedRecord = { runId: failedId, status: 'failed', startedAt: startedAt + elapsedMs + 7000, endedAt: startedAt + elapsedMs + 14_000, elapsedMs: 7000, messageStartIndex: 12, messageIndex: 13, error: 'TASK_HISTORY_EXPECTED_FAILURE' };
+  const failedRecord = { runId: failedId, status: 'failed', startedAt: startedAt + elapsedMs + 7000, endedAt: startedAt + elapsedMs + 14_000, elapsedMs: 7000, messageStartIndex: 12, messageIndex: 14, error: 'TASK_HISTORY_EXPECTED_FAILURE\n    at DISPLAY_ONLY_PRIVATE_STACK_FRAME' };
   const events = [];
   const visibleSource = `node => {
     if (!node) return false;
@@ -92,6 +96,10 @@ module.exports = async function smokeTaskHistory({ win, output }) {
       approvalText: document.getElementById('composer-approval')?.textContent || '',
       composerReplaced: document.getElementById('task-form')?.hidden === true && document.getElementById('composer-approval')?.hidden === false,
       commandText: body?.querySelector('.command-output')?.textContent || '',
+      commandOutputVisible: [...(body?.querySelectorAll('.command-output') || [])].some(visible),
+      outputDisclosures: [...(body?.querySelectorAll('.command-output-disclosure') || [])].map(node=>({tag:node.tagName,open:node.open,summary:node.querySelector(':scope > summary')?.textContent||''})),
+      rawToolPayloadVisible: [...(body?.querySelectorAll('.tool-technical-details > pre') || [])].some(visible),
+      failedTools: [...(body?.querySelectorAll('.tool-card[data-status="failed"]') || [])].map(node=>({title:node.querySelector('.tool-title')?.textContent||'',badge:node.querySelector('.tool-badge')?.textContent||'',summary:node.querySelector(':scope > summary')?.textContent||''})),
       unsafeElements: group.querySelectorAll('img[src="x"],script,svg[onload]').length,
       rawThoughtVisible: document.getElementById('messages').textContent.includes(${JSON.stringify(privateThought)})
     };
@@ -186,13 +194,17 @@ module.exports = async function smokeTaskHistory({ win, output }) {
     await emit({ type: 'approval-resolved', id: 'history-command-approval', approved: true });
     assert.equal(await js("document.getElementById('composer-approval').hidden&&document.getElementById('composer-approval').childElementCount===0&&!document.getElementById('task-form').hidden"),true,'Resolved decision must restore the message composer');
     await js(`document.querySelector(${JSON.stringify(select(runId))}).open=true`);
-    await emit({ type: 'command-output', text: 'TASK_HISTORY_SMOKE_OK\n<img src=x onerror=window.__taskHistoryUnsafe=1>\n' });
+    await emit({ type: 'command-output', text: commandLog });
+    await emit({ type: 'command-output', text: commandStderr });
     await emit({ type: 'tool-result', name: 'run_command', result: commandResult });
     await emit({ type: 'tool-start', name: 'browser_screenshot', args: {} });
     await emit({ type: 'tool-result', name: 'browser_screenshot', result: screenshotResult });
     live = await inspect(runId);
     assert.equal(live.toolCount, 4);
-    assert.ok(live.commandText.includes('TASK_HISTORY_SMOKE_OK'));
+    assert.equal(live.commandText, commandLog + commandStderr, 'Streaming log chunks must retain their complete original text');
+    assert.equal(live.commandOutputVisible, false, 'Live raw command logs must stay hidden by default');
+    assert.equal(live.rawToolPayloadVisible, false, 'Live raw tool payloads must stay hidden by default');
+    assert.deepEqual(live.outputDisclosures, [{ tag: 'DETAILS', open: false, summary: '查看命令输出' }], 'Live output needs one closed native disclosure per command');
     assert.equal(live.unsafeElements, 0);
     assert.equal(live.rawThoughtVisible, false);
     // A stale workspace event may not alter the currently visible process.
@@ -223,11 +235,22 @@ module.exports = async function smokeTaskHistory({ win, output }) {
     assert.ok(expanded.text.includes(commentary));
     assert.ok(expanded.text.includes('src/renderer/task-history.css'));
     assert.ok(expanded.text.includes(command));
+    assert.equal(expanded.commandOutputVisible, false, 'Expanding a completed task must not automatically reveal full logs');
     // Individual operations retain independent disclosure controls.
     stage = 'individual operation disclosure is painted';
     await js(`(() => { const card=document.querySelector(${JSON.stringify(select(runId) + ' .tool-card')}); if(!card)throw new Error('Tool operation missing'); card.querySelector('summary').click(); })()`);
     assert.equal(await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card')}).open`), true);
     await until('expanded native operation details painted', () => js(`(${visibleSource})(document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-details')}))`), 1000);
+    assert.equal((await inspect(runId)).rawToolPayloadVisible, false, 'Opening an operation should still keep technical payloads collapsed');
+    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details > summary')}).click()`);
+    await until('explicitly expanded full tool payload painted', () => js(`(${visibleSource})(document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details > pre')}))`), 1000);
+    const expandedReadResult = await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details')}).querySelector('pre:last-of-type')?.textContent`);
+    assert.deepEqual(JSON.parse(expandedReadResult), readResult, 'Expanded details must retain the complete read result');
+    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure > summary')}).click()`);
+    await until('explicitly expanded command logs painted', async () => (await inspect(runId)).commandOutputVisible, 1000);
+    assert.equal((await inspect(runId)).commandText, commandLog + commandStderr, 'Expanding logs must expose their complete original text');
+    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure > summary')}).click()`);
+    assert.equal((await inspect(runId)).commandOutputVisible, false, 'The output disclosure must also close independently');
     await capture('task-history-expanded.png');
 
     // Each later run owns its duration and status, including interrupted work.
@@ -239,6 +262,19 @@ module.exports = async function smokeTaskHistory({ win, output }) {
       // The provider never confirmed this text as a completed assistant message.
       // Stopping/failing must retain it as partial process text inside the run.
       await emit({ type: 'text-delta', runId: record.runId, text: partial });
+      if (record.status === 'failed') {
+        await emit({ type: 'tool-start', runId: record.runId, toolCallId: failedId + '-command', name: 'run_command', args: { command: 'DISPLAY_ONLY_FAILED_COMMAND' } });
+        await emit({ type: 'command-output', runId: record.runId, text: failureStderr });
+        await emit({ type: 'tool-result', runId: record.runId, toolCallId: failedId + '-command', name: 'run_command', result: failedCommandResult });
+        const failed = await inspect(record.runId);
+        assert.equal(failed.failedTools.length, 1, 'A nonzero command exit code must preserve a visible failure state');
+        assert.match(failed.failedTools[0].title, /失败|未完成/u);
+        assert.match(failed.failedTools[0].badge, /失败|未完成|错误/u);
+        assert.ok(!failed.failedTools[0].summary.includes('DISPLAY_ONLY_PRIVATE_STACK_FRAME'), 'Failure summaries must not dump stack traces');
+        assert.equal(failed.commandText, failureStderr);
+        assert.equal(failed.commandOutputVisible, false);
+        assert.equal(failed.rawToolPayloadVisible, false);
+      }
       await emit({ type: 'approval-request', runId: record.runId, id: record.runId + '-pending', kind: 'command', title: '结束前等待确认', command: 'DISPLAY_ONLY_DO_NOT_EXECUTE', detail: '仅供显示测试，任务结束后此请求必须失效。' });
       assert.equal((await inspect(record.runId)).composerReplaced,true,'Pending decision must replace the composer before task termination');
       await emit({ type: 'run-end', ...record });
@@ -255,10 +291,10 @@ module.exports = async function smokeTaskHistory({ win, output }) {
     stage = 'tool-bearing commentary is not a final answer';
     const toolCommentary = '下一步准备运行检查命令。';
     await emit({ type: 'user-message', runId: commentaryId, id: commentaryId + '-user', text: '验证调用工具前停止。' });
-    await emit({ type: 'run-start', runId: commentaryId, startedAt: Date.now() - 12_000, kind: 'agent', messageStartIndex: 14 });
+    await emit({ type: 'run-start', runId: commentaryId, startedAt: Date.now() - 12_000, kind: 'agent', messageStartIndex: 15 });
     await emit({ type: 'text-delta', runId: commentaryId, text: toolCommentary });
     await emit({ type: 'assistant-message', runId: commentaryId, text: toolCommentary, toolCallCount: 1 });
-    await emit({ type: 'run-end', runId: commentaryId, status: 'stopped', elapsedMs: 12_000, messageStartIndex: 14, messageIndex: 15 });
+    await emit({ type: 'run-end', runId: commentaryId, status: 'stopped', elapsedMs: 12_000, messageStartIndex: 15, messageIndex: 16 });
     const stoppedCommentary = await inspect(commentaryId);
     assert.equal(stoppedCommentary.status, 'stopped');
     assert.equal(stoppedCommentary.open, false);
@@ -272,12 +308,15 @@ module.exports = async function smokeTaskHistory({ win, output }) {
       { role: 'user', content: '请测试停止操作。' },
       { role: 'assistant', content: '停止前的操作说明。', localOnly: true, toolCalls: [] },
       { role: 'user', content: '请测试失败操作。' },
-      { role: 'assistant', content: '失败前的操作说明。', localOnly: true, toolCalls: [] }
+      { role: 'assistant', content: '失败前的操作说明。', localOnly: true, toolCalls: [toolCall(failedId + '-command', 'run_command', { command: 'DISPLAY_ONLY_FAILED_COMMAND' })] },
+      { role: 'tool', toolCallId: failedId + '-command', content: JSON.stringify(failedCommandResult) }
     ];
     const archivedEvents = [
       { type: 'approval-request', runId, id: 'history-command-approval', kind: 'command', title: '运行检查命令', path: 'smoke-project', command, messageIndex: 5 },
       { type: 'approval-resolved', runId, id: 'history-command-approval', approved: true, messageIndex: 5 },
-      { type: 'command-output', runId, text: 'TASK_HISTORY_SMOKE_OK\n', messageIndex: 5 },
+      { type: 'command-output', runId, text: commandLog, messageIndex: 5 },
+      { type: 'command-output', runId, text: commandStderr, messageIndex: 5 },
+      { type: 'command-output', runId: failedId, text: failureStderr, messageIndex: 13 },
       { type: 'run-end', ...completedRecord }, { type: 'run-end', ...stoppedRecord }, { type: 'run-end', ...failedRecord }
     ];
     await js(`renderSessionSnapshot(${JSON.stringify({ id: sessionId, messages: archivedMessages, events: archivedEvents, taskRuns: [completedRecord, stoppedRecord, failedRecord], temporary: false })})`);
@@ -302,6 +341,18 @@ module.exports = async function smokeTaskHistory({ win, output }) {
     const reloadedExpanded = await inspect(runId);
     assert.ok(reloadedExpanded.text.includes(unsafePath));
     assert.ok(reloadedExpanded.text.includes(command));
+    assert.equal(reloadedExpanded.commandText, commandLog + commandStderr, 'Archived command chunks must retain the complete original output');
+    assert.equal(reloadedExpanded.commandOutputVisible, false, 'Restoring and expanding history must keep command logs collapsed');
+    assert.equal(reloadedExpanded.rawToolPayloadVisible, false, 'Historical tool payloads must remain collapsed');
+    assert.deepEqual(reloadedExpanded.outputDisclosures, [{ tag: 'DETAILS', open: false, summary: '查看命令输出' }]);
+    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure > summary')}).click()`);
+    await until('restored command logs explicitly expanded', async () => (await inspect(runId)).commandOutputVisible, 1000);
+    assert.equal((await inspect(runId)).commandText, commandLog + commandStderr);
+    const restoredFailure = await inspect(failedId);
+    assert.equal(restoredFailure.failedTools.length, 1, 'Historical command errors must retain their failure state');
+    assert.match(restoredFailure.failedTools[0].title, /失败|未完成/u);
+    assert.equal(restoredFailure.commandText, failureStderr);
+    assert.equal(restoredFailure.commandOutputVisible, false);
     assert.match(reloadedExpanded.text, /(?:已读取|已查看).*文件|读取文件/u);
     assert.match(reloadedExpanded.text, /(?:已写入|已编辑|已修改|写入文件)/u);
     await capture('task-history-reloaded.png');
@@ -312,6 +363,8 @@ module.exports = async function smokeTaskHistory({ win, output }) {
       nativeKeyboardDisclosure: true, individualOperationDisclosure: true, pendingApprovalVisible: true,composerApproval:true,pendingApprovalExpiresOnEnd:true,
       interruptedStreamRemainsInsideHistory: true, toolBearingCommentaryRemainsInsideHistory: true,
       historyReconstruction: true, workspaceEventIsolation: true, unsafeHtmlRenderedAsText: true, privateReasoningHidden: true,
+      technicalPayloadsCollapsedByDefault: true, commandOutputCollapsedByDefault: true, fullOutputExpandable: true,
+      historicalOutputCollapsedByDefault: true, commandFailuresStayVisible: true,
       syntheticEventCount: events.length,
       screenshots: ['task-history-running.png', 'task-history-completed.png', 'task-history-expanded.png', 'task-history-reloaded.png']
     };

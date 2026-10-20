@@ -6,15 +6,21 @@
   const $ = id => document.getElementById(id);
   const bridge = window.forge;
   const dialog = $('appearance-dialog');
-  const slider = $('background-transparency');
+  const colors = window.ForgeConversationColors;
+  const presets = window.ForgeBackgroundPresets;
+  const colorButtons = [...document.querySelectorAll('#conversation-text-colors [data-text-color]')];
+  const presetButtons = [...document.querySelectorAll('#background-preset-options [data-background-preset]')];
+  const settings = [
+    { field: 'backgroundTransparency', id: 'background-transparency', initial: 28 },
+    { field: 'panelFrost', id: 'panel-frost', initial: 70, filter: '--panel-frost-filter' },
+    { field: 'panelTransparency', id: 'panel-transparency', initial: 30, opacity: '--panel-opacity' },
+    { field: 'conversationTextColor', kind: 'color', initial: 'white' },
+    { field: 'backgroundPreset', kind: 'preset', initial: 'aurora' },
+  ].map(setting => ({ ...setting, control: setting.id ? $(setting.id) : null, value: setting.initial, dirty: false, revision: 0, queuedRevision: -1 }));
   const defaultImage = 'url("./aurora-background.svg")';
   const rules = new Map();
-  let persisted = { backgroundImage: null, backgroundName: '', backgroundTransparency: 28 };
-  let desiredTransparency = 28;
-  let editing = false;
+  let persisted = { backgroundImage: null, backgroundName: '', ...Object.fromEntries(settings.map(({ field, initial }) => [field, initial])) };
   let mutationBusy = false;
-  let revision = 0;
-  let queuedRevision = -1;
   let appearanceEvents = 0;
   let saveTimer;
   let saveQueue = Promise.resolve();
@@ -38,9 +44,9 @@
     return {
       backgroundImage: image,
       backgroundName: image && typeof value.backgroundName === 'string' ? value.backgroundName : '',
-      backgroundTransparency: Number.isInteger(value?.backgroundTransparency)
-        && value.backgroundTransparency >= 0 && value.backgroundTransparency <= 100
-        ? value.backgroundTransparency : 28,
+      ...Object.fromEntries(settings.map(({ field, initial, kind }) => [field,
+        kind === 'color' ? colors.normalize(value?.[field]) : kind === 'preset' ? presets.normalize(value?.[field])
+          : Number.isInteger(value?.[field]) && value[field] >= 0 && value[field] <= 100 ? value[field] : initial])),
     };
   }
 
@@ -55,24 +61,45 @@
   }
 
   function render() {
-    document.documentElement.classList.toggle('custom-background', !!persisted.backgroundImage);
-    const image = persisted.backgroundImage ? `url("${persisted.backgroundImage}")` : defaultImage;
+    const selectedPreset = settings.find(setting => setting.kind === 'preset');
+    const preset = presets.get(selectedPreset.value);
+    const imported = !!persisted.backgroundImage && !selectedPreset.dirty;
+    document.documentElement.classList.toggle('custom-background', imported);
+    const image = imported ? `url("${persisted.backgroundImage}")` : preset.image || defaultImage;
     const background = ruleFor('#app-background');
     background?.style.setProperty('background-image', image);
-    background?.style.setProperty('--background-opacity', String((100 - desiredTransparency) / 100));
+    background?.style.setProperty('--background-opacity', String((100 - settings[0].value) / 100));
     ruleFor('.appearance-preview')?.style.setProperty('background-image', image);
-    slider.value = String(desiredTransparency);
-    $('background-transparency-value').value = `${desiredTransparency}%`;
-    slider.setAttribute('aria-valuetext', `${desiredTransparency}% 透明`);
-    $('background-name').textContent = persisted.backgroundName || '极光 · 默认背景';
-    $('background-description').textContent = persisted.backgroundImage
+    const root = ruleFor(':root');
+    for (const setting of settings) {
+      if (setting.kind === 'preset') {
+        for (const button of presetButtons) button.setAttribute('aria-pressed', String(!imported && button.dataset.backgroundPreset === setting.value));
+        continue;
+      }
+      if (setting.kind === 'color') {
+        root?.style.setProperty('--conversation-text-color', colors.color(setting.value));
+        for (const button of colorButtons) button.setAttribute('aria-pressed', String(button.dataset.textColor === setting.value));
+        continue;
+      }
+      setting.control.value = String(setting.value);
+      $(setting.id + '-value').value = `${setting.value}%`;
+      setting.control.setAttribute('aria-valuetext', `${setting.value}% ${setting.filter ? '磨砂' : '透明'}`);
+      if (setting.filter) {
+        const blur = Number((setting.value * 0.4).toFixed(1));
+        const saturation = Number((100 + setting.value * 4 / 7).toFixed(2));
+        root?.style.setProperty(setting.filter, setting.value ? `blur(${blur}px) saturate(${saturation}%)` : 'none');
+      }
+      if (setting.opacity) root?.style.setProperty(setting.opacity, String((100 - setting.value) / 100));
+    }
+    $('background-name').textContent = imported ? persisted.backgroundName : preset.name;
+    $('background-description').textContent = imported
       ? '已保存在本机，应用于左侧栏、会话区和右侧窗口。'
-      : '柔和蓝紫渐变，专注于眼前的创作。';
+      : preset.description;
   }
 
   function apply(value) {
     persisted = normalize(value);
-    if (!editing) desiredTransparency = persisted.backgroundTransparency;
+    for (const setting of settings) if (!setting.dirty) setting.value = persisted[setting.field];
     render();
   }
 
@@ -86,29 +113,36 @@
     mutationBusy = value;
     $('background-import').disabled = value;
     $('background-reset').disabled = value;
-    slider.disabled = value;
+    $('frost-reset').disabled = value;
+    for (const setting of settings) if (setting.control) setting.control.disabled = value;
+    for (const button of colorButtons) button.disabled = value;
+    for (const button of presetButtons) button.disabled = value;
     dialog.setAttribute('aria-busy', String(value));
   }
 
-  function saveTransparency() {
+  function saveSettings() {
     clearTimeout(saveTimer);
-    if (!editing) return saveQueue;
-    const value = desiredTransparency;
-    const token = revision;
-    if (token === queuedRevision) return saveQueue;
-    queuedRevision = token;
+    const pending = settings.filter(setting => setting.dirty && setting.revision !== setting.queuedRevision)
+      .map(setting => ({ setting, value: setting.value, token: setting.revision }));
+    if (!pending.length) return saveQueue;
+    for (const { setting, token } of pending) setting.queuedRevision = token;
+    const patch = Object.fromEntries(pending.map(({ setting, value }) => [setting.field, value]));
     saveQueue = saveQueue.then(async () => {
       try {
         if (!bridge?.setAppearance) throw new Error('请在 Synora code 桌面软件中保存外观设置。');
         const eventsAtRequest = appearanceEvents;
-        const next = await bridge.setAppearance({ backgroundTransparency: value });
-        if (token === revision) editing = false;
+        const next = await bridge.setAppearance(patch);
+        for (const { setting, token } of pending) if (token === setting.revision) setting.dirty = false;
         acceptReply(next, eventsAtRequest);
-        if (token === revision) status('外观已自动保存。');
       } catch (error) {
-        if (token === revision) {
-          editing = false;
-          desiredTransparency = persisted.backgroundTransparency;
+        let reverted = false;
+        for (const { setting, token } of pending) {
+          if (token !== setting.revision) continue;
+          setting.dirty = false;
+          setting.value = persisted[setting.field];
+          reverted = true;
+        }
+        if (reverted) {
           render();
           status(readableError(error, '外观保存失败，请重试。'), true);
         }
@@ -119,8 +153,12 @@
 
   async function settled() {
     await ready;
-    await saveTransparency();
-    await saveQueue;
+    // Edits made while an older save is in flight must be flushed as well.
+    let pending;
+    do {
+      pending = saveSettings();
+      await pending;
+    } while (pending !== saveQueue || settings.some(setting => setting.dirty && setting.revision !== setting.queuedRevision));
   }
 
   async function open() {
@@ -140,7 +178,6 @@
       const before = persisted.backgroundImage;
       const eventsAtRequest = appearanceEvents;
       const next = await bridge.importBackground();
-      editing = false;
       acceptReply(next, eventsAtRequest);
       if (before !== persisted.backgroundImage) status('背景图已导入，重启后仍会保留。');
     } catch (error) { status(readableError(error, '背景图导入失败，请重试。'), true); }
@@ -156,27 +193,56 @@
       if (!bridge?.resetBackground) throw new Error('请在 Synora code 桌面软件中修改背景。');
       const eventsAtRequest = appearanceEvents;
       const next = await bridge.resetBackground();
-      editing = false;
       acceptReply(next, eventsAtRequest);
       status('已恢复默认背景和透明度。');
     } catch (error) { status(readableError(error, '恢复默认背景失败，请重试。'), true); }
     finally { setBusy(false); }
   }
 
-  slider.addEventListener('input', () => {
-    desiredTransparency = Number(slider.value);
-    editing = true;
-    ++revision;
+  function edit(setting, value) {
+    setting.value = setting.kind === 'color' ? colors.normalize(value) : setting.kind === 'preset' ? presets.normalize(value)
+      : Math.max(0, Math.min(100, Math.round(value)));
+    setting.dirty = true;
+    ++setting.revision;
     render();
     status();
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveTransparency, 250);
+  }
+
+  async function resetFrost() {
+    if (mutationBusy) return;
+    setBusy(true);
+    status();
+    try {
+      await settled();
+      for (const setting of settings.filter(value => value.filter)) edit(setting, setting.initial);
+      await saveSettings();
+    } finally { setBusy(false); }
+  }
+
+  for (const button of colorButtons) button.addEventListener('click', () => {
+    if (mutationBusy) return;
+    edit(settings.find(setting => setting.kind === 'color'), button.dataset.textColor);
+    saveSettings();
   });
-  slider.addEventListener('change', saveTransparency);
+  for (const button of presetButtons) button.addEventListener('click', () => {
+    if (mutationBusy) return;
+    edit(settings.find(setting => setting.kind === 'preset'), button.dataset.backgroundPreset);
+    saveSettings();
+  });
+  for (const setting of settings.filter(value => value.control)) {
+    setting.control.addEventListener('input', () => {
+      if (mutationBusy) return;
+      edit(setting, Number(setting.control.value));
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveSettings, 250);
+    });
+    setting.control.addEventListener('change', saveSettings);
+  }
+  $('frost-reset').addEventListener('click', resetFrost);
   $('background-import').addEventListener('click', importBackground);
   $('background-reset').addEventListener('click', resetBackground);
   $('appearance-close').addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => { saveTransparency(); });
+  dialog.addEventListener('close', () => { saveSettings(); });
   dialog.addEventListener('click', event => {
     if (event.target !== dialog) return;
     const rect = dialog.getBoundingClientRect();

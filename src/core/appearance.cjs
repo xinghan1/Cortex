@@ -4,6 +4,13 @@ const { randomUUID } = require('node:crypto');
 
 const APPEARANCE_LIMITS = Object.freeze({ maxImageBytes: 12 * 1024 * 1024, maxDimension: 16384, maxPixels: 64_000_000 });
 const DEFAULT_TRANSPARENCY = 28;
+const DEFAULT_FROST = 70;
+const DEFAULT_PANEL_TRANSPARENCY = 30;
+const DEFAULT_CONVERSATION_TEXT_COLOR = 'white';
+const CONVERSATION_TEXT_COLORS = Object.freeze(['red', 'yellow', 'green', 'blue', 'white', 'black']);
+const DEFAULT_BACKGROUND_PRESET = 'aurora';
+const BACKGROUND_PRESETS = Object.freeze(['aurora', 'rose', 'amber', 'forest', 'ocean', 'snow', 'midnight', 'orange', 'purple', 'olive', 'pink', 'magenta', 'cyan']);
+const LEGACY_FROST_FIELDS = Object.freeze(['sidebarFrost', 'conversationFrost', 'previewFrost']);
 const MAX_DOCUMENT_BYTES = 4 * Math.ceil(APPEARANCE_LIMITS.maxImageBytes / 3) + 4096;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const FORMATS = new Map([['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.webp', 'image/webp']]);
@@ -13,7 +20,15 @@ const validTransparency = value => Number.isInteger(value) && value >= 0 && valu
 const appearanceError = (message, code) => Object.assign(new Error(message), { code });
 const invalidImage = () => appearanceError('背景图片无效，请选择有效的 PNG、JPEG 或 WebP 图片。', 'APPEARANCE_INVALID_IMAGE');
 const imageLimit = () => appearanceError('背景图片不能超过 12 MiB、单边 16384 像素或总计 6400 万像素。', 'APPEARANCE_IMAGE_LIMIT');
-const defaultState = () => ({ backgroundImage: null, backgroundName: '', backgroundTransparency: DEFAULT_TRANSPARENCY });
+const defaultState = () => ({
+  backgroundImage: null,
+  backgroundName: '',
+  backgroundTransparency: DEFAULT_TRANSPARENCY,
+  panelFrost: DEFAULT_FROST,
+  panelTransparency: DEFAULT_PANEL_TRANSPARENCY,
+  conversationTextColor: DEFAULT_CONVERSATION_TEXT_COLOR,
+  backgroundPreset: DEFAULT_BACKGROUND_PRESET,
+});
 
 function displayName(value) {
   return Array.from(value.split(/[\\/]/u).at(-1).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '').trim()).slice(0, 120).join('');
@@ -129,9 +144,18 @@ class AppearanceStore {
       this.#initializing = (async () => {
         try {
           const value = JSON.parse((await readBounded(this.#file, MAX_DOCUMENT_BYTES, invalidImage)).toString('utf8'));
-          if (!value || Array.isArray(value) || value.version !== 1 || Object.keys(value).sort().join(',') !== 'backgroundImage,backgroundName,backgroundTransparency,version'
+          const fields = ['backgroundImage', 'backgroundName', 'backgroundTransparency', 'version'];
+          if (value?.version >= 2 && value.version <= 4) fields.push(...LEGACY_FROST_FIELDS);
+          if (value?.version === 5) fields.push('panelFrost', 'panelTransparency');
+          if (value?.version >= 3) fields.push('conversationTextColor');
+          if (value?.version >= 4) fields.push('backgroundPreset');
+          if (!value || Array.isArray(value) || ![1, 2, 3, 4, 5].includes(value.version) || Object.keys(value).sort().join(',') !== fields.sort().join(',')
               || !validTransparency(value.backgroundTransparency) || typeof value.backgroundName !== 'string'
               || value.backgroundName !== displayName(value.backgroundName)) throw invalidImage();
+          if (value.version >= 2 && value.version <= 4 && LEGACY_FROST_FIELDS.some(field => !validTransparency(value[field]))) throw invalidImage();
+          if (value.version === 5 && (!validTransparency(value.panelFrost) || !validTransparency(value.panelTransparency))) throw invalidImage();
+          if (value.version >= 3 && !CONVERSATION_TEXT_COLORS.includes(value.conversationTextColor)) throw invalidImage();
+          if (value.version >= 4 && !BACKGROUND_PRESETS.includes(value.backgroundPreset)) throw invalidImage();
           if (value.backgroundImage === null) {
             if (value.backgroundName !== '') throw invalidImage();
           } else {
@@ -143,7 +167,21 @@ class AppearanceStore {
             if (bytes.toString('base64') !== encoded) throw invalidImage();
             validateRaster(bytes, mediaType, this.#decodeImage);
           }
-          this.#state = { backgroundImage: value.backgroundImage, backgroundName: value.backgroundName, backgroundTransparency: value.backgroundTransparency };
+          this.#state = {
+            ...defaultState(),
+            backgroundImage: value.backgroundImage,
+            backgroundName: value.backgroundName,
+            backgroundTransparency: value.backgroundTransparency,
+          };
+          if (value.version >= 2 && value.version <= 4) {
+            this.#state.panelFrost = Math.round(LEGACY_FROST_FIELDS.reduce((sum, field) => sum + value[field], 0) / LEGACY_FROST_FIELDS.length);
+          }
+          if (value.version === 5) {
+            this.#state.panelFrost = value.panelFrost;
+            this.#state.panelTransparency = value.panelTransparency;
+          }
+          if (value.version >= 3) this.#state.conversationTextColor = value.conversationTextColor;
+          if (value.version >= 4) this.#state.backgroundPreset = value.backgroundPreset;
         } catch {
           // A damaged background must not prevent startup or overwrite the
           // original file. The user can import another image or reset it.
@@ -168,14 +206,14 @@ class AppearanceStore {
       handle = await fs.open(temporary, 'wx', 0o600);
       // A single versioned document commits both image bytes and metadata.
       // There is no two-file state in which metadata refers to a missing image.
-      await handle.writeFile(JSON.stringify({ version: 1, ...next }) + '\n', 'utf8');
+      await handle.writeFile(JSON.stringify({ version: 5, ...next }) + '\n', 'utf8');
       await handle.sync();
       await handle.close(); handle = null;
       await fs.rename(temporary, this.#file);
       this.#state = next;
       return this.snapshot();
     } catch {
-      throw appearanceError('背景设置保存失败，请稍后重试。', 'APPEARANCE_SAVE_FAILED');
+      throw appearanceError('外观设置保存失败，请稍后重试。', 'APPEARANCE_SAVE_FAILED');
     } finally {
       if (handle) { try { await handle.close(); } catch { /* Preserve the sanitized save error. */ } }
       try { await fs.unlink(temporary); } catch { /* Already committed or unavailable. */ }
@@ -199,14 +237,48 @@ class AppearanceStore {
   }
 
   setAppearance(input) {
-    if (!input || Array.isArray(input) || Object.keys(input).join(',') !== 'backgroundTransparency' || !validTransparency(input.backgroundTransparency)) {
+    const fields = input && typeof input === 'object' && !Array.isArray(input) ? Reflect.ownKeys(input) : [];
+    const hasFrost = fields.includes('panelFrost') || fields.some(field => LEGACY_FROST_FIELDS.includes(field));
+    const hasPanelTransparency = fields.includes('panelTransparency');
+    const hasTextColor = fields.includes('conversationTextColor');
+    const hasPreset = fields.includes('backgroundPreset');
+    if (!fields.length || fields.some(field => !['backgroundTransparency', 'conversationTextColor', 'backgroundPreset', 'panelFrost', 'panelTransparency'].includes(field))) {
+      if (hasPreset) return Promise.reject(appearanceError('背景样式设置包含无效字段。', 'APPEARANCE_INVALID_BACKGROUND_PRESET'));
+      if (hasTextColor) return Promise.reject(appearanceError('会话文字颜色设置包含无效字段。', 'APPEARANCE_INVALID_TEXT_COLOR'));
+      if (hasFrost) return Promise.reject(appearanceError('磨砂设置包含无效字段。', 'APPEARANCE_INVALID_FROST'));
+      if (hasPanelTransparency) return Promise.reject(appearanceError('面板透明度设置包含无效字段。', 'APPEARANCE_INVALID_PANEL_TRANSPARENCY'));
       return Promise.reject(appearanceError('背景透明度必须为 0 至 100 之间的整数。', 'APPEARANCE_INVALID_TRANSPARENCY'));
     }
-    const value = input.backgroundTransparency;
-    return this.#enqueue(() => this.#persist({ ...this.#state, backgroundTransparency: value }));
+    const patch = Object.fromEntries(fields.map(field => [field, input[field]]));
+    if (Object.hasOwn(patch, 'backgroundTransparency') && !validTransparency(patch.backgroundTransparency)) {
+      return Promise.reject(appearanceError('背景透明度必须为 0 至 100 之间的整数。', 'APPEARANCE_INVALID_TRANSPARENCY'));
+    }
+    if (Object.hasOwn(patch, 'panelFrost') && !validTransparency(patch.panelFrost)) {
+      return Promise.reject(appearanceError('磨砂强度必须为 0 至 100 之间的整数。', 'APPEARANCE_INVALID_FROST'));
+    }
+    if (hasPanelTransparency && !validTransparency(patch.panelTransparency)) {
+      return Promise.reject(appearanceError('面板透明度必须为 0 至 100 之间的整数。', 'APPEARANCE_INVALID_PANEL_TRANSPARENCY'));
+    }
+    if (hasTextColor && !CONVERSATION_TEXT_COLORS.includes(patch.conversationTextColor)) {
+      return Promise.reject(appearanceError('会话文字颜色必须为红、黄、绿、蓝、白或黑。', 'APPEARANCE_INVALID_TEXT_COLOR'));
+    }
+    if (hasPreset && !BACKGROUND_PRESETS.includes(patch.backgroundPreset)) {
+      return Promise.reject(appearanceError('请选择有效的内置背景样式。', 'APPEARANCE_INVALID_BACKGROUND_PRESET'));
+    }
+    if (hasPreset) {
+      patch.backgroundImage = null;
+      patch.backgroundName = '';
+    }
+    return this.#enqueue(() => this.#persist({ ...this.#state, ...patch }));
   }
 
-  resetBackground() { return this.#enqueue(() => this.#persist(defaultState())); }
+  resetBackground() {
+    return this.#enqueue(() => this.#persist({ ...this.#state, backgroundImage: null, backgroundName: '', backgroundTransparency: DEFAULT_TRANSPARENCY, backgroundPreset: DEFAULT_BACKGROUND_PRESET }));
+  }
 }
 
-module.exports = { AppearanceStore, APPEARANCE_LIMITS, DEFAULT_TRANSPARENCY };
+module.exports = {
+  AppearanceStore, APPEARANCE_LIMITS, DEFAULT_TRANSPARENCY, DEFAULT_FROST, DEFAULT_PANEL_TRANSPARENCY,
+  DEFAULT_CONVERSATION_TEXT_COLOR, CONVERSATION_TEXT_COLORS,
+  DEFAULT_BACKGROUND_PRESET, BACKGROUND_PRESETS,
+};

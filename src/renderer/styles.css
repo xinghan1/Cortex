@@ -3048,14 +3048,8 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.pill-separator,
-.pill-chevron {
+.pill-separator {
   color: #747474;
-}
-
-.pill-chevron {
-  font-size: 11px;
-  margin-left: 2px;
 }
 
 #composer-reasoning-label {

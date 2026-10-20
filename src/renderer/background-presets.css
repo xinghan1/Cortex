@@ -1,0 +1,68 @@
+.background-presets-settings {
+  min-width: 0;
+  margin: 18px 0;
+}
+
+.background-presets-settings h3 {
+  margin: 0 0 11px;
+  color: #e6efff;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.background-preset-options {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.background-preset-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid rgb(215 231 255 / 16%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 3%);
+  color: #c8d8ee;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.background-preset-option[aria-pressed='true'] {
+  border-color: #aacaff;
+  background: rgb(169 202 255 / 13%);
+  box-shadow: inset 0 0 0 1px rgb(169 202 255 / 22%);
+  color: #fff;
+}
+
+.background-preset-swatch {
+  display: block;
+  height: 34px;
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 5px;
+  background-size: cover;
+  background-position: center;
+}
+
+.preset-aurora { background-image: url('./aurora-background.svg'); }
+.preset-rose { background: linear-gradient(135deg, #ed8a9f, #672039); }
+.preset-amber { background: linear-gradient(135deg, #f8e49c, #9b612f); }
+.preset-forest { background: linear-gradient(135deg, #8bdfbd, #145c49); }
+.preset-ocean { background: linear-gradient(135deg, #9be0ff, #24477e); }
+.preset-snow { background: linear-gradient(135deg, #fff, #dce7f5); }
+.preset-midnight { background: linear-gradient(135deg, #323b4e, #030509); }
+.preset-orange { background: linear-gradient(135deg, #ffae69, #963e1e); }
+.preset-purple { background: linear-gradient(135deg, #b3a0f4, #4d287b); }
+.preset-olive { background: linear-gradient(135deg, #c1cb7b, #515c2b); }
+.preset-pink { background: linear-gradient(135deg, #ffd0e1, #bc618d); }
+.preset-magenta { background: linear-gradient(135deg, #f68ee8, #8c1d7c); }
+.preset-cyan { background: linear-gradient(135deg, #8cebed, #167b86); }
+
+@media (max-width: 600px) {
+  .background-preset-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

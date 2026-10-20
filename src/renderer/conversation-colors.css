@@ -1,0 +1,103 @@
+/* Conversation text follows the selected swatch; message surfaces stay intact. */
+.text-color-options {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.text-color-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 5px;
+  border: 1px solid rgb(203 223 255 / 20%);
+  border-radius: 10px;
+  color: #e4edff;
+  background: rgb(255 255 255 / 4%);
+  font: inherit;
+  cursor: pointer;
+}
+
+.text-color-option:hover {
+  background: rgb(255 255 255 / 9%);
+}
+
+.text-color-option[aria-pressed='true'] {
+  border-color: #a6c6ff;
+  background: rgb(142 180 255 / 18%);
+  box-shadow: inset 0 0 0 1px rgb(166 198 255 / 30%);
+}
+
+.text-color-option:focus-visible {
+  outline: 2px solid #b6d0ff;
+  outline-offset: 3px;
+}
+
+.text-color-option:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.text-color-swatch {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgb(255 255 255 / 35%);
+  border-radius: 50%;
+}
+
+.text-color-white { background: #fff; }
+.text-color-black { background: #000; }
+.text-color-red { background: #ff6b6b; }
+.text-color-yellow { background: #ffd86b; }
+.text-color-green { background: #79e6a2; }
+.text-color-blue { background: #86b9ff; }
+
+@media (max-width: 600px) {
+  .text-color-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.conversation .message:is(.user, .assistant) .message-body {
+  color: var(--conversation-text-color, #fff);
+}
+
+.conversation .message:is(.user, .assistant) .message-body :is(strong, .markdown-heading, blockquote) {
+  color: inherit;
+}
+
+.conversation .message:is(.user, .assistant) .message-body :not(pre) > code {
+  color: inherit;
+}
+
+.task-activity-events .message.assistant .message-body {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.8;
+}
+
+.task-activity-events .message.assistant .message-body .markdown-heading {
+  font-size: inherit;
+}
+
+/* Code keeps its monospace metrics and semantic syntax palette in all colors. */
+.conversation .message:is(.user, .assistant) .message-body .message-code {
+  color: #d6e5ff;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.conversation .message:is(.user, .assistant) .message-body .message-code :is(pre, pre > code) {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.conversation .message:is(.user, .assistant) .message-body .message-code-label {
+  color: #b9c6da;
+  font-size: 12px;
+  font-weight: 400;
+}

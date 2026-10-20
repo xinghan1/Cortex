@@ -42,7 +42,7 @@ test('delegates approval/execution to the workspace and emits only terminal even
   assert.equal(Object.hasOwn(result.result, 'stderr'), false);
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'run_command');
-  assert.deepEqual(calls[0][1], { command: 'Write-Output first', timeout_ms: 120_000 });
+  assert.deepEqual(calls[0][1], { command: 'Write-Output first', timeout_ms: 600_000 });
   assert.ok(calls[0][2].signal instanceof AbortSignal);
   assert.deepEqual(events.map(event => event.type), ['terminal-start', 'terminal-output', 'terminal-output', 'terminal-output', 'terminal-end']);
   assert.deepEqual(events.filter(event => event.type === 'terminal-output').map(event => event.text), ['first\n', 'first\nwarning\n', 'first\nwarning\nlast\n']);
@@ -178,7 +178,10 @@ test('rejects invalid commands before creating a workspace and bounds timeout va
   assert.equal(calls, 0);
   await session.run({ command: 'test', timeoutMs: -1 });
   await session.run({ command: 'test', timeoutMs: NaN });
-  assert.deepEqual(timeouts, [1_000, 60_000]);
+  await session.run({ command: 'test' });
+  await session.run({ command: 'test', timeoutMs: 900_000 });
+  await session.run({ command: 'test', timeoutMs: 45_000 });
+  assert.deepEqual(timeouts, [1_000, 600_000, 600_000, 600_000, 45_000]);
 });
 
 const shell = process.platform === 'win32'

@@ -132,3 +132,19 @@
   line-height: 1.7;
   color: #8a949e;
 }
+
+.session-rename-dialog {
+  width: min(440px, calc(100vw - 40px));
+  padding: 24px;
+  border: 1px solid rgb(220 234 255 / 25%);
+  border-radius: 20px;
+  color: #e9f0ff;
+  background: linear-gradient(135deg, rgb(255 255 255 / 8%), rgb(117 91 209 / 9%)), rgb(21 35 57 / 96%);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 38%), inset 0 1px 0 rgb(255 255 255 / 10%);
+}
+
+.session-rename-dialog .dialog-header { margin-bottom: 18px; }
+.session-rename-dialog .dialog-header h2 { margin: 0; font-size: 18px; }
+.session-rename-dialog .dialog-footer { justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.session-rename-hint { margin: 8px 0; color: #b4c4dd; font-size: 12px; }
+.session-rename-button { font-size: 12px; }

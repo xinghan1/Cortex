@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
 const { Store } = require('./core/store.cjs');
+const { loadUsageAnalytics } = require('./core/usage-analytics-loader.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
 const { UIPreferences } = require('./core/ui-preferences.cjs');
 const { AppearanceStore } = require('./core/appearance.cjs');
@@ -38,11 +39,13 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, runAgent, runDemo, requestModel, TerminalSession, ManualFileManager, normalizeImageAttachments;
+let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, TerminalSession, ManualFileManager, normalizeImageAttachments;
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
 const windows = new Map();
+const sessionRenameLocks = new Set();
+let sessionRenameRevision = 0;
 const rendererErrors = [];
 let sharedQueue = Promise.resolve(), sharedMutations = 0, quitting = false;
 function redact(value) { return chatgpt ? chatgpt.redact(store.redact(value)) : store.redact(value); }
@@ -58,6 +61,16 @@ function mutateShared(operation) {
   return pending.finally(() => { sharedMutations--; });
 }
 async function broadcastAllStates() { await Promise.allSettled([...windows.values()].map(context => context.broadcastState())); }
+async function readSessionForContext(id) {
+  for (;;) {
+    const revision = sessionRenameRevision;
+    if (sessionRenameLocks.has(id)) throw new Error('此会话正在重命名，请稍后重试。');
+    const loaded = await store.getSession(id);
+    if (sessionRenameLocks.has(id)) throw new Error('此会话正在重命名，请稍后重试。');
+    // A read begun before the atomic title update may complete afterwards.
+    if (revision === sessionRenameRevision) return loaded;
+  }
+}
 function broadcastAppearance(value) {
   // Background bytes are local UI state. Keep them out of periodic application
   // state, project sessions, model inputs and telemetry.
@@ -159,7 +172,7 @@ function createWindowHost() {
 function createWindowContext(host) {
 let win, tools, currentSession, activeRun, terminal, fileManager;
 const workspaceId = randomUUID();
-let modelSelection = null;
+let modelSelection = null, configRevision = 0, approvalReviewerModel = null;
 let metricsConnectionKey = null;
 const settingsCatalogPreviews = new Map();
 const terminalEvents = [];
@@ -170,6 +183,8 @@ let fileClipboard = null, editorDirty = false, editorCloseRequest = null, fileOp
 const pendingPrompts = [];
 let queuePaused = false, queueReason = null, promptOperations = Promise.resolve(), shuttingDown = false, stopGeneration = 0;
 const approvals = new Map();
+const approvalController = createApprovalController({ pending: approvals, getMode: () => permissionMode,
+  decide: approvalDecision, review: reviewOperation, emit, redact, idFactory: randomUUID });
 function publicSettings() {
   const settings = store.publicSettings();
   if (!modelSelection) modelSelection = {
@@ -183,17 +198,23 @@ function publicSettings() {
   return { ...settings, provider: modelSelection.provider, ...settings.providers[modelSelection.provider] };
 }
 function rememberSelection(settings) {
-  publicSettings();
+  const previous = publicSettings();
   const value = settings.providers[settings.provider];
+  if (previous.provider !== settings.provider || previous.authMode !== value.authMode) approvalReviewerModel = null;
   modelSelection.provider = settings.provider;
   modelSelection.providers[settings.provider] = {
     model: value.model, reasoningEffort: value.reasoningEffort, authMode: value.authMode,
     ...(value.modelsByAuth ? { modelsByAuth: { ...value.modelsByAuth } } : {}),
   };
+  ++configRevision;
+  approvalController.reconcile();
 }
 async function saveProjectSettings(input) {
-  requireIdle();
   if (localOperation || promptPreflights || fileOperationDone || shuttingDown || quitting) throw new Error('正在准备任务或处理文件，请稍后更改模型。');
+  const selected = publicSettings();
+  if (activeRun && (input?.provider !== selected.provider || (input.authMode !== undefined && input.authMode !== selected.authMode))) {
+    throw new Error('运行中可切换当前连接的模型；更换服务商或登录方式需要先停止任务。');
+  }
   const shared = store.publicSettings();
   const previous = shared.providers[input?.provider];
   // Selecting a configured provider/model is local. Changing a connection is
@@ -232,6 +253,10 @@ function recordLiveEvent(run, clean) {
     const frame = { ...clean, text: run.streamText, replace: true };
     if (previous?.type === 'text-delta') events[events.length - 1] = frame;
     else events.push(frame);
+  } else if (clean.type === 'subagent-update' || clean.type === 'approval-review') {
+    const index = events.findIndex(event => event.type === clean.type && (clean.type === 'subagent-update' ? event.agent?.id === clean.agent?.id : event.id === clean.id));
+    if (index === -1) events.push(clean);
+    else events[index] = clean;
   } else {
     if (clean.type === 'assistant-message') run.streamText = '';
     if (clean.type === 'command-output' && previous?.type === 'command-output') previous.text = (String(previous.text || '') + String(clean.text || '')).slice(-256 * 1024);
@@ -270,6 +295,14 @@ function emit(event) {
     emitSessionMetrics();
   }
   const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...event, workspaceId, sequence: ++eventSequence })));
+  if (activeRun && clean.type === 'subagent-update' && clean.agent?.id && currentSession) {
+    const agents = currentSession.subagents = Array.isArray(currentSession.subagents) ? currentSession.subagents : [];
+    const index = agents.findIndex(agent => agent.id === clean.agent.id && agent.parentRunId === clean.runId);
+    const snapshot = { ...clean.agent, parentRunId: clean.runId };
+    if (index === -1) agents.push(snapshot);
+    else agents[index] = snapshot;
+    if (agents.length > 64) agents.splice(0, agents.length - 64);
+  }
   // Local display metadata stays outside model messages and context budgets.
   if (activeRun && clean.type === 'tool-result' && clean.fileChange && currentSession) {
     const change = clean.fileChange;
@@ -293,18 +326,37 @@ function emit(event) {
     // Snapshots have their own bounded archive. Do not retain a second copy
     // in the 150-event suffix after the live event has been delivered.
     const { fileChange: localSnapshot, ...historicalEvent } = clean;
-    currentSession.events.push(historicalEvent);
+    const previousAgent = ['subagent-update', 'approval-review'].includes(clean.type)
+      ? currentSession.events.findIndex(event => event.type === clean.type && (clean.type === 'subagent-update' ? event.agent?.id === clean.agent?.id : event.id === clean.id)) : -1;
+    if (previousAgent === -1) currentSession.events.push(historicalEvent);
+    else currentSession.events[previousAgent] = historicalEvent;
     currentSession.events = currentSession.events.slice(-150);
   }
 }
 function emitSessionMetrics() {
   if (currentSession) emit({ type: 'session-metrics', sessionId: currentSession.id, metrics: sessionMetricsSnapshot(currentSession) });
 }
+function rememberTaskRun(record) {
+  // Timing and anchors must survive the bounded event suffix. Retain recent
+  // tasks plus any parent still referenced by the bounded subagent archive.
+  const fields = ['type', 'runId', 'kind', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'messageStartIndex', 'messageIndex', 'telemetry'];
+  const runs = new Map();
+  for (const value of [...(currentSession.taskRuns || []), ...currentSession.events.filter(event => event.type === 'run-end')]) {
+    if (!value || typeof value.runId !== 'string') continue;
+    runs.set(value.runId, Object.fromEntries(fields.filter(field => Object.hasOwn(value, field)).map(field => [field, value[field]])));
+  }
+  runs.set(record.runId, record);
+  const entries = [...runs.values()], parents = new Set((currentSession.subagents || []).map(agent => agent.parentRunId));
+  currentSession.taskRuns = entries.filter((value, index) => index >= entries.length - 64 || parents.has(value.runId));
+}
 function sessionMetricsSnapshot(session) {
   const settings = publicSettings();
   return store.sessionMetrics(session, { provider: settings.provider, model: settings.model, connectionKey: metricsConnectionKey });
 }
-function requireIdle() { if (activeRun) throw new Error('请先停止正在执行的任务。'); }
+function requireIdle() {
+  if (activeRun) throw new Error('请先停止正在执行的任务。');
+  if (sessionRenameLocks.has(currentSession?.id)) throw new Error('此会话正在重命名，请稍后重试。');
+}
 function requireTools() { if (!tools) throw new Error('请先打开本地项目。'); return tools; }
 function requireFileManager() { if (!fileManager) throw new Error('请先打开本地项目。'); return fileManager; }
 function requireEditorSettled() { if (editorDirty) throw new Error('请先保存或放弃右侧文件的修改，再切换项目。'); }
@@ -427,26 +479,48 @@ function takeSteering(run) {
   for (const item of items) emit({ type: 'user-message', id: item.id, text: item.text, source: 'steering', createdAt: item.createdAt, ...(item.attachments?.length ? { attachments: item.attachments } : {}) });
   return items.map(({ id, text, createdAt, attachments }) => ({ id, text, createdAt, source: 'steering', ...(attachments?.length ? { attachments } : {}) }));
 }
-function approve(request) {
+function approve(request, { signal } = {}) {
   const run = activeRun;
-  if (!run || run.controller.signal.aborted) return Promise.resolve(false);
-  if (approvalDecision(permissionMode, request) === 'allow') {
-    emit({ type: 'approval-auto', ...request, permissionMode });
-    return Promise.resolve(true);
-  }
-  return new Promise(resolve => {
-    const id = randomUUID();
-    const abort = () => done(false);
-    const done = value => {
-      if (!approvals.delete(id)) return;
-      run.controller.signal.removeEventListener('abort', abort);
-      emit({ type: 'approval-resolved', id, approved: value === true }); resolve(value);
-    };
-    done.request = JSON.parse(redact(JSON.stringify({ type: 'approval-request', ...request, id, runId: run.id, workspaceId })));
-    approvals.set(id, done);
-    run.controller.signal.addEventListener('abort', abort, { once: true });
-    emit({ type: 'approval-request', ...request, id });
-  });
+  if (!run || run.controller.signal.aborted || signal?.aborted) return Promise.resolve(false);
+  return approvalController.approve(request, { signal, parentSignal: run.controller.signal, runId: run.id, workspaceId });
+}
+function dispatchModelRequest(config) {
+  return config.authMode === 'chatgpt' ? chatgpt.requestModel({ ...config, requestModel }) : requestModel(config);
+}
+async function currentRequestConfig(run, modelOverride) {
+  run.controller.signal.throwIfAborted();
+  const settings = publicSettings(), context = await catalogContext();
+  run.controller.signal.throwIfAborted();
+  if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
+  const account = settings.provider === 'openai' && settings.authMode === 'chatgpt';
+  if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing
+      || run.chatgptProfileId && run.chatgptProfileId !== context.account.session.profileId)) throw new Error('ChatGPT 授权已变更，请停止后重新开始任务。');
+  const apiKey = account ? '' : store.key(settings.provider);
+  if (!account && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
+  const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
+  if (!model) throw new Error('请先选择模型。');
+  if (!modelOverride && modelCapabilities.supportsTools === false) throw new Error('所选模型不支持编程工具调用。');
+  if (!modelOverride && modelCapabilities.supportsImages === false && currentSession.messages.some(message => message.attachments?.length)) throw new Error('当前会话包含图片，请选择支持图片的模型。');
+  return { provider: settings.provider, apiKey, authMode: account ? 'chatgpt' : 'apiKey',
+    baseUrl: account ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: account ? 'responses' : settings.apiProtocol,
+    model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
+    permissionMode, connectionKey: context.key, configRevision,
+    contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
+}
+async function recordRunUsage(record) {
+  try { await store.recordUsage(record); emitSessionMetrics(); await broadcastAllStates(); }
+  catch (cause) { emit({ type: 'storage-error', error: 'Token 统计保存失败：' + cause.message }); throw cause; }
+}
+async function reviewOperation(request, { signal, runId }) {
+  const run = activeRun;
+  if (!run || run.id !== runId || signal.aborted) throw new DOMException('审批已取消。', 'AbortError');
+  const sessionId = currentSession.id;
+  const config = await currentRequestConfig(run, approvalReviewerModel || undefined);
+  signal.throwIfAborted();
+  const userIntent = currentSession.messages.filter(message => message.role === 'user' && typeof message.content === 'string').map(message => message.content);
+  if (run.command) userIntent.push('用户在终端提交的完整命令：' + run.command);
+  return reviewApproval({ request, context: { projectRoot: tools?.root, userIntent }, config,
+    requestModel: dispatchModelRequest, signal, sessionId, runId, redact, onUsage: recordRunUsage });
 }
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
@@ -457,7 +531,11 @@ async function state() {
   const history = new Map(sessions.map(session => [projectIdentity(session.workspace), session]));
   const projects = (recentProjects?.list() || []).map(project => ({ ...project, ...(history.get(projectIdentity(project.path)) ? { sessionId: history.get(projectIdentity(project.path)).id } : {}) }));
   const sessionMetrics = sessionMetricsSnapshot(currentSession);
-  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask: { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true, ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex, streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null } : {}) } };
+  const activeTask = { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true,
+    ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
+      streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
+      subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
+  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -554,7 +632,6 @@ async function commitModelSettings(arg) {
   });
 }
 async function fetchModelCatalog(arg = {}) {
-  requireIdle();
   const context = await catalogContext(arg);
   let result;
   try {
@@ -590,7 +667,7 @@ async function saveCurrentSession() {
 function publicSession(session) {
   const { contextCheckpoint, usageBaseline, contextUsage, ...publicData } = session;
   publicData.sessionMetrics = sessionMetricsSnapshot(session);
-  return JSON.parse(redact(JSON.stringify({ ...publicData, ...(session.workspace && !session.demo ? { title: path.basename(path.normalize(session.workspace)) || path.parse(session.workspace).root } : {}), messages: session.messages.map(({ providerState, ...message }) => message) })));
+  return JSON.parse(redact(JSON.stringify({ ...publicData, title: store.sessionTitle(session), messages: session.messages.map(({ providerState, ...message }) => message) })));
 }
 function sessionContextCheckpoint() {
   if (!currentSession.contextCheckpoint || typeof currentSession.contextCheckpoint !== 'object' || Array.isArray(currentSession.contextCheckpoint)) currentSession.contextCheckpoint = {};
@@ -609,7 +686,7 @@ async function activateProjectLocal(root, restore = true) {
   const canonical = await fs.realpath(root);
   const history = restore ? (await store.listSessions()).find(session => projectIdentity(session.workspace) === projectIdentity(canonical)) : null;
   // Load the historical snapshot before changing either the workspace or editor.
-  const snapshot = history ? await store.getSession(history.id) : null;
+  const snapshot = history ? await readSessionForContext(history.id) : null;
   setWorkspace(canonical);
   if (snapshot) { currentSession = snapshot; loadedSnapshot = true; }
   else await createSession();
@@ -620,7 +697,6 @@ async function createSession({ temporary = false } = {}) {
   currentSession = store.createSession(tools?.root || null);
   loadedSnapshot = false;
   if (temporary) currentSession.temporary = true;
-  if (tools) currentSession.title = path.basename(tools.root) || path.parse(tools.root).root;
   currentSession.usageLedgerVersion = 1;
   await saveCurrentSession();
   return currentSession;
@@ -677,11 +753,12 @@ async function startTask(input) {
   if (stopGeneration !== startingGeneration) throw new Error('任务启动已取消，消息仍保留在待发送列表。');
   currentSession.demo = demo;
   currentSession.usageLedgerVersion = 1;
-  currentSession.title = demo ? '离线演示 · 代码助手流程' : path.basename(tools.root) || path.parse(tools.root).root;
   const userText = demo ? '演示一次代码助手的工作流程（离线，不调用 API）' : text;
   const userMessage = { id: input?.promptId || randomUUID(), role: 'user', content: userText, createdAt: input?.promptCreatedAt || new Date().toISOString(), ...(input?.promptSource ? { source: input.promptSource } : {}), ...(attachments.length ? { attachments } : {}) };
   currentSession.messages.push(userMessage);
   const run = makeRun('agent');
+  run.connectionKey = modelContext.key;
+  run.chatgptProfileId = chatgptProfileId;
   run.demo = demo;
   run.messageStartIndex = currentSession.messages.length - 1;
   activeRun = run;
@@ -699,20 +776,19 @@ async function startTask(input) {
           emit(event);
         }, approve });
       } else {
-        const modelRequest = useChatGPT ? options => chatgpt.requestModel({ ...options, requestModel }) : requestModel;
-        await runAgent({ config: { provider, apiKey, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => { if (name.startsWith('browser_')) { emit({ type: 'browser-open' }); return browser.execute(name, args, { ...options, approve }); } return tools.execute(name, args, options); } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: modelRequest, signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : 'apiKey', connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => { if (name.startsWith('browser_')) { emit({ type: 'browser-open' }); return browser.execute(name, args, { ...options, approve }); } return tools.execute(name, args, options); } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
+          subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
+            onCommitted: change => emit({ type: 'files-changed', operation: 'subagent', path: change.path }) }),
+          onSubagentManager: manager => { run.subagentManager = manager; },
           takeSteering: () => takeSteering(run),
           onMessagesChanged: emitSessionMetrics,
           contextCheckpoint: sessionContextCheckpoint(),
           onContextCompacted: () => saveCurrentSession(),
           onContextUsage: sample => {
-            currentSession.contextUsage = { ...sample, connectionKey: modelContext.key };
+            currentSession.contextUsage = { ...sample };
             emitSessionMetrics();
           },
-          onUsage: async record => {
-            try { await store.recordUsage(record); emitSessionMetrics(); await broadcastAllStates(); }
-            catch (cause) { emit({ type: 'storage-error', error: 'Token 统计保存失败：' + cause.message }); }
-          }
+          onUsage: record => recordRunUsage(record).catch(() => {})
         });
       }
     } catch (cause) {
@@ -720,12 +796,14 @@ async function startTask(input) {
       else { status = 'failed'; error = redact(cause.message || '任务失败。'); }
     } finally {
       for (const done of [...approvals.values()]) done(false);
+      await approvalController.drain(run.id);
       if (run.controller.signal.aborted) status = 'stopped';
       const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}) };
       // Store only one timing/rate summary per task. Streaming estimates stay
       // out of the token ledger, and history never restarts a completed timer.
       currentSession.events.push(endEvent);
       currentSession.events = currentSession.events.slice(-150);
+      rememberTaskRun(endEvent);
       try {
         await saveCurrentSession();
         if (run.controller.signal.aborted && endEvent.status !== 'stopped') {
@@ -768,6 +846,7 @@ function buildHandlers() {
   };
   const handlers = {
     getState: state,
+    getUsageAnalytics: () => loadUsageAnalytics(store, [...windows.values()].flatMap(value => [...value.contexts].map(context => context.currentSession)).filter(Boolean)),
     getAppearance: () => appearance.snapshot(),
     importBackground: async () => {
       let chosen;
@@ -826,14 +905,34 @@ function buildHandlers() {
       await uiPreferences.setTextScale(arg?.scale);
       await broadcastAllStates(); return state();
     },
+    setContextCompression: async arg => {
+      if (!arg || Object.keys(arg).some(key => key !== 'triggerTokens')) throw new Error('上下文压缩设置无效。');
+      await uiPreferences.setContextCompressionTriggerTokens(arg.triggerTokens);
+      await broadcastAllStates(); return state();
+    },
     setPermissionMode: async arg => {
       const mode = validateMode(arg?.mode);
-      requireIdle(); requireEmptyQueue();
       if (localOperation || promptPreflights || shuttingDown || quitting) throw new Error('请等待当前操作结束后再切换权限。');
       if (mode === 'full' && arg?.confirmed !== true) throw new Error('启用完全控制前需要确认风险。');
       permissionMode = mode;
+      ++configRevision;
+      approvalController.reconcile();
       await broadcastState();
       return { mode: permissionMode };
+    },
+    setApprovalReviewer: async arg => {
+      if (!arg || Object.keys(arg).some(key => key !== 'model') || !(arg.model === null || typeof arg.model === 'string' && arg.model && arg.model.length <= 200)) throw new Error('审批模型参数无效。');
+      if (localOperation || promptPreflights || shuttingDown || quitting) throw new Error('请等待当前操作结束后切换审批模型。');
+      const context = await catalogContext();
+      if (arg.model && !catalogSnapshots.get(context.key)?.models.some(model => model.id === arg.model)) throw new Error('请先获取当前连接的模型目录，再选择审批模型。');
+      if (arg.model) {
+        const capabilities = capabilitiesFor(context, arg.model);
+        if (capabilities.textCompatible === false || capabilities.compatible === false && capabilities.textCompatible !== true) throw new Error('此模型不支持文字审批，请选择支持文字对话的模型。');
+      }
+      approvalReviewerModel = arg.model;
+      approvalController.reconcile();
+      await broadcastState();
+      return { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider };
     },
     browserOpen: async arg => {
       if (!browser) throw new Error('浏览器尚未就绪。');
@@ -869,6 +968,15 @@ function buildHandlers() {
         fileClipboard.path = result.path + fileClipboard.path.slice(result.oldPath.length);
       }
       return fileChanged('rename', result);
+    },
+    fileMove: async arg => {
+      const destination = arg?.destination ?? '';
+      if (typeof arg?.path !== 'string' || typeof destination !== 'string') throw new Error('文件移动参数无效。');
+      const result = await requireFileManager().copyOrMove({ source: arg.path, destination, mode: 'cut' });
+      if (fileClipboard && (fileClipboard.path === result.source || fileClipboard.path.startsWith(result.source + '/'))) {
+        fileClipboard.path = result.path + fileClipboard.path.slice(result.source.length);
+      }
+      return fileChanged('move', result);
     },
     fileDelete: async arg => {
       const manager = requireFileManager();
@@ -909,13 +1017,13 @@ function buildHandlers() {
     fileSave: async arg => fileChanged('save', await requireFileManager().save(arg)),
     listModels: fetchModelCatalog,
     selectModel: async arg => {
-      requireIdle();
       if (typeof arg?.model !== 'string' || !arg.model || arg.model.length > 200) throw new Error('模型标识无效。');
       const context = await catalogContext();
       const model = catalogSnapshots.get(context.key)?.models.find(item => item.id === arg.model);
       if (!model) throw new Error('请先刷新当前连接的模型目录，再选择模型。');
       if (model.supportsTools === false) throw new Error('此模型不支持当前编程助手使用的工具，请选择支持工具调用的模型。');
       const previous = publicSettings();
+      if (model.supportsImages === false && activeRun?.kind === 'agent' && currentSession.messages.some(message => message.attachments?.length)) throw new Error('当前任务包含图片，请选择支持图片的模型。');
       const capabilities = capabilitiesFor(context, model.id);
       const reasoningEffort = resolvedReasoningEffort(capabilities, previous.reasoningEffort);
       await saveProjectSettings({ provider: context.provider, authMode: context.authMode, model: model.id, reasoningEffort });
@@ -943,7 +1051,6 @@ function buildHandlers() {
     chatgptListModels: async () => { requireIdle(); const models = await chatgpt.listModels({ force: true }); await broadcastState(); return models; },
     chatgptOpenUsage: async () => { await shell.openExternal('https://chatgpt.com/settings/usage'); return null; },
     setReasoningEffort: async arg => {
-      requireIdle();
       const current = publicSettings();
       const capabilities = capabilitiesFor(await catalogContext(), current.model);
       if (arg?.reasoningEffort !== 'default') {
@@ -954,15 +1061,19 @@ function buildHandlers() {
     },
     runTask: startTask,
     stopTask: () => { ++stopGeneration; pauseQueue('任务已停止，待发送消息已暂停。'); activeRun?.controller.abort(); return null; },
+    stopSubagent: async arg => {
+      if (!arg || typeof arg.id !== 'string' || Object.keys(arg).some(key => key !== 'id')) throw new Error('子智能体参数无效。');
+      const manager = activeRun?.kind === 'agent' && activeRun.subagentManager;
+      if (!manager) throw new Error('当前没有正在运行的子智能体。');
+      return manager.stop({ id: arg.id });
+    },
     respondApproval: arg => {
       if (typeof arg?.id !== 'string' || typeof arg?.approved !== 'boolean') throw new Error('审批参数无效。');
-      const done = approvals.get(arg.id);
-      if (!done) return false;
-      done(arg.approved); return true;
+      return approvalController.respond(arg);
     },
     getSession: async arg => {
       requireIdle();
-      const loaded = await store.getSession(arg?.id);
+      const loaded = await readSessionForContext(arg?.id);
       if (loaded.workspace && (!tools || projectIdentity(loaded.workspace) !== projectIdentity(tools.root))) throw new Error('请先通过项目下拉菜单切换到此会话所属项目，再打开历史会话。');
       currentSession = loaded;
       loadedSnapshot = true;
@@ -974,7 +1085,28 @@ function buildHandlers() {
       requireIdle();
       if (arg !== undefined && (!arg || typeof arg !== 'object' || Array.isArray(arg) || (arg.temporary !== undefined && typeof arg.temporary !== 'boolean'))) throw new Error('新对话参数无效。');
       await createSession({ temporary: arg?.temporary === true }); await broadcastAllStates();
-      return { id: currentSession.id, temporary: currentSession.temporary === true };
+      return { id: currentSession.id, title: store.sessionTitle(currentSession), temporary: currentSession.temporary === true };
+    },
+    renameSession: async arg => {
+      requireIdle();
+      if (!arg || typeof arg !== 'object' || Array.isArray(arg) || typeof arg.id !== 'string' || arg.id !== currentSession?.id) throw new Error('当前会话已切换，请重新打开重命名。');
+      const peers = [...windows.values()].flatMap(value => [...value.contexts]).filter(value => value.currentSession?.id === arg.id);
+      if (peers.some(value => value !== context && (value.busy || value.hasPendingPrompts))) throw new Error('此会话正在另一个窗口处理任务，请等待结束后再重命名。');
+      let renamed;
+      sessionRenameLocks.add(arg.id);
+      try {
+        renamed = await store.renameSession(currentSession, arg.title);
+        ++sessionRenameRevision;
+        for (const peer of peers) {
+          if (peer.currentSession?.id !== arg.id) continue;
+          peer.currentSession.customTitle = currentSession.customTitle;
+          peer.currentSession.title = renamed.title;
+          peer.currentSession.updatedAt = currentSession.updatedAt;
+        }
+      } finally { sessionRenameLocks.delete(arg.id); }
+      for (const peer of peers) if (peer.currentSession?.id === arg.id) peer.emit({ type: 'session', session: peer.publicCurrentSession() });
+      await broadcastAllStates();
+      return renamed;
     },
     undoLastChange: async () => {
       requireIdle();
@@ -992,11 +1124,14 @@ function buildHandlers() {
         emit({ type: 'tool-result', name: 'undo_last_change', toolCallId: run.id, result, ...(fileChange ? { fileChange } : {}) });
         return { result };
       } finally {
+        for (const done of [...approvals.values()]) done(false);
+        await approvalController.drain(run.id);
         const endEvent = { type: 'run-end', runId: run.id, kind: 'undo', status: run.controller.signal.aborted ? 'stopped' : status,
           ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(),
           elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageIndex: currentSession.messages.length - 1 };
         currentSession.events.push(endEvent);
         currentSession.events = currentSession.events.slice(-150);
+        rememberTaskRun(endEvent);
         try { await saveCurrentSession(); }
         finally {
           activeRun = null;
@@ -1023,8 +1158,8 @@ function buildHandlers() {
   // Serialize their own requests, including clipboard state, without waiting
   // for an active model or holding the prompt/session operation lock.
   let manualOperations = Promise.resolve();
-  const manualMutations = new Set(['fileCreate', 'fileRename', 'fileDelete', 'filePaste', 'fileSave', 'fileClipboard']);
-  for (const name of ['fileList', 'fileRead', 'fileCreate', 'fileRename', 'fileDelete', 'fileClipboard', 'filePaste', 'fileCopyPath', 'fileReveal', 'fileSave']) {
+  const manualMutations = new Set(['fileCreate', 'fileRename', 'fileMove', 'fileDelete', 'filePaste', 'fileSave', 'fileClipboard']);
+  for (const name of ['fileList', 'fileRead', 'fileCreate', 'fileRename', 'fileMove', 'fileDelete', 'fileClipboard', 'filePaste', 'fileCopyPath', 'fileReveal', 'fileSave']) {
     const handler = handlers[name];
     handlers[name] = arg => {
       if (shuttingDown || quitting || win?.isDestroyed()) throw new Error('窗口正在关闭，文件操作未开始。');
@@ -1045,7 +1180,7 @@ function buildHandlers() {
       });
     };
   }
-  for (const name of ['getSession', 'newSession', 'runTask', 'undoLastChange', 'runTerminal']) {
+  for (const name of ['getSession', 'newSession', 'renameSession', 'runTask', 'undoLastChange', 'runTerminal']) {
     const handler = handlers[name];
     handlers[name] = async arg => {
       if (shuttingDown) throw new Error('窗口正在关闭，请在新窗口继续操作。');
@@ -1111,13 +1246,15 @@ function menuHandlers() {
     },
     runTerminal: async arg => {
       requireIdle(); requireSharedReady(); requireTools();
-      if (typeof arg?.command !== 'string' || !arg.command.trim() || arg.command.includes('\0') || arg.command.length > 16000 || (arg.timeoutMs !== undefined && (!Number.isSafeInteger(arg.timeoutMs) || arg.timeoutMs < 1000 || arg.timeoutMs > 120000))) throw new Error('终端命令或超时参数无效。');
-      const run = makeRun('terminal'); activeRun = run;
+      if (typeof arg?.command !== 'string' || !arg.command.trim() || arg.command.includes('\0') || arg.command.length > 16000 || (arg.timeoutMs !== undefined && (!Number.isSafeInteger(arg.timeoutMs) || arg.timeoutMs < 1000 || arg.timeoutMs > 600000))) throw new Error('终端命令或超时参数无效。');
+      const run = makeRun('terminal'); run.command = arg.command; activeRun = run;
       terminal = new TerminalSession({ workspaceFactory: ({ onEvent }) => new WorkspaceTools(tools.root, { approve, onEvent }), redact, onEvent: emit });
       setTimeout(async () => {
         try { await terminal.run({ id: run.id, command: arg.command, timeoutMs: arg.timeoutMs, signal: run.controller.signal }); }
         catch (error) { emit({ type: 'terminal-end', id: run.id, status: run.controller.signal.aborted ? 'stopped' : 'failed', result: redact(error.message || '终端执行失败。') }); }
         finally {
+          for (const done of [...approvals.values()]) done(false);
+          await approvalController.drain(run.id);
           if (activeRun === run) activeRun = null;
           run.finish();
           await broadcastAllStates();
@@ -1233,6 +1370,9 @@ async function boot() {
   // have no network access; only these main-process model requests use it.
   globalThis.fetch = net.fetch.bind(net);
   ({ WorkspaceTools, TOOL_DEFINITIONS } = await import('./core/workspace.mjs'));
+  ({ createSubagentWorkspace } = await import('./core/subagent-workspace.mjs'));
+  ({ reviewApproval } = await import('./core/approval-review.mjs'));
+  ({ createApprovalController } = await import('./core/approval-controller.mjs'));
   ({ runAgent, runDemo } = await import('./core/agent.mjs'));
   ({ requestModel } = await import('./core/providers.mjs'));
   ({ TerminalSession } = await import('./core/terminal.mjs'));
@@ -1276,9 +1416,9 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
-  if (['scroll', 'permissions', 'window-chrome', 'compaction'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'explorer-drag', 'usage-analytics', 'sessions', 'subagents', 'live-controls', 'context-settings'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
-    const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir }) };
+    const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
     await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
     console.log('SYNORA_FOCUSED_UI_SMOKE_OK ' + JSON.stringify(result));
@@ -1549,15 +1689,26 @@ async function smokeTest() {
   result.permissions = await require('./core/smoke-permissions.cjs')({ win, output, dataDir });
   result.scroll = await require('./core/smoke-scroll.cjs')({ win, output, dataDir });
   result.projectSessions = await require('./core/smoke-sessions.cjs')({ win, output, dataDir });
+  result.usageAnalytics = await require('./core/smoke-usage-analytics.cjs')({ win, output, dataDir, store });
   result.compaction = await require('./core/smoke-compaction.cjs')({ win, output, dataDir });
   result.apiProtocol = await require('./core/smoke-api-protocol.cjs')({ win, output, dataDir });
   result.parallelProjects = await require('./core/smoke-parallel-projects.cjs')({ win, output, dataDir });
   result.reasoningCapabilities = await require('./core/smoke-reasoning-capabilities.cjs')({ win, output, dataDir });
   result.liveFiles = await require('./core/smoke-live-files.cjs')({ win, output, dataDir });
+  result.explorerDrag = await require('./core/smoke-explorer-drag.cjs')({ win, output, dataDir });
   result.sessionMetrics = await require('./core/smoke-session-metrics.cjs')({ win, output });
   result.appearance = await require('./core/smoke-appearance.cjs')({ win, output, dataDir });
+  result.conversationColors = await require('./core/smoke-conversation-colors.cjs')({ win, output, dataDir });
+  result.backgroundPresets = await require('./core/smoke-background-presets.cjs')({ win, output, dataDir });
+  result.editorHighlight = await require('./core/smoke-editor-highlight.cjs')({ win, output, dataDir });
+  result.editorCompletion = await require('./core/smoke-editor-completion.cjs')({ win, output, dataDir });
   result.taskHistory = await require('./core/smoke-task-history.cjs')({ win, output, dataDir });
+  result.subagents = await require('./core/smoke-subagents.cjs')({ win, output, dataDir, store });
+  result.liveControls = await require('./core/smoke-live-controls.cjs')({ win, output, dataDir, store });
+  result.contextSettings = await require('./core/smoke-context-settings.cjs')({ win, output, dataDir, store });
   result.codeDiff = await require('./core/smoke-code-diff.cjs')({ win, output, dataDir });
+  result.disclosureMotion = await require('./core/smoke-disclosure-motion.cjs')({ win, output, dataDir });
+  result.commandResult = await require('./core/smoke-command-result.cjs')({ win, output, dataDir });
   result.composerApproval = await require('./core/smoke-composer-approval.cjs')({ win, output, dataDir });
   if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
   await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));

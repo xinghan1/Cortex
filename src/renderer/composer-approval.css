@@ -1,4 +1,16 @@
 /* Pending decisions temporarily replace the composer; its draft DOM stays intact. */
+.approval-live-controls { padding: 10px 12px 0; }
+.approval-live-controls .composer-context { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.approval-live-controls .attach-images { display: none; }
+.approval-review-card { margin: 8px 0; padding: 10px 12px; border: 1px solid rgb(180 204 240 / 14%); border-radius: 10px; color: var(--text-secondary, #b8c9e3); }
+.approval-review-heading { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.approval-review-card[data-status='reviewing'] .approval-review-heading::before { content: ''; width: 10px; height: 10px; border: 1.5px solid #526581; border-top-color: #aed0ff; border-radius: 50%; animation: subagent-spin .9s linear infinite; }
+.approval-review-card[data-status='allowed'] .approval-review-heading { color: #80dca8; }
+.approval-review-card[data-status='denied'] .approval-review-heading { color: #ff9f9f; }
+.approval-review-reason { margin: 5px 0 0; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-review-reason:empty { display: none; }
+.approval-reviewer-field { display: grid; gap: 6px; padding: 10px 12px 6px; font-size: 11px; color: #a9bddb; }
+.approval-reviewer-field select { width: 100%; max-width: 100%; color: inherit; border: 1px solid rgb(180 204 240 / 23%); border-radius: 8px; padding: 7px; background: #1d2b42; font: inherit; }
 .composer-approval {
   min-width: 0;
   max-width: 100%;

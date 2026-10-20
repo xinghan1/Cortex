@@ -1,0 +1,38 @@
+/* Keep source colours distinct on both added and deleted code backgrounds. */
+.syntax-token.syntax-keyword {
+  color: #c792ff;
+}
+
+.syntax-token.syntax-control {
+  color: #ff858f;
+}
+
+.syntax-token.syntax-string {
+  color: #a7e887;
+}
+
+.syntax-token.syntax-number {
+  color: #ffc082;
+}
+
+.syntax-token.syntax-function {
+  color: #93caff;
+}
+
+.syntax-token.syntax-property,
+.syntax-token.syntax-variable {
+  color: #ffb26b;
+}
+
+.syntax-token.syntax-type {
+  color: #e8d591;
+}
+
+.syntax-token.syntax-operator {
+  color: #7fdfed;
+}
+
+.syntax-token.syntax-comment {
+  color: #9aaea9;
+  font-style: italic;
+}

@@ -249,6 +249,46 @@ test('known specialized models remain visible but are marked incompatible with t
   assert.equal(deriveModelCapabilities('deepseek', 'image-only', { output_modalities: ['image'] }).supportsTools, false);
 });
 
+test('text-only catalog models remain usable for independent text requests after repeated normalization', async () => {
+  const raw = { supportsTools: false, input_modalities: ['text'], output_modalities: ['text'] };
+  const first = deriveModelCapabilities('relay', 'review-text-only', raw);
+  assert.equal(first.compatible, false, 'The coding model selector must continue to reject this model');
+  assert.equal(first.supportsTools, false);
+  assert.equal(first.textCompatible, true, 'An isolated text reviewer does not require tool support');
+  assert.deepEqual(deriveModelCapabilities('relay', 'review-text-only', JSON.parse(JSON.stringify(first))), first);
+  const catalog = await new ModelCatalog().list(args({ provider: 'relay', fetchImpl: async () => json({ data: [entry('review-text-only', raw)] }) }));
+  assert.equal(catalog.models[0].textCompatible, true);
+  assert.deepEqual(deriveModelCapabilities('relay', 'review-text-only', catalog.models[0]), first);
+});
+
+test('specialized, retired, non-text and explicitly incompatible models never gain text compatibility', () => {
+  for (const [provider, id, metadata] of [
+    ['openai', 'text-embedding-3-small', { officialSource: true, textCompatible: true }],
+    ['openai', 'gpt-realtime-fixture', { officialSource: true, textCompatible: true }],
+    ['relay', 'image-only', { input_modalities: ['image'], textCompatible: true }],
+    ['relay', 'audio-output', { output_modalities: ['audio'], textCompatible: true }],
+    ['anthropic', 'retired', { lifecycle: 'retired', supportsTools: false, textCompatible: true }],
+    ['relay', 'explicit-incompatible', { compatible: false, supportsTools: false }],
+    ['relay', 'explicit-no-text', { textCompatible: false, supportsTools: true }],
+  ]) {
+    const result = deriveModelCapabilities(provider, id, metadata);
+    assert.equal(result.textCompatible, false, id); assert.equal(result.compatible, false, id);
+    assert.equal(result.supportsTools, false, id);
+    assert.equal(deriveModelCapabilities(provider, id, result).textCompatible, false, 'Cached classifications must preserve hard denials');
+  }
+});
+
+test('raw directory protocol denials take precedence over contradictory advertised text support', async () => {
+  const result = await new ModelCatalog().list(args({ provider: 'relay', fetchImpl: async () => json({ data: [
+    entry('explicit-denial', { compatible: false, supportsTools: false, textCompatible: true }),
+    entry('text-only', { supportsTools: false }),
+    entry('unknown'),
+  ] }) }));
+  assert.equal(result.models[0].textCompatible, false);
+  assert.equal(result.models[1].textCompatible, true);
+  assert.equal(result.models[2].textCompatible, undefined, 'Unknown metadata must remain unknown');
+});
+
 test('image capabilities follow explicit metadata without guessing official or proxy model names', async () => {
   assert.equal(deriveModelCapabilities('deepseek', 'vision-name-is-not-proof').supportsImages, undefined);
   assert.equal(deriveModelCapabilities('openai', 'gpt-6-astra', { officialSource: true }).supportsImages, undefined);

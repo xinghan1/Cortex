@@ -240,7 +240,9 @@
           node = element('div', 'message-code');
           const label = element('div', 'message-code-label'); label.textContent = token.language || '代码';
           const pre = element('pre'); pre.tabIndex = 0;
-          const code = element('code'); code.textContent = token.value;
+          const code = element('code');
+          if (globalThis.ForgeSyntax?.append) globalThis.ForgeSyntax.append(doc, code, token.value, token.language);
+          else code.textContent = token.value;
           pre.append(code); node.append(label, pre);
         } else if (token.type === 'paragraph' || token.type === 'heading') {
           node = element(token.type === 'paragraph' ? 'p' : 'h' + token.level, token.type === 'paragraph' ? 'message-paragraph' : 'markdown-heading');

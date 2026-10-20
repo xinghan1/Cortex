@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-const DEFAULT_TIMEOUT = 60_000;
-const MAX_TIMEOUT = 120_000;
+const DEFAULT_TIMEOUT = 600_000;
+const MAX_TIMEOUT = 600_000;
 const HIDDEN_OUTPUT = '[输出因脱敏失败而隐藏]';
 
 function failure(message) {

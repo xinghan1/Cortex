@@ -16,10 +16,11 @@ module.exports = async function smokeMenus({ win, output, dataDir }) {
     shell.openExternal=async url=>{links.push(url);};
     shell.openPath=async value=>{help.push(value);return '';};
     dialog.showMessageBox=async (...args)=>{help.push(args.at(-1));return {response:0};};
-    const items=await js(`(()=>{const result={};for(const name of ['file','edit','view','help']){document.getElementById('menu-'+name).click();result[name]=[...document.querySelectorAll('#app-menu-popup [data-action]')].map(item=>item.dataset.action);document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));}return result;})()`);
-    for(const [group,required] of Object.entries({file:['new-window','new-chat','temporary-chat','create-project','open-project','close-window','logout','quit'],edit:['undo','redo','cut','copy','paste','delete','select-all','settings'],view:['toggle-sidebar','toggle-terminal','pin-summary','open-terminal','toggle-navigation','switch-focus','browser','find','back','forward','previous-sidebar','next-sidebar','previous-tab','next-tab','zoom-in','zoom-out','zoom-reset','fullscreen'],help:['guide','about']})) {
+    const items=await js(`(()=>{const result={};for(const name of ['file','edit','view','appearance','help']){document.getElementById('menu-'+name).click();result[name]=[...document.querySelectorAll('#app-menu-popup [data-action]')].map(item=>item.dataset.action);document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));}return result;})()`);
+    for(const [group,required] of Object.entries({file:['new-window','new-chat','temporary-chat','create-project','open-project','close-window','logout','quit'],edit:['undo','redo','cut','copy','paste','delete','select-all','settings'],view:['toggle-sidebar','toggle-terminal','pin-summary','open-terminal','toggle-navigation','switch-focus','browser','find','back','forward','previous-sidebar','next-sidebar','previous-tab','next-tab','zoom-in','zoom-out','zoom-reset','fullscreen'],appearance:['import-background','appearance-settings'],help:['guide','about']})) {
       if(!required.every(action=>items[group].includes(action))) throw new Error('Missing '+group+' menu actions');
     }
+    if(JSON.stringify(items.appearance)!==JSON.stringify(['import-background','appearance-settings'])||Object.values(items).some(actions=>actions.includes('frost-settings')))throw new Error('Redundant frost menu action remains');
     await js(`document.getElementById('menu-file').click()`);await capture('menu-file.png');
     await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
     await js(`document.getElementById('menu-view').click()`);await capture('menu-view.png');
