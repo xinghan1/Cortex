@@ -10,6 +10,7 @@
  * https://api-docs.deepseek.com/guides/vision/
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import { normalizeImageAttachments } from './message-images.mjs';
 
 const DEFAULT_URLS = Object.freeze({
@@ -187,21 +188,23 @@ function endpointFor(provider, baseUrl, apiProtocol) {
   return url.href;
 }
 
-function checkArguments(value) {
+function checkArguments(value, label = '工具调用参数') {
   if (!isObject(value)) {
-    fail('工具调用参数必须是 JSON 对象，已停止执行。', 'INVALID_TOOL_ARGUMENTS');
+    fail(`${label}必须是 JSON 对象，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
   }
   return value;
 }
 
-function parseArguments(raw) {
+function parseArguments(raw, label = '模型返回的工具参数') {
+  if (typeof raw !== 'string') return checkArguments(undefined, label);
+  if (!raw.trim()) fail(`${label}为空，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
   let value;
   try {
     value = JSON.parse(raw);
   } catch {
-    fail('模型返回的工具参数不是有效 JSON，已停止执行。', 'INVALID_TOOL_ARGUMENTS');
+    fail(`${label}不是有效 JSON，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
   }
-  return checkArguments(value);
+  return checkArguments(value, label);
 }
 
 function assertNativeStateSafe(value, apiKey) {
@@ -308,7 +311,11 @@ function openAIInput(messages, model, endpoint, authMode) {
       // Reasoning models require their signed/encrypted reasoning items on the
       // tool-result turn. Replay native output once, never alongside a second
       // normalized copy of its assistant text or function calls.
-      return state.output;
+      // Older relay histories can contain a parsed arguments object. Normalize
+      // only that field for the wire; signed/opaque reasoning and the persisted
+      // history remain untouched.
+      return state.output.map(item => item?.type === 'function_call' && isObject(item.arguments)
+        ? { ...item, arguments: JSON.stringify(item.arguments) } : item);
     }
     const items = [];
     if (message.content || message.role !== 'assistant') {
@@ -536,10 +543,16 @@ function nativeRemainder(item) {
   return item;
 }
 
-function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onProgress, authMode, apiProtocol, maxModelPayloadBytes }) {
+function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onProgress, authMode, apiProtocol,
+  maxModelPayloadBytes, sourceProvider = provider, toolNames = [] }) {
   const chatCompatible = provider === 'openai' && apiProtocol === 'chat-completions';
   const responses = provider === 'openai' && !chatCompatible;
   const chat = provider === 'deepseek' || chatCompatible;
+  // The standard protocols require serialized arguments. Some relays return a
+  // fully parsed object instead; accept only this explicit complete snapshot,
+  // never infer cumulative deltas or attempt to repair malformed JSON.
+  const relayObjects = sourceProvider === 'relay';
+  const registeredToolNames = new Set(toolNames);
   const payload = createPayloadBudget(maxModelPayloadBytes);
   const textParts = new Map();
   const calls = new Map();
@@ -658,27 +671,96 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
     return calls.get(index);
   }
 
+  function argumentsLabel(call) {
+    // A provider-controlled name must not reflect credentials (or arbitrary
+    // response text) into an error before the native-state secret check runs.
+    const name = registeredToolNames.has(call.name) && /^[a-zA-Z0-9_-]{1,64}$/u.test(call.name)
+      && !call.name.includes(apiKey) ? `工具 ${call.name} 的参数` : '工具参数';
+    return `${protocolName(sourceProvider, apiProtocol)}：${name}`;
+  }
+
+  function argumentConflict(call) {
+    fail(`${argumentsLabel(call)}的完整快照与已接收内容不一致，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
+  }
+
+  function parsedObject(raw) {
+    try {
+      const value = JSON.parse(raw);
+      return isObject(value) ? { value } : undefined;
+    } catch { return undefined; }
+  }
+
+  function fullArguments(call, value, index, { complete = true, blankFallback = false } = {}) {
+    if (value === undefined) return;
+    let raw = value;
+    if (typeof raw !== 'string') {
+      if (!relayObjects || !isObject(raw)) checkArguments(undefined, argumentsLabel(call));
+      raw = JSON.stringify(raw);
+      complete = true;
+    }
+    // Charge object snapshots just like strings, including before validation.
+    payload.full(`tool:${index}`, raw);
+    const previous = call.rawArguments;
+    if (!raw.trim() && blankFallback && parsedObject(previous)) {
+      // A few relays repeat an empty placeholder in done/completed. Preserve
+      // only an already complete JSON object; an empty call never becomes {}.
+      call.argumentsComplete = true;
+      payload.full(`tool:${index}`, previous);
+      return;
+    }
+    if (previous && raw !== previous) {
+      const before = parsedObject(previous);
+      const after = parsedObject(raw);
+      if (before ? !after || !isDeepStrictEqual(before.value, after.value)
+        : call.argumentsComplete || !raw.startsWith(previous)) argumentConflict(call);
+    }
+    call.rawArguments = raw;
+    call.argumentsComplete ||= complete;
+    estimateFull(`tool:${index}`, raw, 'tool-call');
+  }
+
+  function appendArguments(call, value, index) {
+    if (typeof value !== 'string') {
+      fullArguments(call, value, index);
+      return;
+    }
+    if (call.argumentsComplete && value) argumentConflict(call);
+    call.rawArguments += value;
+    estimateAppend(`tool:${index}`, value, 'tool-call');
+  }
+
+  function callIdentity(call, id, name, index) {
+    if ((call.id && typeof id === 'string' && call.id !== id)
+      || (call.name && typeof name === 'string' && call.name !== name)) {
+      fail(`${protocolName(sourceProvider, apiProtocol)}：工具调用的完整快照与已接收的身份不一致，工具调用未执行。`, 'INVALID_TOOL_CALL');
+    }
+    if (typeof id === 'string') call.id = id;
+    if (typeof name === 'string') call.name = name;
+    payload.full(`tool-meta:${index}`, `${call.id}\0${call.name}`);
+  }
+
   function openAIItem(item, index, done = false) {
     if (!isObject(item)) return;
     payload.full(`native:${index}`, JSON.stringify(nativeRemainder(item)));
-    if (done) nativeItems.set(index, item);
+    let normalizedItem = item;
     if (item.type === 'function_call') {
       if (!done) progress('tool-call');
       const call = callAt(index);
-      if (typeof item.call_id === 'string') call.id = item.call_id;
       if (authMode === 'chatgpt' && item.namespace != null && item.namespace !== CHATGPT_NAMESPACE) {
         fail('ChatGPT 返回了未注册的工具命名空间，已停止执行。', 'INVALID_TOOL_CALL');
       }
+      let name;
       if (typeof item.name === 'string') {
         const prefix = typeof item.namespace === 'string' ? `${item.namespace}.`
           : authMode === 'chatgpt' ? `${CHATGPT_NAMESPACE}.` : '';
-        call.name = prefix && item.name.startsWith(prefix) ? item.name.slice(prefix.length) : item.name;
+        name = prefix && item.name.startsWith(prefix) ? item.name.slice(prefix.length) : item.name;
       }
-      payload.full(`tool-meta:${index}`, `${call.id}\0${call.name}`);
-      if (typeof item.arguments === 'string' && (done || !call.rawArguments)) {
-        call.rawArguments = item.arguments;
-        estimateFull(`tool:${index}`, item.arguments, 'tool-call');
+      callIdentity(call, item.call_id, name, index);
+      if (done || item.arguments !== '' || !call.rawArguments) {
+        fullArguments(call, item.arguments, index, { complete: done,
+          blankFallback: done && relayObjects });
       }
+      normalizedItem = { ...item, arguments: call.rawArguments };
     } else if (item.type === 'reasoning') {
       if (!done) progress('thinking');
       item.summary?.forEach((part, summaryIndex) => {
@@ -693,6 +775,8 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
         else if (part.type === 'refusal') fullText(part.refusal, index, contentIndex);
       });
     }
+    if (done) nativeItems.set(index, normalizedItem);
+    return normalizedItem;
   }
 
   function rejectIncomplete(reason) {
@@ -702,6 +786,34 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
     if (reason === 'content_filter' || reason === 'refusal') {
       fail('模型拒绝完成此请求，请调整任务内容。', 'PROVIDER_REFUSAL');
     }
+  }
+
+  function chatMessage(message) {
+    if (!isObject(message)) fail('模型 Chat Completions 响应缺少 message。');
+    if (typeof message.reasoning_content === 'string') {
+      if (!chatCompatible) {
+        deepSeekReasoningSeen = true;
+        deepSeekReasoning = message.reasoning_content;
+      }
+      estimateFull('deepseek-reasoning', message.reasoning_content, 'thinking');
+    }
+    const finalText = [message.content, ...(chatCompatible ? [message.refusal] : [])]
+      .filter(part => typeof part === 'string');
+    if (finalText.length) fullText(finalText.join(''));
+    if (message.tool_calls != null && !Array.isArray(message.tool_calls)) fail('模型工具调用快照格式无效。');
+    const tools = message.tool_calls ?? [];
+    if ([...calls.keys()].some(index => index >= tools.length)) {
+      fail('模型工具调用完整快照遗漏了已接收的调用，工具调用未执行。', 'INVALID_TOOL_CALL');
+    }
+    tools.forEach((item, index) => {
+      if (!isObject(item)) fail('模型工具调用快照格式无效。');
+      if (item.type !== undefined && item.type !== 'function') {
+        fail('模型工具调用完整快照包含不支持的调用类型，工具调用未执行。', 'INVALID_TOOL_CALL');
+      }
+      const call = callAt(index);
+      callIdentity(call, item.id, item.function?.name, index);
+      fullArguments(call, item.function?.arguments, index);
+    });
   }
 
   function event(value, eventName = '') {
@@ -727,12 +839,9 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
         openAIItem(value.item, value.output_index, type.endsWith('.done'));
       } else if (type === 'response.function_call_arguments.delta') {
         if (typeof value.delta !== 'string') fail('模型工具参数片段格式无效。');
-        callAt(value.output_index).rawArguments += value.delta;
-        estimateAppend(`tool:${value.output_index}`, value.delta, 'tool-call');
+        appendArguments(callAt(value.output_index), value.delta, value.output_index);
       } else if (type === 'response.function_call_arguments.done') {
-        if (typeof value.arguments !== 'string') fail('模型工具参数格式无效。');
-        callAt(value.output_index).rawArguments = value.arguments;
-        estimateFull(`tool:${value.output_index}`, value.arguments, 'tool-call');
+        fullArguments(callAt(value.output_index), value.arguments, value.output_index, { blankFallback: relayObjects });
       } else if (type === 'response.reasoning_summary_text.delta') {
         estimateAppend(`reasoning-summary:${value.output_index}:${value.summary_index ?? 0}`, value.delta, 'thinking');
       } else if (type === 'response.reasoning_summary_text.done') {
@@ -743,8 +852,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
         estimateFull(`reasoning:${value.output_index}:${value.content_index ?? 0}`, value.text, 'thinking');
       } else if (type === 'response.completed') {
         if (Array.isArray(value.response?.output)) {
-          nativeOutput = value.response.output;
-          nativeOutput.forEach((item, index) => openAIItem(item, index, true));
+          nativeOutput = value.response.output.map((item, index) => openAIItem(item, index, true));
         }
         if (value.response?.status === 'failed' || value.response?.error) fail('模型响应失败，请重试。', 'PROVIDER_API_ERROR');
         rejectIncomplete(value.response?.incomplete_details?.reason);
@@ -775,10 +883,12 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
         if (typeof fragment.function?.name === 'string') call.name += fragment.function.name;
         payload.full(`tool-meta:${fragment.index}`, `${call.id}\0${call.name}`);
         if (typeof fragment.function?.arguments === 'string') {
-          call.rawArguments += fragment.function.arguments;
-          estimateAppend(`tool:${fragment.index}`, fragment.function.arguments, 'tool-call');
+          appendArguments(call, fragment.function.arguments, fragment.index);
+        } else if (fragment.function && Object.hasOwn(fragment.function, 'arguments')) {
+          fullArguments(call, fragment.function.arguments, fragment.index);
         }
       }
+      if (relayObjects && choice.message !== undefined) chatMessage(choice.message);
       rejectIncomplete(choice.finish_reason);
     } else {
       if (type === 'content_block_start') {
@@ -843,23 +953,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
     } else if (chat) {
       const choice = value.choices?.[0];
       if (!isObject(choice?.message)) fail('模型 Chat Completions 响应缺少 message。');
-      if (typeof choice.message.reasoning_content === 'string') {
-        if (!chatCompatible) {
-          deepSeekReasoningSeen = true;
-          deepSeekReasoning = choice.message.reasoning_content;
-        }
-        estimateFull('deepseek-reasoning', choice.message.reasoning_content, 'thinking');
-      }
-      appendText(choice.message.content);
-      if (chatCompatible) appendText(choice.message.refusal);
-      (choice.message.tool_calls ?? []).forEach((call, index) => {
-        const target = callAt(index);
-        target.id = call.id;
-        target.name = call.function?.name;
-        payload.full(`tool-meta:${index}`, `${target.id}\0${target.name}`);
-        target.rawArguments = call.function?.arguments;
-        estimateFull(`tool:${index}`, target.rawArguments, 'tool-call');
-      });
+      chatMessage(choice.message);
       rejectIncomplete(choice.finish_reason);
       complete = true;
     } else {
@@ -883,8 +977,9 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       }
       if (ids.has(call.id)) fail('模型返回了重复的工具调用 ID，已停止执行。', 'INVALID_TOOL_CALL');
       ids.add(call.id);
-      const args = call.rawArguments ? parseArguments(call.rawArguments)
-        : provider === 'anthropic' ? checkArguments(call.initialArguments) : parseArguments(call.rawArguments);
+      const args = call.rawArguments ? parseArguments(call.rawArguments, argumentsLabel(call))
+        : provider === 'anthropic' ? checkArguments(call.initialArguments, argumentsLabel(call))
+          : parseArguments(call.rawArguments, argumentsLabel(call));
       estimateFull(`tool:${index}`, call.rawArguments || JSON.stringify(args), 'tool-call');
       return { id: call.id, name: call.name, arguments: args };
     });
@@ -1239,7 +1334,9 @@ export async function requestModel({
       }
       throw error;
     }
-    const accumulator = createAccumulator(transportProvider, onTextDelta, { model, endpoint, apiKey: apiKey.trim(), onProgress, authMode, apiProtocol: effectiveProtocol, maxModelPayloadBytes });
+    const accumulator = createAccumulator(transportProvider, onTextDelta, { model, endpoint, apiKey: apiKey.trim(),
+      onProgress, authMode, apiProtocol: effectiveProtocol, maxModelPayloadBytes, sourceProvider: provider,
+      toolNames: tools.map(tool => tool.name) });
     await consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read: lifetime.read }, authMode === 'chatgpt');
     if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
     return accumulator.result();
