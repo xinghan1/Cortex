@@ -153,6 +153,16 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.composer, .user-message-bubble, .pending-content > .pending-text, .chatgpt-panel, .privacy-note) {
   background: var(--ui-control);
 }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .composer textarea {
+  color: var(--ui-text);
+  -webkit-text-fill-color: var(--ui-text);
+  caret-color: var(--ui-text);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .composer textarea::placeholder {
+  color: var(--ui-muted);
+  -webkit-text-fill-color: var(--ui-muted);
+  opacity: 1;
+}
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.composer:focus-within, .file-row.file-drop-target, :where(#project-name.file-drop-target)) {
   border-color: var(--ui-accent);
   box-shadow: inset 0 0 0 1px var(--ui-accent);
@@ -184,7 +194,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
 html[data-ui-style='white'] dialog::backdrop { background: rgb(25 31 38 / 28%); }
 
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
-  button, .button, .permission-trigger, .model-reasoning-pill,
+  button:where(:not(.usage-activity-cell)), .button, .permission-trigger, .model-reasoning-pill,
   .project-switcher, .popup-model-button,
   .model-search, .form-field input, .form-field select, .approval-reviewer-field select,
   .browser-address, :where(#find-input, #terminal-input, #context-trigger-input),
@@ -212,7 +222,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   box-shadow: none;
 }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
-  button:hover, .button:hover, .button.subtle:hover, .file-row:hover,
+  button:hover:where(:not(.usage-activity-cell)), .button:hover, .button.subtle:hover, .file-row:hover,
   .app-menu-item:focus, .file-context-menu .app-menu-item:focus,
   .permission-option:focus-visible, .session-dropdown button:focus-visible,
   .tool-summary:hover, .tool-operation-group-summary:hover, .subagent-header:hover,
@@ -228,7 +238,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   .session-history-item[aria-checked='true'], .model-option.selected,
   .dropdown-select-option[data-active='true'], .editor-completion-option[aria-selected='true'],
   .app-menu-trigger.active, .app-menu-trigger[aria-expanded='true'],
-  .permission-option[aria-checked='true'], .usage-period.active, .popup-reasoning-reset.active
+  .permission-option[aria-checked='true'], .usage-period[aria-pressed='true'], .popup-reasoning-reset.active
 ) {
   background: var(--ui-selected);
   border-color: var(--ui-accent);
@@ -513,7 +523,7 @@ html[data-selection-color='custom'] :is(
   .model-option.selected, .dropdown-select-option[data-active='true'],
   .editor-completion-option[aria-selected='true'], .app-menu-trigger.active,
   .app-menu-trigger[aria-expanded='true'], .permission-option[aria-checked='true'],
-  .usage-period.active, .popup-reasoning-reset.active
+  .usage-period[aria-pressed='true'], .popup-reasoning-reset.active
 ) {
   background: var(--custom-selection-color) !important;
   border-color: var(--custom-selection-color);

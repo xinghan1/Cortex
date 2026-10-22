@@ -5,6 +5,7 @@
 
   const messageFields = ['role', 'content', 'id', 'source', 'createdAt', 'attachments', 'toolCalls', 'localOnly'];
   const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry', 'fileChangeCount'];
+  const usageFields = ['version', 'inputTokens', 'outputTokens', 'totalTokens', 'requests', 'reportedRequests', 'unreportedRequests', 'partialRequests', 'status', 'historicalApproximate'];
   const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'status', 'reason', 'reviewReason', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'requestedTriggerTokens', 'effectiveTriggerTokens', 'triggerClamped', 'triggerClampReason', 'triggerFloorApplied', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'compressionTriggerBasis', 'reportedContextTokens', 'estimatedGrowthTokens', 'triggerChars', 'targetChars'];
   const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review', 'images-viewed']);
   const pick = (value, fields) => {
@@ -16,6 +17,19 @@
     const clean = pick(message, messageFields);
     if (Array.isArray(clean.toolCalls)) clean.toolCalls = clean.toolCalls.map(call => pick(call, ['id', 'name', 'arguments']));
     return { type: 'message', index, message: clean };
+  };
+  const displayRecord = record => {
+    const clean = pick(record, recordFields);
+    if (record.usage && typeof record.usage === 'object' && !Array.isArray(record.usage)) {
+      clean.usage = {};
+      for (const field of usageFields) {
+        const value = record.usage[field];
+        if (field === 'status') { if (['reported', 'partial', 'unavailable'].includes(value)) clean.usage[field] = value; }
+        else if (field === 'historicalApproximate') { if (typeof value === 'boolean') clean.usage[field] = value; }
+        else if (value === null || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) clean.usage[field] = value;
+      }
+    }
+    return clean;
   };
   const fileChange = value => value && typeof value.path === 'string' && value.path
     && ['before', 'after'].every(key => value[key] === null || typeof value[key] === 'string') ? pick(value, ['path', 'before', 'after']) : null;
@@ -275,7 +289,7 @@
       return [...images.values(), ...snapshots.values()].map(displayEvent);
     };
     const appendLegacy = index => {
-      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: standaloneSubagents(record), finalIndex: null, unanchored: true });
+      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: displayRecord(record), items: standaloneSubagents(record), finalIndex: null, unanchored: true });
     };
     for (let index = 0; index < messages.length; index++) {
       const record = starts.get(index);
@@ -284,7 +298,7 @@
       const finalIndex = last?.role === 'assistant' && !hasCalls(last) && last.localOnly !== true ? end : null;
       const items = runItems(session, record, messages, finalIndex).map(node => node.item);
       blocks.push(displayMessage(messages[index], index)); appendLegacy(index);
-      blocks.push({ type: 'run', record: pick(record, recordFields), items, finalIndex });
+      blocks.push({ type: 'run', record: displayRecord(record), items, finalIndex });
       for (let cursor = index + 1; cursor <= end; cursor++) if (cursor !== finalIndex) appendLegacy(cursor);
       if (finalIndex !== null) { blocks.push(displayMessage(last, finalIndex)); appendLegacy(finalIndex); }
       index = end;

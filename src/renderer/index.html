@@ -31,6 +31,7 @@
   <link rel="stylesheet" href="./ui-styles.css">
   <link rel="stylesheet" href="./round-navigator.css">
   <link rel="stylesheet" href="./explorer-selection.css">
+  <link rel="stylesheet" href="./chat-selection-menu.css">
   <script src="./syntax-highlight.js" defer></script>
   <script src="./editor-highlight.js" defer></script>
   <script src="./code-completion.js" defer></script>
@@ -43,6 +44,7 @@
   <script src="./sessions.js" defer></script>
   <script src="./file-icons.js" defer></script>
   <script src="./task-history.js" defer></script>
+  <script src="./round-token-usage.js" defer></script>
   <script src="./tool-operation-groups.js" defer></script>
   <script src="./subagents.js" defer></script>
   <script src="./code-diff.js" defer></script>
@@ -50,6 +52,7 @@
   <script src="./image-view-card.js" defer></script>
   <script src="./command-result.js" defer></script>
   <script src="./explorer-selection.js" defer></script>
+  <script src="./chat-selection-menu.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
@@ -188,7 +191,7 @@
       </div>
     </section>
     <section class="selection-color-settings" aria-labelledby="selection-color-title">
-      <div class="selection-color-heading"><h3 id="selection-color-title">选中颜色</h3><button id="selection-color-reset" class="text-button" type="button">恢复默认</button></div>
+      <div class="selection-color-heading"><h3 id="selection-color-title">颜色风格</h3><button id="selection-color-reset" class="text-button" type="button">恢复默认</button></div>
       <div class="selection-color-controls">
         <div id="selection-color-options" class="selection-color-options" role="group" aria-labelledby="selection-color-title">
           <button class="selection-color-swatch" data-selection-color="#6b9eff" type="button" aria-label="蓝色" aria-pressed="false"></button>
@@ -200,7 +203,7 @@
           <button class="selection-color-swatch" data-selection-color="#a28ae7" type="button" aria-label="紫色" aria-pressed="false"></button>
           <button class="selection-color-swatch" data-selection-color="#d382bd" type="button" aria-label="粉色" aria-pressed="false"></button>
         </div>
-        <label class="selection-color-custom">自定义<input id="selection-color-input" type="color" value="#7aa7ff" aria-label="自定义选中颜色"></label>
+        <label class="selection-color-custom">自定义<input id="selection-color-input" type="color" value="#7aa7ff" aria-label="自定义颜色风格"></label>
         <output id="selection-color-value" class="selection-color-value" for="selection-color-input">默认</output>
       </div>
     </section>
@@ -294,6 +297,11 @@
   <div id="app-menu-popup" class="app-menu-popup" role="menu" hidden></div>
   <div id="app-menu-submenu" class="app-menu-popup app-menu-submenu" role="menu" hidden></div>
   <div id="file-context-menu" class="file-context-menu" role="menu" aria-label="文件操作" hidden></div>
+  <div id="chat-selection-menu" class="file-context-menu" role="menu" aria-label="会话文字操作" hidden>
+    <button class="app-menu-item" data-chat-action="copy" role="menuitem" type="button">复制</button>
+    <button class="app-menu-item" data-chat-action="select-all" role="menuitem" type="button">选择全部</button>
+    <button class="app-menu-item" data-chat-action="search" role="menuitem" type="button">搜索浏览器</button>
+  </div>
   <dialog id="file-name-dialog" class="file-name-dialog"><form id="file-name-form"><div class="dialog-header"><h2 id="file-name-title">新建文件</h2><button id="file-name-close" class="icon-button" type="button" aria-label="关闭">×</button></div><label class="form-field"><span>名称</span><input id="file-name-input" type="text" autocomplete="off" required maxlength="255"></label><p id="file-name-parent" class="file-name-parent"></p><p id="file-name-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="file-name-cancel" class="button" type="button">取消</button><button id="file-name-confirm" class="button solid" type="submit">确定</button></div></form></dialog>
   <dialog id="editor-unsaved-dialog" class="editor-unsaved-dialog"><div class="dialog-header"><h2>保存文件更改？</h2></div><p id="editor-unsaved-message"></p><p class="unsaved-hint">放弃后，尚未保存的编辑将丢失。</p><div class="unsaved-actions"><button id="editor-unsaved-cancel" class="button" type="button">取消</button><button id="editor-unsaved-discard" class="button" type="button">放弃更改</button><button id="editor-unsaved-save" class="button solid" type="button">保存</button></div></dialog>
   <dialog id="image-preview-dialog" class="image-preview-dialog"><div class="dialog-header"><h2 id="image-preview-title">图片预览</h2><button id="image-preview-close" class="icon-button" type="button" aria-label="关闭图片预览">×</button></div><div class="image-preview-body"><img id="image-preview-content" alt="图片预览"></div></dialog>

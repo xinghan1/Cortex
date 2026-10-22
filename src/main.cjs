@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
 const { Store } = require('./core/store.cjs');
 const { makePendingContextUsage } = require('./core/session-metrics.cjs');
+const { createTurnUsage } = require('./core/turn-usage.cjs');
 const { installEditorContextMenu } = require('./core/editor-context-menu.cjs');
 const { loadUsageAnalytics } = require('./core/usage-analytics-loader.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
@@ -378,7 +379,7 @@ function recordRunFileChange(run, change) {
 function rememberTaskRun(record) {
   // Timing and anchors must survive the bounded event suffix. Retain recent
   // tasks plus any parent still referenced by the bounded subagent archive.
-  const fields = ['type', 'runId', 'kind', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'fileChangeCount'];
+  const fields = ['type', 'runId', 'kind', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'fileChangeCount', 'usage', 'demo'];
   const runs = new Map();
   for (const value of [...(currentSession.taskRuns || []), ...currentSession.events.filter(event => event.type === 'run-end')]) {
     if (!value || typeof value.runId !== 'string') continue;
@@ -390,6 +391,9 @@ function rememberTaskRun(record) {
     ...(Array.isArray(currentSession.imageViews) ? currentSession.imageViews : []).map(view => view?.runId),
   ]);
   currentSession.taskRuns = entries.filter((value, index) => index >= entries.length - 64 || parents.has(value.runId));
+  // All turns retain a small anchor/usage summary. Rich telemetry and activity
+  // events keep their existing bounds independently of this lightweight index.
+  currentSession.turnUsage = store.snapshotTurnUsage(currentSession);
 }
 function sessionMetricsSnapshot(session) {
   const settings = publicSettings();
@@ -566,6 +570,13 @@ async function currentRequestConfig(run, modelOverride) {
     contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
 }
 async function recordRunUsage(record) {
+  if (activeRun && record.runId === activeRun.id && record.sessionId === activeRun.sessionId) {
+    const records = activeRun.usageRecords ||= new Map();
+    if (!records.has(record.id)) records.set(record.id, {
+      id: record.id, reported: record.reported === true, partial: record.partial === true,
+      inputTokens: record.inputTokens, outputTokens: record.outputTokens,
+    });
+  }
   try { await store.recordUsage(record); emitSessionMetrics(); await broadcastAllStates(); }
   catch (cause) { emit({ type: 'storage-error', error: 'Token 统计保存失败：' + cause.message }); throw cause; }
 }
@@ -734,7 +745,11 @@ async function rememberSessionSelection() {
   return saved;
 }
 function publicSession(session) {
-  const { contextCheckpoint, usageBaseline, contextUsage, ...publicData } = session;
+  const { contextCheckpoint, usageBaseline, contextUsage, turnUsage, ...publicData } = session;
+  publicData.taskRuns = store.sessionTaskRuns(session);
+  const usages = new Map(publicData.taskRuns.filter(record => record.usage).map(record => [record.runId, record.usage]));
+  publicData.events = (session.events || []).map(event => event.type === 'run-end' && usages.has(event.runId)
+    ? { ...event, usage: usages.get(event.runId) } : event);
   publicData.sessionMetrics = sessionMetricsSnapshot(session);
   return JSON.parse(redact(JSON.stringify({ ...publicData, title: store.sessionTitle(session), messages: session.messages.map(({ providerState, ...message }) => message) })));
 }
@@ -822,7 +837,8 @@ async function startTask(input) {
     const fork = store.createSession(currentSession.workspace);
     // A history continuation inherits only the totals visible at this fork.
     // Later requests in the original session cannot change the branch's totals.
-    currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt, usageBaseline: store.sessionUsageTotals(currentSession) };
+    currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt,
+      usageBaseline: store.sessionUsageTotals(currentSession), turnUsage: store.snapshotTurnUsage(currentSession) };
     try { await persistentTaskUndo.copySession(sourceSessionId, currentSession); }
     catch { emit({ type: 'storage-error', error: '历史撤销记录无法复制到新分支，当前文件和历史均已保留。' }); }
     loadedSnapshot = false;
@@ -895,7 +911,8 @@ async function startTask(input) {
       if (run.controller.signal.aborted) status = 'stopped';
       try { await persistentTaskUndo.seal(run.id, run.sessionId, tools.root); }
       catch { emit({ type: 'storage-error', error: '本轮撤销记录保存失败，自动撤销已停用；文件改动仍保留。' }); }
-      const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, fileChangeCount: run.fileChangeCount, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}) };
+      const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, fileChangeCount: run.fileChangeCount, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}),
+        ...(demo ? { demo: true } : { usage: createTurnUsage([...(run.usageRecords?.values() || [])]) }) };
       // Store only one timing/rate summary per task. Streaming estimates stay
       // out of the token ledger, and history never restarts a completed timer.
       currentSession.events.push(endEvent);
@@ -1007,9 +1024,9 @@ function buildHandlers() {
       broadcastAppearance(value);
       return value;
     },
-    copyText: arg => {
+    copyText: async arg => {
       if (typeof arg?.text !== 'string' || arg.text.length > 1024 * 1024) throw new Error('复制内容无效或超过 1 MB 字符上限。');
-      clipboard.writeText(arg.text);
+      await clipboard.writeText(arg.text);
       return { copied: true };
     },
     getCurrentSession: async () => publicSession(currentSession),
@@ -1624,7 +1641,7 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
-  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));

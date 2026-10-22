@@ -1,0 +1,21 @@
+#chat-selection-menu {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  min-width: 185px;
+}
+
+#chat-selection-menu .app-menu-item {
+  width: 100%;
+  text-align: left;
+}
+
+#chat-selection-menu .app-menu-item:disabled {
+  opacity: .42;
+  cursor: default;
+}
+
+#messages .message-body {
+  -webkit-user-select: text;
+  user-select: text;
+}

@@ -46,6 +46,20 @@
 .usage-activity-months span { white-space: nowrap; }
 .usage-dashboard-note { margin: 20px 3px 0; color: #91a9c8; font-size: 11px; line-height: 1.9; }
 .usage-activity-tooltip { position: fixed; z-index: 250; max-width: 320px; padding: 10px 13px; border: 1px solid rgb(201 224 255 / 25%); border-radius: 11px; background: #17283f; box-shadow: 0 8px 22px rgb(0 0 0 / 30%); color: #edf6ff; font-size: 12px; line-height: 1.7; white-space: pre-line; pointer-events: none; }
+/* The persisted color style is the shared accent. These controls include the
+   dashboard's real aria-pressed state and the tooltip mounted on document.body. */
+html[data-ui-style][data-selection-color='custom'] #usage-stats-button:hover { background: color-mix(in srgb, var(--custom-selection-color) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--custom-selection-color) 20%, transparent); }
+html[data-ui-style][data-selection-color='custom'] #usage-stats-button:focus-visible { outline-color: var(--custom-selection-color); }
+html[data-ui-style][data-selection-color='custom'] .usage-dashboard-eyebrow { color: var(--custom-accent-text); }
+html[data-ui-style][data-selection-color='custom'] .usage-period[aria-pressed='true'] { background: var(--custom-selection-color); color: var(--custom-selection-ink); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell[data-level='1'] { background: var(--custom-usage-level-1); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell[data-level='2'] { background: var(--custom-usage-level-2); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell[data-level='3'] { background: var(--custom-usage-level-3); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell[data-level='4'] { background: var(--custom-usage-level-4); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell[data-level='5'] { background: var(--custom-usage-level-5); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--custom-accent-text) 20%, transparent); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-cell:is(:hover, :focus-visible) { outline-color: var(--custom-selection-color); }
+html[data-ui-style][data-selection-color='custom'] .usage-activity-tooltip { border-color: color-mix(in srgb, var(--custom-selection-color) 50%, var(--ui-border, #485770)); background: color-mix(in srgb, var(--custom-selection-color) 12%, var(--ui-raised, #17283f)); color: var(--ui-text, var(--text, #edf6ff)); }
 @media (max-width: 1100px) {
   .usage-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 23px; }
   .usage-summary-metric:nth-child(4) { border-left: 0; }

@@ -39,6 +39,16 @@
     }
     return target ? '#ffffff' : '#000000';
   };
+  const usagePalette = value => {
+    // Ordered shades of the same accent. Both endpoints move monotonically
+    // toward white, including custom pure black/white, so higher use always
+    // remains brighter without reverting to the old blue heatmap.
+    const channels = [1, 3, 5].map(offset => parseInt(value.slice(offset, offset + 2), 16));
+    return Array.from({ length: 5 }, (_, index) => '#' + channels.map(channel => {
+      const low = channel * 0.22, high = channel * 0.68 + 255 * 0.32;
+      return Math.round(low + (high - low) * index / 4).toString(16).padStart(2, '0');
+    }).join(''));
+  };
   const settings = [
     { field: 'backgroundTransparency', id: 'background-transparency', initial: 28 },
     { field: 'panelFrost', id: 'panel-frost', initial: 70, filter: '--panel-frost-filter' },
@@ -116,6 +126,7 @@
         root?.style.setProperty('--custom-selection-color', color);
         root?.style.setProperty('--custom-selection-ink', selectionInk(color));
         root?.style.setProperty('--custom-accent-text', readableAccent(color, uiStyle));
+        usagePalette(color).forEach((shade, index) => root?.style.setProperty(`--custom-usage-level-${index + 1}`, shade));
         setting.control.value = color;
         $('selection-color-value').value = setting.value ? color.toUpperCase() : '默认';
         for (const button of selectionButtons) button.setAttribute('aria-pressed', String(button.dataset.selectionColor === setting.value));

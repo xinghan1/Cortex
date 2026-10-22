@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const { aggregateSessionUsage, createSessionMetrics } = require('./session-metrics.cjs');
+const { sessionTaskRuns, snapshotTurnUsage } = require('./turn-usage.cjs');
 const { normalizeSessionTitle, sessionTitle } = require('./session-title.cjs');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -444,6 +445,12 @@ class Store {
   }
   sessionMetrics(session, expectedContext) {
     return createSessionMetrics(session, this.sessionUsageTotals(session), { unavailable: Boolean(this.usageError), expectedContext });
+  }
+  sessionTaskRuns(session) {
+    return sessionTaskRuns(session, this.usage?.records || [], { unavailable: Boolean(this.usageError) });
+  }
+  snapshotTurnUsage(session) {
+    return snapshotTurnUsage(session, this.usage?.records || [], { unavailable: Boolean(this.usageError) });
   }
 
   usageStats(now = new Date()) {

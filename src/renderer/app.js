@@ -120,7 +120,7 @@ const approvals = new Map();
 let composerApprovalFocus = null;
 let composerApprovalEpoch = 0;
 let composerApprovalSequence = 0;
-let browserController, permissionControls, sessionControls;
+let browserController, permissionControls, sessionControls, chatSelectionMenu;
 let contextCompacting = false;
 const contextCompactionNotices = new Set();
 const workspaceDrafts = new Map();
@@ -3166,7 +3166,21 @@ function renderTaskChangeSummary(record, { historical = false } = {}) {
   return entry.card;
 }
 
+function renderRoundTokenUsage(record, { unanchored = false } = {}) {
+  // Legacy records without trustworthy message boundaries must not attach a
+  // usage total to a neighbouring conversation round.
+  if (unanchored || !window.ForgeRoundTokenUsage) return;
+  const description = window.ForgeRoundTokenUsage.describe(record);
+  if (!description) return;
+  const existing = [...$('messages').children].find(node => node.classList.contains('round-token-usage') && node.dataset.runId === description.runId);
+  if (existing) return existing;
+  const badge = window.ForgeRoundTokenUsage.create(record);
+  if (badge) $('messages').append(badge);
+  return badge;
+}
+
 function clearConversation() {
+  chatSelectionMenu?.close();
   cancelFileDisclosureReveal();
   fileDisclosureScrollPaused = false;
   imageViewSources = [];
@@ -3297,13 +3311,19 @@ function renderSessionSnapshot(session) {
     if (block.type === 'run') {
       renderHistoricalTaskActivity(block.record, block.items);
       if (block.finalIndex !== null && Number.isInteger(block.finalIndex)) {
-        const waiting = summariesAfter.get(block.finalIndex) || []; waiting.push(block.record); summariesAfter.set(block.finalIndex, waiting);
-      } else renderTaskChangeSummary(block.record, { historical: true });
+        const waiting = summariesAfter.get(block.finalIndex) || []; waiting.push(block); summariesAfter.set(block.finalIndex, waiting);
+      } else {
+        renderTaskChangeSummary(block.record, { historical: true });
+        renderRoundTokenUsage(block.record, { unanchored: block.unanchored });
+      }
     }
     else {
       const message = block.message;
       if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || (message.role === 'user' && messageImageAttachments(message.attachments).length))) addMessage(message.role, message.content, false, { ...message, historical: true });
-      for (const record of summariesAfter.get(block.index) || []) renderTaskChangeSummary(record, { historical: true });
+      for (const run of summariesAfter.get(block.index) || []) {
+        renderTaskChangeSummary(run.record, { historical: true });
+        renderRoundTokenUsage(run.record, { unanchored: run.unanchored });
+      }
     }
   });
   compactions.forEach((event) => { if (!renderedCompactions.has(event)) appendContextCompactionNotice(event); });
@@ -3572,7 +3592,7 @@ function syncComposerApprovals(pending) {
 }
 
 function approvalOverlayOpen() {
-  return !!document.querySelector('dialog[open]') || ['app-menu-popup', 'app-menu-submenu', 'file-context-menu', 'permission-popup', 'reasoning-popup', 'project-dropdown', 'session-dropdown'].some(id => $(id) && !$(id).hidden);
+  return !!document.querySelector('dialog[open]') || ['app-menu-popup', 'app-menu-submenu', 'file-context-menu', 'chat-selection-menu', 'permission-popup', 'reasoning-popup', 'project-dropdown', 'session-dropdown'].some(id => $(id) && !$(id).hidden);
 }
 
 function approvalRequest(event) {
@@ -3892,6 +3912,7 @@ function handleEvent(event) {
     case 'run-end': {
       contextCompacting = false;
       const changeOperation = event.kind === 'undo' || taskKind === 'undo';
+      const usageRecord = { ...event, kind: event.kind || taskKind, demo: event.demo === true || taskDemo };
       if (!changeOperation) {
         finishStream();
         moveTaskActivityToEnd();
@@ -3912,6 +3933,7 @@ function handleEvent(event) {
         }
         $('messages').append(result);
         renderTaskChangeSummary(event);
+        renderRoundTokenUsage(usageRecord);
       }
       clearComposerApprovals();
       pendingTools.forEach(finishToolWithoutResult);
@@ -4250,6 +4272,7 @@ async function initialize() {
     return;
   }
   browserController = window.ForgeBrowser.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, showPanel: () => { if (!previewPinned) setPreviewPinned(true); setPreviewOpen(true); showPreviewTab('browser'); }, notice });
+  chatSelectionMenu = window.ForgeChatSelectionMenu.create({ container: $('messages'), scrollContainer: $('message-scroll'), menu: $('chat-selection-menu'), copy: text => bridge.copyText({ text }), search: url => browserController.open({ url }), getContextKey: () => `${currentWorkspaceId() || ''}:${sessionId || ''}`, notice });
   permissionControls = window.ForgePermissions.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, notice, onOpen: () => fetchCurrentCatalog() });
   sessionControls = window.ForgeSessions.create({ bridge, onSelect: loadSession, onNew: () => newSession(), onDelete: deleteSessionRecord, notice });
   bridge.onEvent(handleEvent);

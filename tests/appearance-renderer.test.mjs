@@ -262,6 +262,30 @@ test('custom accent labels remain readable after material changes without changi
   }
 });
 
+test('the color style produces five distinct increasing usage shades for saturated colors and black or white', async () => {
+  const f = await fixture();
+  for (const selectionColor of ['#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff', '#dbb254', '#4cbfc3']) {
+    f.broadcast({ selectionColor });
+    const shades = Array.from({ length: 5 }, (_, index) => f.rules.get(`:root--custom-usage-level-${index + 1}`));
+    assert.equal(new Set(shades).size, 5, `${selectionColor} needs distinguishable usage levels`);
+    shades.forEach(shade => assert.match(shade, /^#[0-9a-f]{6}$/));
+    for (let index = 1; index < shades.length; index++) {
+      const channels = hex => hex.slice(1).match(/../g).map(value => Number.parseInt(value, 16));
+      const previous = channels(shades[index - 1]), next = channels(shades[index]);
+      assert.ok(next.every((value, channel) => value > previous[channel]), `${selectionColor} must brighten at every level`);
+    }
+    const before = [...shades];
+    f.broadcast({ uiStyle: 'white' });
+    assert.deepEqual(Array.from({ length: 5 }, (_, index) => f.rules.get(`:root--custom-usage-level-${index + 1}`)), before);
+  }
+  f.broadcast({ selectionColor: '#dbb254' });
+  const gold = f.rules.get(':root--custom-usage-level-3');
+  f.broadcast({ selectionColor: '#4cbfc3' });
+  assert.notEqual(f.rules.get(':root--custom-usage-level-3'), gold, 'Changing the accent updates dashboard colors immediately');
+  f.broadcast({ selectionColor: null });
+  assert.equal(f.node('html').dataset.selectionColor, 'default');
+});
+
 test('built-in backgrounds replace imported images immediately without changing other edits', async () => {
   const f = await fixture();
   f.broadcast({backgroundImage:'data:image/png;base64,V0hJVEU=',backgroundName:'white.png',conversationTextColor:'green',panelFrost:15,panelTransparency:45});
