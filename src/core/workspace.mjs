@@ -6,6 +6,7 @@ import { TextDecoder } from 'node:util';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { withFileCommit } from './file-commit.mjs';
+import { taskUndoPlan } from './task-change-undo.mjs';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -282,12 +283,13 @@ export class WorkspaceTools {
     return { matches, truncated };
   }
 
-  async #write(input, content, signal, expectedContent, { recordHistory = true, title, onFileChange } = {}) {
+  async #write(input, content, signal, expectedContent, { recordHistory = true, title, onFileChange, requireSingleLink = false, beforeCommit } = {}) {
     const buffer = textBuffer(content);
     const { target, snapshot } = await withFileCommit(async () => {
       abortIfNeeded(signal);
       const target = await this.#resolve(input, { allowMissing: true });
       const snapshot = target.exists ? await this.#readSnapshot(input) : null;
+      if (requireSingleLink && snapshot && snapshot.target.stat.nlink !== 1) throw new Error('不允许撤销硬链接文件。');
       this.#requireObservedFile(input, snapshot);
       return { target, snapshot };
     });
@@ -325,6 +327,10 @@ export class WorkspaceTools {
       abortIfNeeded(signal);
       const finalTarget = await this.#resolve(input, { allowMissing: true });
       if (finalTarget.exists !== target.exists) throw new Error('文件在写入前发生变化，已取消修改。');
+      // Journal before an O_EXCL create can change disk. The opened handle and
+      // content checks below still run after this asynchronous durable write.
+      await beforeCommit?.({ path: target.relative, before, after: content });
+      abortIfNeeded(signal);
       const flags = target.exists
         ? fs.constants.O_RDWR | (fs.constants.O_NOFOLLOW ?? 0)
         : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0);
@@ -332,6 +338,7 @@ export class WorkspaceTools {
       let committedStat;
       try {
         const opened = await handle.stat();
+        if (requireSingleLink && opened.nlink !== 1) throw new Error('不允许撤销硬链接文件。');
         const checked = await this.#resolve(input);
         if (!opened.isFile() || !sameFile(opened, checked.stat)) throw new Error('文件在写入前被替换，已取消修改。');
         if (target.exists) {
@@ -342,6 +349,7 @@ export class WorkspaceTools {
           }
           await this.#resolve(input);
         }
+        if (requireSingleLink && (await handle.stat()).nlink !== 1) throw new Error('文件链接在等待撤销时已变化。');
         abortIfNeeded(signal);
         // Explicit position is required: reading an existing handle advances its file offset.
         let written = 0;
@@ -407,7 +415,83 @@ export class WorkspaceTools {
         result.message = '最近一次文件修改已撤销。';
       }
       return JSON.stringify(result);
-    } catch (error) { return `错误：${error.message}`; }
+    } catch (error) {
+      if (error.code === 'APPROVAL_DENIED') return JSON.stringify({ denied: true, message: error.message });
+      return `错误：${error.message}`;
+    }
+  }
+
+  async undoChanges(changes, { signal, onFileChange, beforeCommit, onCommitted, operationLabel = '撤销' } = {}) {
+    const label = operationLabel === '恢复' ? '恢复' : '撤销';
+    const completed = []; let plan = [];
+    const report = (status, extra = {}) => JSON.stringify({ status, completed,
+      remaining: plan.filter(change => !completed.includes(change.path)).map(change => change.path), ...extra });
+    try {
+      abortIfNeeded(signal);
+      if (!Array.isArray(changes)) throw new Error('本轮原始修改记录无效，无法撤销。');
+      plan = taskUndoPlan(changes.map(change => ({ ...change, path: this.#parts(change?.path).join('/') })));
+      const snapshots = new Map();
+      const inspect = async change => {
+        const target = await this.#resolve(change.path, { allowMissing: true });
+        const snapshot = target.exists ? await this.#readSnapshot(change.path) : null;
+        if (snapshot && snapshot.target.stat.nlink !== 1) throw new Error(`不允许撤销硬链接文件 ${change.path}。`);
+        if ((snapshot?.content ?? null) !== change.after) throw new Error(`文件 ${change.path} 在本轮修改后已变化，已保留当前内容。`);
+        return snapshot;
+      };
+      // Validate every path and every current file before asking to change one.
+      await withFileCommit(async () => {
+        for (const change of plan) { abortIfNeeded(signal); this.#parts(change.path); snapshots.set(change.path, await inspect(change)); }
+      });
+      for (const change of plan) {
+        abortIfNeeded(signal);
+        await withFileCommit(async () => {
+          const current = await inspect(change), original = snapshots.get(change.path);
+          if (Boolean(current) !== Boolean(original) || current && (!sameFile(current.target.stat, original.target.stat)
+              || current.target.stat.mtimeMs !== original.target.stat.mtimeMs)) throw new Error(`文件 ${change.path} 在批量撤销期间已变化，已保留当前内容。`);
+          if (current) this.#rememberFile(change.path, current.content, current.target.stat);
+          else this.#observedFiles.delete(this.#observationKey(change.path));
+        });
+        let result;
+        if (change.before !== null) {
+          result = await this.#write(change.path, change.before, signal, change.after,
+            { recordHistory: false, title: `${label}本轮文件修改：${change.path}`, onFileChange, requireSingleLink: true, beforeCommit });
+        } else {
+          const snapshot = snapshots.get(change.path);
+          const approved = await this.approve({ kind: 'write', title: `${label}本轮文件变更（删除）：${change.path}`,
+            detail: `仅在文件仍与预期内容一致时删除 ${change.path}；其他文件可能已先${label}。`, path: change.path, before: change.after, after: null });
+          abortIfNeeded(signal);
+          if (approved !== true) result = { denied: true };
+          else result = await withFileCommit(async () => {
+            abortIfNeeded(signal);
+            const current = await inspect(change);
+            if (!current || !snapshot || !sameFile(current.target.stat, snapshot.target.stat) || current.target.stat.mtimeMs !== snapshot.target.stat.mtimeMs)
+              throw new Error(`文件 ${change.path} 在等待撤销审批时已变化，已保留当前内容。`);
+            await this.#resolve(change.path); abortIfNeeded(signal);
+            await beforeCommit?.({ path: change.path, before: change.after, after: null });
+            abortIfNeeded(signal);
+            const ready = await inspect(change);
+            if (!ready || !sameFile(ready.target.stat, current.target.stat) || ready.target.stat.mtimeMs !== current.target.stat.mtimeMs)
+              throw new Error(`文件 ${change.path} 在准备撤销时已变化，已保留当前内容。`);
+            await fsp.unlink(current.target.absolute);
+            this.#observedFiles.delete(this.#observationKey(change.path));
+            try { onFileChange?.({ path: change.path, before: change.after, after: null }); } catch { /* Deletion has committed. */ }
+            return { deleted: true };
+          });
+        }
+        if (result.denied) return report(completed.length ? 'partial' : 'denied', { denied: true, message: `${label}已拒绝；已${label} ${completed.length} 个文件，其余文件未${label}。` });
+        completed.push(change.path);
+        // Earlier single-step entries for a restored path no longer describe
+        // the current file. Invalidate those paths, preserving all other order.
+        for (let index = this.history.length - 1; index >= 0; index--)
+          if (this.#samePath(this.history[index].path, change.path)) this.history.splice(index, 1);
+        await onCommitted?.({ path: change.path, before: change.after, after: change.before });
+      }
+      return report('completed', { message: `本轮已${label} ${completed.length} 个文件。` });
+    } catch (error) {
+      return report(completed.length ? 'partial' : signal?.aborted ? 'stopped' : 'failed', {
+        ...(signal?.aborted ? { stopped: true } : {}), error: error.message,
+        message: `${label}未全部完成：已${label} ${completed.length} 个文件；${error.message}` });
+    }
   }
 
   async #replace({ path: input, old_text, new_text }, signal, onFileChange) {
@@ -513,6 +597,7 @@ export class WorkspaceTools {
       }
       return JSON.stringify(result);
     } catch (error) {
+      if (error.code === 'APPROVAL_DENIED') return JSON.stringify({ denied: true, message: error.message });
       return `错误：${error.message}`;
     }
   }

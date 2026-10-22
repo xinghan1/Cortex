@@ -1,0 +1,42 @@
+/* Queued prompts use one compact row; full text stays behind the more control. */
+.pending-prompts .pending-heading { padding: 5px 11px; font-size: 10px; }
+.pending-prompts .pending-heading[hidden] { display: none; }
+.pending-prompt { position: relative; padding: 5px 9px; }
+.pending-prompt-row { display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 34px; padding-right: 28px; }
+.pending-prompt-mark { flex: 0 0 18px; color: #91a4c0; font-size: 20px; line-height: 1; }
+.pending-prompt-preview { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; gap: 7px; }
+.pending-preview-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d3dff1; font-size: 12px; line-height: 24px; }
+.pending-prompt.steering .pending-prompt-mark { color: #a9c8ff; }
+.pending-prompt-actions { gap: 4px; }
+.pending-prompt-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 26px; padding: 3px 5px; border-radius: 5px; color: #a8b8cf; font-size: 11px; }
+.pending-prompt-actions button:disabled { opacity: .5; cursor: default; }
+.pending-prompt-actions .pending-steer { white-space: nowrap; }
+.pending-steer-mark { font-size: 17px; line-height: 1; }
+.pending-prompt-actions .pending-edit, .pending-prompt-actions .pending-remove { width: 26px; padding: 4px; }
+.pending-prompt-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.pending-prompts .pending-attachments { display: flex; flex: 0 0 auto; flex-wrap: nowrap; gap: 4px; margin: 0; }
+.pending-prompts .pending-attachments .user-message-image-button { width: 24px; height: 24px; min-width: 24px; padding: 0; border-radius: 4px; }
+.pending-prompts .pending-attachment-image { display: block; width: 24px; height: 24px; object-fit: cover; }
+.pending-content { margin: 0; }
+.pending-content > .pending-more { position: absolute; top: 10px; right: 8px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 26px; height: 24px; overflow: hidden; border-radius: 5px; color: #a8b8cf; font-size: 20px; font-family: inherit; line-height: 1; }
+.pending-content > .pending-more:hover { background: rgb(188 213 255 / 8%); }
+.pending-content[open] > .pending-more { background: rgb(188 213 255 / 10%); }
+.pending-content > .pending-text { margin: 3px 28px 6px 27px; max-height: 180px; overflow: auto; padding: 8px 10px; border: 1px solid rgb(186 209 247 / 12%); border-radius: 7px; background: rgb(8 17 33 / 20%); }
+.pending-prompt button:focus-visible, .pending-more:focus-visible { outline: 2px solid #b3d2ff; outline-offset: 1px; }
+.pending-edit-dialog { box-sizing: border-box; width: min(640px, calc(100vw - 32px)); max-height: 90vh; overflow: auto; }
+.pending-edit-dialog textarea { display: block; box-sizing: border-box; width: 100%; min-height: 160px; max-height: 50vh; padding: 12px; border: 1px solid var(--line, #44516a); border-radius: 8px; background: rgb(8 17 33 / 22%); color: inherit; font: inherit; line-height: 1.7; resize: vertical; }
+.pending-edit-dialog textarea:focus { outline: 1px solid #a9c8ff; }
+.pending-edit-dialog .form-error:empty { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
+    .pending-content { interpolate-size: allow-keywords; }
+    .pending-content::details-content { block-size: 0; overflow: clip; transition: block-size 230ms ease, content-visibility 230ms allow-discrete; }
+    .pending-content[open]::details-content { block-size: auto; }
+  }
+}
+@media (max-width: 700px) {
+  .pending-prompt { padding-inline: 6px; }
+  .pending-prompt-row { gap: 6px; }
+  .pending-prompt-actions { gap: 1px; }
+  .pending-prompts .pending-attachments { gap: 2px; }
+}

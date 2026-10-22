@@ -2,14 +2,15 @@
 
 const $ = (id) => document.getElementById(id);
 const bridge = window.forge;
-const providerNames = { openai: 'OpenAI', deepseek: 'DeepSeek', anthropic: 'Claude', relay: '中转站' };
+const providerNames = { openai: 'OpenAI', deepseek: 'DeepSeek', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
 const reasoningOptions = {
   openai: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['none', 'low', 'high', 'max'],
   anthropic: ['low', 'medium', 'high', 'xhigh', 'max'],
-  relay: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  relay: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  ollama: []
 };
-const reasoningLabels = { default: '默认', none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '更高', max: '最高' };
+const reasoningLabels = { default: '默认', none: '关闭', enabled: '开启思考', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '更高', max: '最高' };
 const chatgptStorageMessages = {
   storage_decryption_failed: '无法解密本机保存的 ChatGPT 登录信息。原凭据已保留，请先重试读取；仍失败时可退出本机登录后重新连接。',
   storage_encrypted_invalid: '本机保存的 ChatGPT 登录信息格式无效或已损坏。原凭据已保留，可先重试读取，或退出本机登录后重新连接。',
@@ -28,6 +29,8 @@ let changes = [];
 let pendingTools = [];
 let commandOutput = null;
 let followOutput = true;
+let fileDisclosureReveal = null;
+let fileDisclosureScrollPaused = false;
 let filesRequest = 0;
 let sessionRequest = 0;
 let reasoningSaving = false;
@@ -35,6 +38,11 @@ let latestTelemetry = null;
 let sessionTokenRate = null;
 let taskActivityTimer = null;
 let activeTaskActivity = null;
+let taskChangeEdits = [];
+const taskChangeCards = new Map();
+let taskChangeUndoBusy = false;
+let imageViewSources = [];
+const renderedImageViews = new Set();
 let settingsSaving = false;
 let chatgptBusy = false;
 let chatgptAction = null;
@@ -73,6 +81,8 @@ let taskDemo = false;
 let taskKind = null;
 let promptSubmitting = false;
 let pendingResuming = false;
+let pendingPromptEdit = null;
+let pendingPromptEditSaving = false;
 let taskStateVersion = 0;
 let promptQueueVersion = 0;
 let promptQueue = { items: [], paused: false, reason: null };
@@ -99,6 +109,7 @@ let editorReadRequest = 0;
 let fileMutationBusy = false;
 let explorerDrag = null;
 let explorerMovePending = false;
+let explorerSelection = null;
 const EXPLORER_DRAG_TYPE = 'application/x-synora-file';
 let projectSwitching = false;
 let fileClipboard = null;
@@ -142,7 +153,136 @@ function notice(message, error = false) {
 
 function scrollBottom(force = false) {
   const viewport = $('message-scroll');
+  if (force) { cancelFileDisclosureReveal(); fileDisclosureScrollPaused = false; }
+  else if (fileDisclosureReveal || fileDisclosureScrollPaused) return;
   if (!viewport.classList.contains('usage-view-open') && (force || followOutput)) viewport.scrollTop = viewport.scrollHeight;
+}
+
+function cancelFileDisclosureReveal(manual = false) {
+  if (!fileDisclosureReveal) return;
+  cancelAnimationFrame(fileDisclosureReveal.frame);
+  fileDisclosureReveal = null;
+  if (manual) { followOutput = false; fileDisclosureScrollPaused = true; }
+}
+
+function fileDisclosureBounds(viewport) {
+  const rect = viewport.getBoundingClientRect();
+  // The composer is a flex sibling: clientHeight already excludes its height.
+  const top = rect.top + viewport.clientTop + 12;
+  return { top, bottom: rect.top + viewport.clientTop + viewport.clientHeight - 12 };
+}
+
+function fitFileDisclosure(card, viewport) {
+  if (card.classList.contains('tool-operation-group')) {
+    if (!card.open) return;
+    const bounds = fileDisclosureBounds(viewport), summary = card.querySelector(':scope > summary');
+    card.style.setProperty('--tool-operation-height', `${Math.max(60, Math.min(360, Math.floor(bounds.bottom - bounds.top - summary.getBoundingClientRect().height - 16)))}px`);
+    return;
+  }
+  if (card.classList.contains('image-view-card')) {
+    const gallery = card.querySelector('.image-view-gallery'), body = card.querySelector('.image-view-body');
+    if (!gallery || !body || !card.open) return;
+    const bounds = fileDisclosureBounds(viewport);
+    const chrome = card.querySelector(':scope > summary').getBoundingClientRect().height
+      + body.getBoundingClientRect().height - gallery.getBoundingClientRect().height;
+    card.style.setProperty('--image-view-gallery-height', `${Math.max(78, Math.floor(bounds.bottom - bounds.top - chrome))}px`);
+    return;
+  }
+  const previews = [...card.querySelectorAll('.code-diff-card > .code-diff-scroll')];
+  if (!previews.length || !fileDisclosureOpen(card)) return;
+  const preview = previews[0];
+  if (card.classList.contains('task-change-entry')) {
+    const row = card.querySelector(':scope > .task-change-file');
+    const body = card.querySelector(':scope > .task-change-file-preview > .task-change-collapse-inner');
+    if (!row || !body) return;
+    const bounds = fileDisclosureBounds(viewport);
+    const chrome = row.getBoundingClientRect().height + body.scrollHeight
+      - previews.reduce((sum, item) => sum + item.getBoundingClientRect().height, 0);
+    const height = Math.max(44, Math.min(360, Math.floor((bounds.bottom - bounds.top - chrome) / previews.length)));
+    card.style.setProperty('--file-edit-preview-height', `${height}px`);
+    return;
+  }
+  const details = card.querySelector(':scope > .file-edit-details');
+  if (!details) return;
+  const pixels = value => Number.parseFloat(value) || 0;
+  const style = getComputedStyle(card), detailStyle = getComputedStyle(details);
+  const bounds = fileDisclosureBounds(viewport);
+  // The child retains its intrinsic layout while ::details-content reveals it.
+  // Include margins/chrome so the entire card, rather than only its code, fits.
+  const chrome = card.querySelector(':scope > summary').getBoundingClientRect().height
+    + details.getBoundingClientRect().height - preview.getBoundingClientRect().height
+    + pixels(detailStyle.marginTop) + pixels(detailStyle.marginBottom)
+    + pixels(style.paddingTop) + pixels(style.paddingBottom)
+    + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth);
+  const height = Math.max(44, Math.min(360, Math.floor(bounds.bottom - bounds.top - chrome)));
+  card.style.setProperty('--file-edit-preview-height', `${height}px`);
+}
+
+function fileDisclosureOpen(card) {
+  return card.classList.contains('task-change-entry')
+    ? card.querySelector(':scope > .task-change-file')?.getAttribute('aria-expanded') === 'true' : card.open;
+}
+
+function revealFileDisclosure(card) {
+  cancelFileDisclosureReveal();
+  const viewport = $('message-scroll');
+  if (!fileDisclosureOpen(card) || !card.isConnected || viewport.classList.contains('usage-view-open')) return;
+  const reveal = { card, frame: 0, until: performance.now() + 400 };
+  fileDisclosureReveal = reveal;
+  const frame = () => {
+    if (fileDisclosureReveal !== reveal) return;
+    if (!fileDisclosureOpen(card) || !card.isConnected || viewport.classList.contains('usage-view-open')) { cancelFileDisclosureReveal(); return; }
+    fitFileDisclosure(card, viewport);
+    const bounds = fileDisclosureBounds(viewport), rect = card.getBoundingClientRect();
+    const available = bounds.bottom - bounds.top;
+    let delta = 0;
+    if (rect.height > available + 1) {
+      // Extremely short windows can be smaller than the card's fixed controls.
+      // Keep the summary reachable rather than chasing an impossible bottom.
+      delta = rect.top - bounds.top;
+    } else if (rect.bottom > bounds.bottom) delta = rect.bottom - bounds.bottom;
+    else if (rect.top < bounds.top) delta = rect.top - bounds.top;
+    if (Math.abs(delta) > 1) viewport.scrollTop += delta;
+    if (performance.now() < reveal.until) reveal.frame = requestAnimationFrame(frame);
+    else fileDisclosureReveal = null;
+  };
+  reveal.frame = requestAnimationFrame(frame);
+}
+
+function bindFileDisclosureVisibility(card, summary) {
+  summary.addEventListener('click', event => {
+    if (event.defaultPrevented || !card.matches('.file-edit-card,.image-view-card,.tool-operation-group')
+        || event.target.closest('button,a,input,select,textarea')) return;
+    cancelFileDisclosureReveal();
+    // Native summary activation (including Enter/Space) toggles after click.
+    // Register the pending frame too, so a scroll before the first frame wins.
+    const intent = { card, frame: 0 };
+    fileDisclosureReveal = intent;
+    intent.frame = requestAnimationFrame(() => {
+      if (fileDisclosureReveal !== intent) return;
+      if (card.open) revealFileDisclosure(card);
+      else cancelFileDisclosureReveal();
+    });
+  });
+}
+
+function bindConversationDisclosureVisibility() {
+  const viewport = $('message-scroll');
+  viewport.addEventListener('wheel', event => {
+    if (!event.target.closest('.code-diff-scroll,.image-view-gallery,.tool-operation-group-items')) cancelFileDisclosureReveal(true);
+  }, { passive: true, capture: true });
+  viewport.addEventListener('touchstart', () => cancelFileDisclosureReveal(true), { passive: true });
+  viewport.addEventListener('pointerdown', event => {
+    // Clicking a scrollbar is an explicit reading-position choice.
+    if (event.target === viewport) cancelFileDisclosureReveal(true);
+  });
+  document.addEventListener('keydown', event => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)
+        && !event.target.closest('input,textarea,select,[contenteditable="true"]')) cancelFileDisclosureReveal(true);
+  }, true);
+  new ResizeObserver(() => {
+    for (const card of viewport.querySelectorAll('.file-edit-card[open],.task-change-entry,.image-view-card[open],.tool-operation-group[open]')) fitFileDisclosure(card, viewport);
+  }).observe(viewport);
 }
 
 function showConversation() {
@@ -186,7 +326,7 @@ function syncWindowChrome() {
 }
 
 function contextBusy() {
-  return running || terminalRunning || promptSubmitting || pendingResuming || promptQueue.items.length > 0 || fileMutationBusy || projectSwitching;
+  return running || terminalRunning || promptSubmitting || pendingResuming || promptQueue.items.length > 0 || fileMutationBusy || projectSwitching || taskChangeUndoBusy;
 }
 
 function modelControlBusy() {
@@ -271,7 +411,7 @@ function activateWorkspace(state, session) {
   } finally { restoringWorkspace = false; }
   syncComposerApprovals(state.pendingApprovals || []);
   if (active?.telemetry) updateTelemetry(active.telemetry);
-  if (state.activeTask?.compacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
+  if (state.activeTask?.compacting && !activeTaskActivity?.reconnect) setTaskActivityPhase('compacting', '正在压缩上下文…');
   if (!state.activeTask?.running) {
     $('run-status').textContent = '准备就绪';
     $('run-status').classList.remove('running');
@@ -302,51 +442,99 @@ function renderPendingPrompts() {
   const expanded = new Set([...list.querySelectorAll('details[open]')].map((node) => node.closest('[data-prompt-id]')?.dataset.promptId));
   list.replaceChildren();
   $('pending-prompts').hidden = promptQueue.items.length === 0;
-  $('pending-count').textContent = `待发送 ${promptQueue.items.length}`;
-  $('pending-status').textContent = promptQueue.paused ? `已暂停${promptQueue.reason ? ` · ${promptQueue.reason}` : ' · 请确认后继续'}` : '未发送内容不计入用量';
-  $('pending-status').title = $('pending-status').textContent;
+  $('pending-pause-controls').hidden = !promptQueue.paused || promptQueue.items.length === 0;
+  $('pending-paused').title = promptQueue.reason || '队列已暂停';
   $('resume-pending').hidden = !promptQueue.paused || promptQueue.items.length === 0;
   $('resume-pending').disabled = running || terminalRunning || promptSubmitting || pendingResuming || isChatGPTBusy();
   for (const item of promptQueue.items) {
     const card = element('article', `pending-prompt${item.mode === 'steer' ? ' steering' : ''}`);
     card.dataset.promptId = item.id;
     card.dataset.mode = item.mode;
-    const heading = element('div', 'pending-prompt-heading');
-    heading.append(element('span', 'pending-prompt-mode', item.mode === 'steer' ? '待引导 · 当前请求结束后继续' : '待发送 · 回复结束后自动发送'));
+    const row = element('div', 'pending-prompt-row');
+    const mark = element('span', 'pending-prompt-mark', '↳'); mark.setAttribute('aria-hidden', 'true');
+    const content = element('div', 'pending-prompt-preview');
+    content.append(element('span', 'pending-preview-text', item.text));
+    row.append(mark, content);
     const actions = element('div', 'pending-prompt-actions');
-    if (item.mode === 'queue') {
-      const steer = element('button', 'pending-steer', '引导');
+    {
+      const steer = element('button', 'pending-steer');
+      const arrow = element('span', 'pending-steer-mark', '↪'); arrow.setAttribute('aria-hidden', 'true');
+      steer.append(arrow, element('span', '', '引导'));
       steer.type = 'button';
-      steer.disabled = !canSteerPrompt() || pendingPromptActions.has(item.id) || isChatGPTBusy();
-      steer.title = canSteerPrompt() ? '转为当前任务下一轮的补充，不中断模型请求' : '当前任务运行时可转为引导';
+      steer.disabled = item.mode === 'steer' || !canSteerPrompt() || pendingPromptActions.has(item.id) || isChatGPTBusy();
+      steer.title = item.mode === 'steer' ? '已设为引导，等待当前请求结束' : canSteerPrompt() ? '转为当前任务下一轮的补充，不中断模型请求' : '当前任务运行时可转为引导';
+      steer.setAttribute('aria-label', item.mode === 'steer' ? '已设为引导' : '引导当前任务');
       steer.addEventListener('click', () => managePendingPrompt(item.id, 'steer'));
       actions.append(steer);
     }
-    const remove = element('button', 'pending-remove', item.mode === 'steer' ? '取消' : '删除');
+    const edit = element('button', 'pending-edit'); edit.type = 'button';
+    edit.title = '编辑提示词'; edit.setAttribute('aria-label', '编辑提示词');
+    edit.disabled = pendingPromptActions.has(item.id) || isChatGPTBusy();
+    const pencil = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); pencil.setAttribute('viewBox', '0 0 24 24'); pencil.setAttribute('aria-hidden', 'true');
+    const pencilPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); pencilPath.setAttribute('d', 'm4 16-1 5 5-1L21 7l-4-4L4 16Z M14 6l4 4'); pencil.append(pencilPath); edit.append(pencil);
+    edit.addEventListener('click', () => editPendingPrompt(item.id)); actions.append(edit);
+    const remove = element('button', 'pending-remove');
     remove.type = 'button';
     remove.disabled = pendingPromptActions.has(item.id) || isChatGPTBusy();
     remove.setAttribute('aria-label', item.mode === 'steer' ? '取消此条待引导内容' : '删除此条待发送内容');
+    remove.title = item.mode === 'steer' ? '取消引导' : '删除';
+    const trash = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); trash.setAttribute('viewBox', '0 0 24 24'); trash.setAttribute('aria-hidden', 'true');
+    const trashPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); trashPath.setAttribute('d', 'M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7'); trash.append(trashPath); remove.append(trash);
     remove.addEventListener('click', () => managePendingPrompt(item.id, 'remove'));
     actions.append(remove);
-    heading.append(actions);
-    card.append(heading);
+    row.append(actions); card.append(row);
     const attachments = messageImageAttachments(item.attachments);
     if (attachments.length) {
       const gallery = element('div', 'pending-attachments');
-      gallery.append(element('span', 'pending-attachment-count', `${attachments.length} 张图片`));
       attachments.forEach((attachment) => gallery.append(createMessageImage(attachment, 'pending-attachment-image')));
-      card.append(gallery);
+      content.prepend(gallery);
     }
-    if (item.text.length > 220) {
+    {
       const details = element('details', 'pending-content');
       details.open = expanded.has(item.id);
-      const summary = element('summary');
-      summary.append(element('span', 'pending-summary', `${item.text.slice(0, 140)}…`), element('span', 'pending-collapse', '收起全文'));
-      details.append(summary, element('pre', 'pending-text', item.text));
+      const summary = element('summary', 'pending-more', '⋯');
+      summary.setAttribute('aria-label', '查看完整内容'); summary.title = '查看完整内容';
+      details.append(summary, element('pre', 'pending-text', item.text || attachments.map(image => image.name).join('\n')));
       card.append(details);
-    } else card.append(element('pre', 'pending-text', item.text));
+    }
     list.append(card);
   }
+  renderPendingPromptEditState();
+}
+
+function editPendingPrompt(id) {
+  const item = promptQueue.items.find(value => value.id === id);
+  if (!item || pendingPromptActions.has(id) || isChatGPTBusy()) return;
+  pendingPromptEdit = { id, workspaceId: currentWorkspaceId() };
+  $('pending-edit-input').value = item.text;
+  $('pending-edit-error').textContent = '';
+  renderPendingPromptEditState();
+  $('pending-edit-dialog').showModal(); $('pending-edit-input').focus();
+}
+
+function renderPendingPromptEditState() {
+  if (!pendingPromptEdit) return;
+  const item = promptQueue.items.find(value => value.id === pendingPromptEdit.id);
+  const current = pendingPromptEdit.workspaceId === currentWorkspaceId();
+  if (!item || !current) $('pending-edit-error').textContent = current ? '这条内容已发送或移除，无法再修改。' : '项目已切换，未修改提示词。';
+  const text = $('pending-edit-input').value;
+  $('pending-edit-save').disabled = pendingPromptEditSaving || !item || !current || (!text.trim() && !item.attachments.length) || text.trim().length > 40000;
+  $('pending-edit-cancel').disabled = pendingPromptEditSaving;
+  $('pending-edit-close').disabled = pendingPromptEditSaving;
+}
+
+async function savePendingPromptEdit(event) {
+  event.preventDefault();
+  if (!pendingPromptEdit || pendingPromptEditSaving || $('pending-edit-save').disabled) return;
+  const editing = pendingPromptEdit;
+  pendingPromptEditSaving = true; pendingPromptActions.add(editing.id); renderPendingPromptEditState(); renderPendingPrompts();
+  try {
+    const queue = await bridge.managePendingPrompt({ id: editing.id, action: 'edit', text: $('pending-edit-input').value });
+    if (pendingPromptEdit !== editing || currentWorkspaceId() !== editing.workspaceId) return;
+    syncPromptQueue(queue.queue || queue.promptQueue || queue);
+    $('pending-edit-dialog').close();
+  } catch (error) { if (pendingPromptEdit === editing) $('pending-edit-error').textContent = errorText(error); }
+  finally { pendingPromptEditSaving = false; pendingPromptActions.delete(editing.id); renderPendingPrompts(); renderPendingPromptEditState(); }
 }
 
 async function managePendingPrompt(id, action) {
@@ -699,7 +887,9 @@ function currentAuthMode(settings = appState?.settings || {}) {
 function catalogIdentity(provider, authMode, state = appState) {
   const config = state?.settings?.providers?.[provider] || {};
   const account = provider === 'openai' && authMode === 'chatgpt';
-  return JSON.stringify([provider, authMode, account ? '' : config.baseUrl || '', account ? state?.chatgpt?.session?.profileId || '' : !!config.hasKey, account ? state?.chatgpt?.session?.status || '' : '', account ? !!state?.chatgpt?.session?.sharing : false]);
+  const identity = [provider, authMode, account ? '' : config.baseUrl || '', account ? state?.chatgpt?.session?.profileId || '' : !!config.hasKey, account ? state?.chatgpt?.session?.status || '' : '', account ? !!state?.chatgpt?.session?.sharing : false];
+  if (provider === 'ollama') identity.push(config.contextWindowTokens ?? 32768);
+  return JSON.stringify(identity);
 }
 
 function activeCatalogIdentity(state = appState) {
@@ -731,6 +921,7 @@ function invalidateCatalogs() {
 
 function savedConnectionReady(provider, authMode) {
   if (provider === 'openai' && authMode === 'chatgpt') return appState?.chatgpt?.session?.status === 'connected' && appState?.chatgpt?.session?.sharing === true;
+  if (provider === 'ollama') return true;
   return appState?.settings?.providers?.[provider]?.hasKey === true;
 }
 
@@ -739,8 +930,12 @@ function modelSettingsDraft() {
   const authMode = selectedAuthMode();
   const draft = { provider, authMode };
   if (authMode === 'apiKey') {
-    Object.assign(draft, { baseUrl: $('base-url-input').value.trim(), apiKey: $('api-key-input').value.trim(), clearKey: $('clear-key-input').checked });
+    Object.assign(draft, { baseUrl: $('base-url-input').value.trim(), apiKey: $('api-key-input').value.trim() });
     if (['openai', 'relay'].includes(provider)) draft.apiProtocol = $('api-protocol-select').value;
+    if (provider === 'ollama') {
+      const value = $('ollama-context-window-input').value.trim();
+      draft.contextWindowTokens = /^\d+$/u.test(value) ? Number(value) : null;
+    }
   }
   return draft;
 }
@@ -770,7 +965,7 @@ function selectedModelMetadata() {
 
 function reasoningSpec(range, provider) {
   const model = selectedModelMetadata();
-  const order = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const order = ['none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const known = Array.isArray(model?.reasoningEfforts);
   const options = known ? [...new Set(model.reasoningEfforts.filter((effort) => order.includes(effort)))].sort((a, b) => order.indexOf(a) - order.indexOf(b)) : reasoningOptions[provider] || reasoningOptions.openai;
   return { options, known, defaultEffort: model?.defaultReasoningEffort };
@@ -795,7 +990,7 @@ function renderComposerModel() {
   $('composer-model-name').title = id;
   $('popup-model-button').title = id || '打开模型目录';
   const effort = $('reasoning-effort').dataset.effort || 'default';
-  $('composer-reasoning-label').textContent = reasoningAvailable($('reasoning-effort')) ? reasoningLabels[effort] || '默认' : '不可用';
+  $('composer-reasoning-label').textContent = reasoningAvailable($('reasoning-effort')) ? reasoningLabels[effort] || '默认' : settings.provider === 'ollama' ? '默认' : '不可用';
   $('composer-reasoning-label').classList.toggle('is-unavailable', !reasoningAvailable($('reasoning-effort')));
   $('composer-reasoning-label').classList.toggle('is-max', $('reasoning-effort').classList.contains('is-max'));
 }
@@ -809,7 +1004,8 @@ function renderModelList() {
   const selected = appState?.settings?.model || '';
   let message = catalogLoading ? '正在获取模型目录…' : catalogError;
   if (!message && currentCatalog && selected && !models.some((model) => model.id === selected)) message = '当前模型未出现在目录中，请选择目录中的可用模型。';
-  if (!message && currentCatalog && !models.length) message = '模型目录为空，请检查连接配置后重新获取。';
+  if (!message && currentCatalog && !models.length) message = appState?.settings?.provider === 'ollama'
+    ? 'Ollama 服务中没有已安装的模型，请准备模型后刷新。' : '模型目录为空，请检查连接配置后重新获取。';
   if (!message && query && !visible.length) message = '没有匹配的模型。';
   $('model-list-status').textContent = message || (running ? '切换后从下一次模型请求生效，当前响应会继续完成。' : '选择模型后保存真实模型 ID。');
   $('model-list-retry').hidden = !catalogError;
@@ -834,6 +1030,7 @@ function renderModelList() {
 }
 
 function renderSettingsCatalog() {
+  const ollama = $('provider-select').value === 'ollama';
   const select = $('chatgpt-model-select');
   const current = select.value;
   if (settingsCatalog && !settingsCatalogMatches()) {
@@ -852,12 +1049,13 @@ function renderSettingsCatalog() {
     select.append(option);
   });
   select.value = catalog?.models.some((model) => model.id === current) ? current : '';
-  let message = '填写连接配置，获取模型目录并选择模型后保存。';
-  if (settingsCatalogLoading) message = '正在获取当前连接配置的模型目录…';
+  let message = '';
+  if (settingsCatalogLoading) message = ollama ? '正在读取 Ollama 服务中已安装的模型…' : '正在获取当前连接配置的模型目录…';
   else if (settingsCatalogError) message = settingsCatalogError;
-  else if (catalog && !catalog.models.length) message = '目录中没有可选择的模型，请检查连接配置后重新获取。';
-  else if (catalog) message = `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
+  else if (catalog && !catalog.models.length) message = ollama ? 'Ollama 服务中没有已安装的模型，请准备模型后刷新。' : '目录中没有可选择的模型，请检查连接配置后重新获取。';
+  else if (catalog) message = ollama ? `已读取 ${catalog.models.length} 个已安装模型；不支持编程工具的模型不可选作任务模型。` : `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
   $('settings-model-catalog-message').textContent = message;
+  $('settings-model-catalog-message').hidden = !message;
   $('settings-model-refresh').disabled = contextBusy() || settingsSaving || settingsCatalogLoading || isChatGPTBusy();
 }
 
@@ -900,6 +1098,7 @@ async function fetchSettingsCatalog(force = true) {
   refreshControlLocks();
   try {
     if (authMode === 'chatgpt' && !savedConnectionReady(provider, authMode)) throw new Error('请先连接 ChatGPT 并同意使用套餐用量。');
+    if (provider === 'ollama' && (!Number.isInteger(draft.contextWindowTokens) || draft.contextWindowTokens < 4096 || draft.contextWindowTokens > 2097152)) throw new Error('模型上下文必须为 4096 至 2097152 之间的整数 Token。');
     if (typeof bridge.previewModelCatalog !== 'function') throw new Error('当前版本不支持预览模型目录，请更新软件后重试。');
     const result = await bridge.previewModelCatalog(draft);
     const current = modelSettingsDraftSnapshot();
@@ -975,7 +1174,8 @@ function updateReasoningControl(range, fromInput = false) {
   const label = $(`${prefix}-value`);
   const reset = $(`${prefix}-default`);
   const maximum = available && effort !== 'default' && index === options.length - 1;
-  label.textContent = available ? reasoningLabels[effort] || '默认' : '不可用';
+  const ollamaDefault = !available && range.dataset.provider === 'ollama';
+  label.textContent = available ? reasoningLabels[effort] || '默认' : ollamaDefault ? '默认' : '不可用';
   label.classList.toggle('is-max', maximum);
   label.classList.toggle('is-unavailable', !available);
   range.classList.toggle('is-max', maximum);
@@ -987,15 +1187,10 @@ function updateReasoningControl(range, fromInput = false) {
     visual.classList.toggle('is-unavailable', !available);
     if (!available) visual.classList.remove('is-dragging');
   }
-  const hint = range.dataset.support === 'none' ? '此模型不支持可调推理强度，使用服务商默认设置。' : range.dataset.support === 'unknown' ? '通用档位，获取模型能力后自动校正。' : effort === 'default' ? `遵从模型默认设置${range.dataset.defaultEffort ? `（${reasoningLabels[range.dataset.defaultEffort] || range.dataset.defaultEffort}）` : ''}。` : '';
-  range.setAttribute('aria-valuetext', !available ? '不可用，使用服务商默认设置' : effort === 'default' ? '默认，遵从模型默认设置' : reasoningLabels[effort]);
-  range.title = !available ? hint : effort === 'default' ? '遵从模型默认设置。拖动滑块可选择明确的推理强度。' : `推理强度：${reasoningLabels[effort]}。具体支持的档位取决于所选模型。`;
+  range.setAttribute('aria-valuetext', ollamaDefault ? '默认，使用 Ollama 模型设置' : !available ? '不可用，使用服务商默认设置' : effort === 'default' ? '默认，遵从模型默认设置' : reasoningLabels[effort]);
+  range.title = available ? `推理强度：${label.textContent}` : '模型默认推理设置';
   reset.classList.toggle('active', available && effort === 'default');
   reset.setAttribute('aria-pressed', String(available && effort === 'default'));
-  $('reasoning-hint').textContent = hint;
-  $('reasoning-hint').hidden = !hint;
-  $('reasoning-low-label').textContent = available ? reasoningLabels[options[0]] : '—';
-  $('reasoning-high-label').textContent = available ? reasoningLabels[options.at(-1)] : '—';
   renderComposerModel();
   range.disabled = !available || modelControlBusy() || reasoningSaving || modelSaving;
   reset.disabled = range.disabled;
@@ -1044,6 +1239,7 @@ function restoreChatGPTControls() {
 
 function refreshControlLocks() {
   restoreChatGPTControls();
+  refreshTaskChangeControls();
   if (appState) sessionControls?.update({ ...appState, sessionId: sessionId || appState.sessionId, busy: contextBusy() || editorSaving, authBusy: isChatGPTBusy() });
   const busy = contextBusy() || editorSaving;
   $('task-form').classList.toggle('has-active-task', running);
@@ -1074,8 +1270,8 @@ function refreshControlLocks() {
   $('save-settings').disabled = settingsLocked || settingsCatalogLoading || !selectedSettingsModel();
   $('base-url-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
   $('api-protocol-select').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
-  $('api-key-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt' || $('clear-key-input').checked;
-  $('clear-key-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
+  $('ollama-context-window-input').disabled = settingsLocked || $('provider-select').value !== 'ollama';
+  $('api-key-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
   $('settings-model-refresh').disabled = settingsLocked || settingsCatalogLoading;
   $('close-settings').disabled = settingsSaving;
   if (isChatGPTBusy()) {
@@ -1093,20 +1289,23 @@ function refreshControlLocks() {
 function syncAuthModeVisibility() {
   const openai = $('provider-select').value === 'openai';
   const relay = $('provider-select').value === 'relay';
+  const ollama = $('provider-select').value === 'ollama';
   const account = openai && selectedAuthMode() === 'chatgpt';
   $('openai-auth-mode-field').hidden = !openai;
   $('api-protocol-field').hidden = !(openai || relay) || account;
   $('api-protocol-help').textContent = $('api-protocol-select').value === 'chat-completions'
     ? '使用 /chat/completions；适用于提供 OpenAI 兼容接口的中转站。'
     : '使用 /responses；请确认服务商支持 Responses 协议。';
-  $('base-url-input').placeholder = relay ? '例如 https://你的中转地址/v1' : '使用服务商默认 API 地址';
+  $('base-url-input').placeholder = ollama ? 'http://localhost:11434' : relay ? '例如 https://你的中转地址/v1' : '使用服务商默认 API 地址';
+  $('base-url-label').textContent = ollama ? 'Ollama 服务地址' : 'Base URL';
+  $('api-key-label').textContent = ollama ? 'API Key（可选）' : 'API Key';
+  $('ollama-context-window-field').hidden = !ollama;
+  $('ollama-context-window-input').required = ollama;
   $('chatgpt-panel').hidden = !account;
   $('chatgpt-model-field').hidden = false;
   $('base-url-field').hidden = account;
   $('api-key-field').hidden = account;
-  $('api-key-clear-field').hidden = account;
-  $('settings-privacy').textContent = account ? 'ChatGPT 账号模式仅供个人本机预览。任务及相关项目内容会发送给 OpenAI，额度取决于账号套餐。命令以当前 Windows 用户权限运行，执行前需由你确认。' : 'API Key 在本机加密保存。任务和相关项目内容会发送至所配置的 API 地址。命令以当前 Windows 用户权限运行，执行前需由你确认。';
-  $('settings-footer-hint').textContent = account ? '个人本机预览 · 额度取决于账号' : '支持自定义 API 地址';
+  $('settings-footer-hint').textContent = ollama ? '本机服务无需密钥 · 支持自建地址' : account ? '个人本机预览 · 额度取决于账号' : '支持自定义 API 地址';
   $('settings-dialog').classList.toggle('chatgpt-mode', account);
 }
 
@@ -1403,8 +1602,8 @@ function renderSessionMetrics(metrics) {
 
   const cachePercent = metrics?.cacheStatus === 'unavailable' ? null : percent(metrics?.cacheHitPercent);
   const partialCache = cachePercent !== null && metrics?.cacheStatus === 'partial';
-  $('session-cache-value').textContent = cachePercent === null ? '—' : cachePercent + (partialCache ? '*' : '');
-  $('session-cache').title = cachePercent === null ? '服务商尚未提供当前会话的缓存命中数据。'
+  $('session-cache-value').textContent = cachePercent === null ? '0' : cachePercent + (partialCache ? '*' : '');
+  $('session-cache').title = cachePercent === null ? '服务商尚未提供当前会话的缓存命中数据，暂显示 0。'
     : `API 回报缓存输入：${number(metrics.cachedInputTokens)} Token。命中率为已回报缓存输入占对应请求输入的比例。${partialCache ? '\n部分请求未提供缓存用量；仅统计已提供数据的请求。' : ''}`;
 
   const noReportedUsage = metrics?.usageStatus === 'unavailable' && rounds > 0;
@@ -1413,21 +1612,35 @@ function renderSessionMetrics(metrics) {
   $('session-total').title = noReportedUsage ? '服务商尚未回报当前会话的 Token 用量。'
     : `当前会话 API 已回报的累计用量：输入 ${number(metrics?.inputTokens)} / 输出 ${number(metrics?.outputTokens)} Token。${metrics?.usageStatus === 'partial' ? '\n部分请求缺少用量报告，仅累计已知用量。' : ''}\n缓存输入和推理 Token 已包含在相应用量中，不重复累加。`;
 
-  const contextPercent = metrics?.contextStatus === 'unknown' ? null : percent(metrics?.contextPercent);
-  const contextEstimated = contextPercent !== null && metrics?.contextStatus === 'estimated';
-  const contextLabel = contextPercent === null ? '—' : (contextEstimated ? '≈' : '') + contextPercent;
+  const display = metrics?.contextDisplay || (metrics?.contextStatus === 'reported'
+    ? { source: 'current', pending: false, percent: metrics.contextPercent, usedTokens: metrics.contextUsedTokens,
+      inputTokens: metrics.contextInputTokens, outputTokens: metrics.contextOutputTokens, limit: metrics.contextLimit }
+    : { source: 'none', pending: true });
+  const contextPercent = validNumber(display.percent)
+    ? display.percent.toLocaleString('zh-CN', { maximumFractionDigits: 1 }) + '%' : null;
+  const contextLabel = contextPercent === null ? '0%' : contextPercent;
   const context = $('session-context');
   const description = typeof metrics?.contextDescription === 'string' ? metrics.contextDescription : '';
-  const contextTitle = contextPercent === null
-    ? description || '模型上下文容量未知，暂无法计算使用率。'
-    : `上下文使用率：${contextLabel}\n当前请求：${number(metrics.contextUsedTokens)} / 容量 ${number(metrics.contextLimit)} Token。${contextEstimated ? '\n使用率为估算值。' : ''}${description ? '\n' + description : ''}`;
+  const details = [];
+  const hasSample = display.source !== 'none' && validNumber(display.usedTokens);
+  if (hasSample) {
+    const limit = validNumber(display.limit) ? number(display.limit) : '未提供';
+    details.push(`最近完整请求实测：${number(display.usedTokens)} / ${display.limitKind === 'input' ? '输入上限' : '容量'} ${limit} Token。`);
+    details.push(`服务端回报：输入 ${number(display.inputTokens)} / 输出 ${validNumber(display.outputTokens) ? number(display.outputTokens) : '未回报'} Token。`);
+    if (display.pending) details.push('当前新增内容待回报，以上保留最近完整实测；未计入本地估算。');
+  }
+  if (description && !hasSample) details.push(description);
+  else if (contextPercent === null && !hasSample) details.push('等待完整的服务端实测数据。');
+  const contextTitle = (contextPercent !== null ? `${display.pending ? '最近实测上下文' : '上下文使用率'}：${contextLabel}\n`
+    : hasSample ? '模型未提供可用容量，暂显示 0%。\n' : '暂无完整实测数据，暂显示 0%。\n') + details.join('\n');
   $('session-context-value').textContent = contextLabel;
-  $('session-context-progress').setAttribute('stroke-dasharray', `${contextPercent === null ? 0 : metrics.contextPercent} 100`);
+  $('session-context-progress').setAttribute('stroke-dasharray', `${contextPercent === null ? 0 : Math.min(100, display.percent)} 100`);
   context.classList.toggle('unknown', contextPercent === null);
+  context.classList.toggle('pending', Boolean(display.pending && hasSample));
   context.title = contextTitle;
   context.setAttribute('aria-valuetext', contextTitle.replace(/\n/g, '，'));
   if (contextPercent === null) context.removeAttribute('aria-valuenow');
-  else context.setAttribute('aria-valuenow', String(metrics.contextPercent));
+  else context.setAttribute('aria-valuenow', String(Math.min(100, display.percent)));
   renderSessionTokenRate();
 }
 
@@ -1461,8 +1674,8 @@ function renderSessionTokenRate() {
   const known = hasTokenRate(event);
   metric.classList.toggle('unknown', !known);
   if (!known) {
-    speed.textContent = '— tok/s';
-    metric.title = '模型输出速度；等待、工具执行和审批期间不显示实时速度。尚无可用输出速率时显示 —。';
+    speed.textContent = '0 tok/s';
+    metric.title = '模型输出速度；等待、工具执行和审批期间不显示实时速度。尚无可用输出速率时显示 0。';
   } else {
     const rate = event.tokensPerSecond.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     speed.textContent = `${event.estimated ? '≈' : ''}${rate} tok/s`;
@@ -1492,6 +1705,12 @@ function updateTelemetry(event) {
   if (!running || !activeTaskActivity) return;
   if (event.phase === 'waiting') { activeTaskActivity.lastAssistant = null; activeTaskActivity.lastAssistantConfirmed = false; }
   if (Number.isFinite(event.elapsedMs) && event.elapsedMs >= 0) activeTaskActivity.elapsedFloor = Math.max(activeTaskActivity.elapsedFloor, event.elapsedMs);
+  if (activeTaskActivity.reconnect?.status === 'retrying' && ['thinking', 'generating', 'completed'].includes(event.phase)) clearTaskReconnect();
+  if (activeTaskActivity.reconnect) {
+    showTokenRate(null);
+    renderTaskActivityElapsed();
+    return;
+  }
   const phaseLabels = { waiting: '等待模型', thinking: '正在思考', generating: '正在生成', tool: '正在执行工具', approval: '等待你的确认', completed: '模型已返回' };
   if (contextCompacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
   else if (phaseLabels[event.phase]) {
@@ -1517,6 +1736,7 @@ function taskElapsed(activity) {
 
 function renderTaskActivityElapsed(activity = activeTaskActivity) {
   if (!activity) return;
+  if (activity === activeTaskActivity && activity.status === 'running' && activity.reconnect) renderTaskReconnect(activity);
   const duration = taskElapsed(activity);
   const seconds = Math.max(0, Math.floor(duration / 1000));
   const hours = Math.floor(seconds / 3600);
@@ -1562,20 +1782,24 @@ function renderSubagentUpdate(event, { target = taskProcessTarget(), historical 
   else target.append(window.ForgeSubagents.render(event.agent, { historical }));
 }
 
-function renderApprovalReview(event, { target = taskProcessTarget(), historical = false } = {}) {
+function renderApprovalReview(event, { historical = false } = {}) {
   if (!event.id) return;
   if (!historical && event.status === 'reviewing' && approvals.has(event.id)) resolveComposerApproval(event.id, false, { expired: true });
-  let card = [...target.querySelectorAll('.approval-review-card')].find(node => node.dataset.approvalId === event.id);
-  if (!card) {
-    card = element('div', 'approval-review-card'); card.dataset.approvalId = event.id;
-    card.append(element('div', 'approval-review-heading'), element('p', 'approval-review-reason'));
-    target.append(card);
+}
+
+function renderImageViewed(event, { target = taskProcessTarget(), historical = false } = {}) {
+  if (!window.ForgeImageViewCard) return;
+  const key = `${event.runId || ''}:${event.requestId || JSON.stringify(event.images || [])}`;
+  if (renderedImageViews.has(key)) return;
+  const card = window.ForgeImageViewCard.create(event, { messages: imageViewSources, onPreview: openImagePreview });
+  if (!card) return;
+  renderedImageViews.add(key);
+  bindFileDisclosureVisibility(card, card.querySelector(':scope > summary'));
+  target.append(card);
+  if (!historical) {
+    fitFileDisclosure(card, $('message-scroll'));
+    scrollBottom();
   }
-  const status = historical && event.status === 'reviewing' ? 'cancelled' : event.status;
-  const labels = { reviewing: 'AI 正在审批', allowed: 'AI 已批准', denied: 'AI 已拒绝', manual: 'AI 建议由你确认', cancelled: 'AI 审批已取消' };
-  card.dataset.status = status;
-  card.querySelector('.approval-review-heading').textContent = `${labels[status] || 'AI 审批'}${event.title ? ' · ' + event.title : ''}`;
-  card.querySelector('.approval-review-reason').textContent = event.reason || event.reviewReason || '';
 }
 
 function createCommandOutput(target = taskProcessTarget()) {
@@ -1593,6 +1817,7 @@ function moveTaskActivityToEnd() {
 }
 
 function beginTaskActivity(record = {}) {
+  if (record.kind === 'undo' || taskKind === 'undo') return null;
   const runId = String(record.runId || record.id || '');
   if (activeTaskActivity?.status === 'running' && (!runId || !activeTaskActivity.runId || activeTaskActivity.runId === runId)) {
     if (runId) { activeTaskActivity.runId = runId; activeTaskActivity.block.dataset.runId = runId; }
@@ -1625,8 +1850,54 @@ function setTaskActivityPhase(phase, label) {
   activeTaskActivity.phase = phase;
   activeTaskActivity.phaseNode.textContent = label;
   activeTaskActivity.block.dataset.phase = phase;
+  activeTaskActivity.marker.textContent = phase === 'reconnecting' ? '↻' : '◌';
+  if (phase !== 'reconnecting') activeTaskActivity.phaseNode.removeAttribute('title');
   $('run-status').textContent = label;
   if (!['thinking', 'generating', 'completed'].includes(phase)) showTokenRate(null);
+}
+
+function clearTaskReconnect() {
+  if (!activeTaskActivity) return;
+  activeTaskActivity.reconnect = null;
+  delete activeTaskActivity.block.dataset.reconnect;
+}
+
+function renderTaskReconnect(activity = activeTaskActivity) {
+  if (activity !== activeTaskActivity || !activity?.reconnect || activity.status !== 'running') return;
+  const state = activity.reconnect;
+  const seconds = state.status === 'waiting' ? Math.max(0, Math.ceil((state.retryAt - Date.now()) / 1000)) : 0;
+  setTaskActivityPhase('reconnecting', `正在重连 ${state.attempt}/${state.maxAttempts}${seconds ? ` · ${seconds}秒后重试` : ''}`);
+  activity.phaseNode.title = '模型连接中断，将重新请求当前回复。';
+}
+
+function handleReconnect(event) {
+  const activity = activeTaskActivity;
+  if (!running || !activity || activity.status !== 'running' || event.agentId
+      || (event.runId && activity.runId && event.runId !== activity.runId)) return;
+  if (event.status === 'waiting' || event.status === 'retrying') {
+    if (event.resetText) {
+      if (streamedMessage) {
+        const removed = streamedMessage.message;
+        removed.remove();
+        if (activity.lastAssistant === removed) { activity.lastAssistant = null; activity.lastAssistantConfirmed = false; }
+      }
+      streamedMessage = null;
+      streamedText = '';
+    }
+    const maxAttempts = Number.isInteger(event.maxAttempts) && event.maxAttempts > 0 ? Math.min(10, event.maxAttempts) : 5;
+    activity.reconnect = {
+      status: event.status,
+      attempt: Math.max(1, Math.min(maxAttempts, Number.isInteger(event.attempt) ? event.attempt : 1)), maxAttempts,
+      retryAt: Number.isFinite(event.retryAt) ? event.retryAt : Date.now() + Math.max(0, Math.min(60_000, Number(event.delayMs) || 0)),
+    };
+    activity.block.dataset.reconnect = event.status;
+    setSessionTokenRate(null);
+    renderTaskReconnect(activity);
+  } else if (event.status === 'recovered' || event.status === 'failed') {
+    clearTaskReconnect();
+    setTaskActivityPhase(event.status === 'failed' ? 'reconnect-failed' : contextCompacting ? 'compacting' : 'waiting',
+      event.status === 'failed' ? '重连失败' : contextCompacting ? '正在压缩上下文…' : '连接已恢复');
+  }
 }
 
 function finishTaskActivity(record = {}) {
@@ -1635,6 +1906,7 @@ function finishTaskActivity(record = {}) {
   taskActivityTimer = null;
   const activity = activeTaskActivity;
   if (!activity || activity.status !== 'running') return;
+  clearTaskReconnect();
   const duration = Number.isFinite(record.elapsedMs) ? record.elapsedMs : record.durationMs;
   activity.finishedElapsed = Number.isFinite(duration) && duration >= 0 ? duration : taskElapsed(activity);
   activity.status = ['completed', 'failed', 'stopped'].includes(record.status) ? record.status : 'completed';
@@ -1663,12 +1935,11 @@ function finishTaskActivity(record = {}) {
 
 function restoreTaskActivityFromState() {
   const active = appState?.activeTask;
-  if (!active?.running || !['agent', 'undo'].includes(active.kind)) return;
+  if (!active?.running || active.kind !== 'agent') return;
   beginTaskActivity(active);
   for (const agent of active.subagents || []) renderSubagentUpdate({ agent });
   for (const request of appState?.pendingApprovals || []) if (request.reviewStatus === 'reviewing') renderApprovalReview({ ...request, status: 'reviewing' });
   if (active.telemetry) updateTelemetry(active.telemetry);
-  else if (active.kind === 'undo') setTaskActivityPhase('tool', '正在撤销文件修改');
 }
 
 function historicalTaskRecords(session) {
@@ -1694,20 +1965,21 @@ function renderHistoricalTaskActivity(record, items = []) {
   const tools = [];
   let output = null;
   for (const item of items) {
-    if (item.type === 'message' && item.message.content) addMessage(item.message.role, item.message.content, false, { ...item.message, target: activity.events, historical: true });
+    if (item.type === 'message' && (item.message.content || (item.message.role === 'user' && messageImageAttachments(item.message.attachments).length))) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
     else if (item.type === 'event') {
       const event = item.event;
       if (event.type === 'tool-start') {
         output = null;
         const tool = createToolCard(event);
-        activity.events.append(tool.card); tools.push(tool);
+        appendGroupedToolCard(activity.events, tool, event); tools.push(tool);
       } else if (event.type === 'tool-result') {
         if (!tools.some(tool => event.toolCallId ? tool.toolCallId === event.toolCallId : tool.name === event.name)) {
           const tool = createToolCard({ name: event.name, args: {}, toolCallId: event.toolCallId });
-          activity.events.append(tool.card); tools.push(tool);
+          appendGroupedToolCard(activity.events, tool, event); tools.push(tool);
         }
         completeTool(event, { tools, updateActivity: false });
       } else if (event.type === 'subagent-update') renderSubagentUpdate(event, { target: activity.events, historical: true });
+      else if (event.type === 'images-viewed') renderImageViewed(event, { target: activity.events, historical: true });
       else if (event.type === 'approval-review') renderApprovalReview(event, { target: activity.events, historical: true });
       else if (event.type === 'context-compacted') appendContextCompactionNotice(event, activity.events);
       else if (event.type === 'command-output') {
@@ -1726,7 +1998,7 @@ function renderHistoricalTaskActivity(record, items = []) {
 }
 
 function toolActivity(name, args, completed = false) {
-  const id = String(name || '').replace(/（模拟）/g, '');
+  const id = xmlFileTool(name, args) ? 'read_file' : String(name || '').replace(/（模拟）/g, '');
   const labels = {
     spawn_agent: completed ? '已分配子任务' : '正在分配子任务',
     wait_agents: completed ? '子任务结果已返回' : '正在等待子任务',
@@ -1752,6 +2024,12 @@ function toolActivity(name, args, completed = false) {
   return typeof detail === 'string' && detail ? `${label} · ${detail.replace(/\s+/g, ' ').slice(0, 220)}` : label;
 }
 
+function xmlFileTool(name, args) {
+  if (name === 'read_url') return true;
+  if (name !== 'browser_navigate') return false;
+  try { return /\.xml$/iu.test(new URL(args?.url).pathname); } catch { return false; }
+}
+
 function renderText(container, text) {
   window.ForgeMarkdown.renderMarkdown(container, text, { onLink: url => browserController?.open({ url }).catch(() => {}) });
 }
@@ -1759,6 +2037,7 @@ function renderText(container, text) {
 function addMessage(role, text, streaming = false, metadata = {}) {
   showConversation();
   const message = element('article', `message ${role === 'user' ? 'user' : 'assistant'}${streaming ? ' streaming' : ''}`);
+  if (role === 'user') message.dataset.messageSource = metadata.source || 'user';
   if (typeof metadata.id === 'string') {
     message.dataset.messageId = metadata.id;
     if (role === 'user') renderedUserMessageIds.add(metadata.id);
@@ -1784,13 +2063,16 @@ function addMessage(role, text, streaming = false, metadata = {}) {
     header.append(element('span', 'message-avatar', '✳'), element('span', '', 'Synora code'));
     message.append(header, body);
   }
-  const target = metadata.target || (role !== 'user' && !metadata.historical ? taskProcessTarget() : $('messages'));
+  const liveSteering = role === 'user' && metadata.source === 'steering' && !metadata.historical
+    && activeTaskActivity?.status === 'running' && metadata.runId === activeTaskActivity.runId;
+  const target = metadata.target || (liveSteering ? activeTaskActivity.events : role !== 'user' && !metadata.historical ? taskProcessTarget() : $('messages'));
+  window.ForgeToolOperationGroups?.breakGroup(target);
   target.append(message);
   if (!metadata.historical && activeTaskActivity?.status === 'running') {
     activeTaskActivity.lastAssistant = role !== 'user' ? message : null;
     activeTaskActivity.lastAssistantConfirmed = false;
   }
-  if (!metadata.target) moveTaskActivityToEnd();
+  if (!metadata.target && !liveSteering) moveTaskActivityToEnd();
   scrollBottom();
   return { message, body };
 }
@@ -2003,7 +2285,7 @@ function setRunning(value, metadata = {}) {
   if (!value) taskDemo = false;
   $('run-status').textContent = value ? '任务进行中' : '准备就绪';
   $('run-status').classList.toggle('running', value);
-  if (starting) { resetTelemetry(); beginTaskActivity(metadata); closeReasoningPopup(); }
+  if (starting) { if (metadata.kind !== 'undo' && taskKind !== 'undo') { resetTelemetry(); beginTaskActivity(metadata); } closeReasoningPopup(); }
   if (!value) { clearInterval(taskActivityTimer); taskActivityTimer = null; }
   if (!value) $('task-input').focus();
   renderChatGPTState();
@@ -2016,7 +2298,7 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   const oldIdentity = activeCatalogIdentity();
   appState = state;
   permissionControls?.update(state);
-  document.querySelector('.welcome-note').textContent = state.permissionMode === 'full' ? '当前为完全控制：操作将自动批准。' : state.permissionMode === 'assist' ? '低风险操作自动批准，其余操作会请求确认。' : '写入文件与执行命令前会请求你的确认。';
+  document.querySelector('.welcome-note').textContent = state.permissionMode === 'full' ? '当前为完全控制：操作将自动批准。' : state.permissionMode === 'assist' ? 'AI 自动审批，按任务范围允许或拒绝操作。' : '写入文件与执行命令前会请求你的确认。';
   if (state.browser) browserController?.apply(state.browser);
   syncWindowChrome();
   if (syncPendingQueue && state.promptQueue) syncPromptQueue(state.promptQueue);
@@ -2028,7 +2310,7 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
     terminalRunning = active.running === true && active.kind === 'terminal';
     const agentRunning = active.running === true && ['agent', 'undo'].includes(active.kind);
     if (agentRunning !== running) setRunning(agentRunning, active);
-    if (agentRunning) restoreTaskActivityFromState();
+      if (agentRunning && active.kind !== 'undo') restoreTaskActivityFromState();
     if (agentRunning && contextCompacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
     if (terminalRunning) { setTerminalOpen(true); $('terminal-status').textContent = '终端执行中'; }
   }
@@ -2072,6 +2354,7 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   renderModelList();
   if (workspace?.root !== oldRoot) {
     clearExplorerDrag();
+    explorerSelection?.clear();
     resetEditorAutosave();
     ++editorReadRequest;
     selectedPath = null;
@@ -2109,11 +2392,14 @@ async function loadFiles() {
   if (!appState?.workspace) return;
   const request = ++filesRequest;
   const tree = $('file-tree');
+  explorerSelection?.cancelGesture();
   tree.replaceChildren(element('div', 'tree-loading', '正在读取项目…'));
   try {
     const files = await bridge.fileList({ path: '' });
     if (request !== filesRequest) return;
+    explorerSelection?.reconcile('', files);
     tree.replaceChildren(createTree(files));
+    explorerSelection?.refresh();
     if (!files.length) tree.append(element('div', 'sidebar-empty', '项目文件夹为空'));
   } catch (error) {
     if (request === filesRequest) tree.replaceChildren(element('div', 'sidebar-empty', errorText(error)));
@@ -2129,12 +2415,13 @@ function createTree(files) {
     row.dataset.path = file.path;
     row.dataset.type = file.type;
     row.setAttribute('role', 'treeitem');
-    if (selectedEntry?.path === file.path) { row.classList.add('selected'); selectedRow = row; }
+    if (explorerSelection?.has(file.path) || !explorerSelection && selectedEntry?.path === file.path) row.classList.add('selected');
+    row.setAttribute('aria-selected', String(row.classList.contains('selected')));
+    if (selectedEntry?.path === file.path) selectedRow = row;
     const arrow = element('span', 'file-arrow', file.type === 'directory' ? '›' : '');
     row.append(arrow, window.ForgeFileIcons.create(file.name, file.type), element('span', 'file-name', file.name));
     row.title = file.path;
-    row.addEventListener('focus', () => selectFileEntry(file, row));
-    row.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); selectFileEntry(file, row); row.focus(); showFileContextMenu(event.clientX, event.clientY); });
+    row.addEventListener('contextmenu', (event) => { event.preventDefault(); event.stopPropagation(); showFileContextMenu(event.clientX, event.clientY); });
     bindFileDrag(row, file);
     item.append(row);
     if (file.type === 'directory') {
@@ -2143,13 +2430,13 @@ function createTree(files) {
       let loading = false;
       row.addEventListener('click', async () => {
         const workspaceId = currentWorkspaceId();
-        if (!row.hasAttribute('data-restoring-expansion')) selectFileEntry(file, row);
         if (loading) return;
         if (child) {
           child.hidden = !child.hidden;
           arrow.textContent = child.hidden ? '›' : '⌄';
           row.setAttribute('aria-expanded', String(!child.hidden));
           if (child.hidden) expandedDirectories.delete(file.path); else expandedDirectories.add(file.path);
+          if (child.hidden) explorerSelection?.collapse(file.path);
           return;
         }
         loading = true;
@@ -2157,9 +2444,11 @@ function createTree(files) {
         try {
           const entries = await bridge.fileList({ path: file.path });
           if (workspaceId !== currentWorkspaceId() || !row.isConnected) return;
+          explorerSelection?.reconcile(file.path, entries);
           child = element('div', 'tree-children');
           child.append(entries.length ? createTree(entries) : element('div', 'tree-loading', '空文件夹'));
           item.append(child);
+          explorerSelection?.refresh();
           arrow.textContent = '⌄';
           row.setAttribute('aria-expanded', 'true');
           expandedDirectories.add(file.path);
@@ -2167,7 +2456,7 @@ function createTree(files) {
         finally { loading = false; }
       });
       if (expandedDirectories.has(file.path)) queueMicrotask(() => { if (row.isConnected) { row.setAttribute('data-restoring-expansion', ''); row.click(); row.removeAttribute('data-restoring-expansion'); } });
-    } else row.addEventListener('click', () => { selectFileEntry(file, row); previewFile(file.path, row); });
+    } else row.addEventListener('click', () => { previewFile(file.path, row); });
     list.append(item);
   });
   return list;
@@ -2178,6 +2467,7 @@ function clearExplorerDropTarget() {
 }
 
 function clearExplorerDrag() {
+  for (const row of explorerDrag?.rows || []) row.classList.remove('file-drag-source');
   explorerDrag?.row.classList.remove('file-drag-source');
   explorerDrag = null;
   clearExplorerDropTarget();
@@ -2187,8 +2477,9 @@ function canDropExplorerEntry(event, destination) {
   const drag = explorerDrag;
   if (!drag || drag.workspaceId !== currentWorkspaceId() || !appState?.workspace || explorerMovePending
     || fileOperationBusy({ allowSaving: true }) || !event.dataTransfer?.types.includes(EXPLORER_DRAG_TYPE)) return false;
-  if (drag.type === 'directory' && (destination === drag.path || destination.startsWith(drag.path + '/'))) return false;
-  return drag.path.split('/').slice(0, -1).join('/') !== destination;
+  const entries = explorerSelectionRoots(drag.entries || [drag]);
+  if (entries.some(entry => entry.type === 'directory' && (destination === entry.path || destination.startsWith(entry.path + '/')))) return false;
+  return entries.some(entry => entry.path.split('/').slice(0, -1).join('/') !== destination);
 }
 
 function bindExplorerDropTarget(node, destination) {
@@ -2220,15 +2511,18 @@ function bindFileDrag(row, file) {
   row.draggable = true;
   row.addEventListener('dragstart', (event) => {
     clearExplorerDrag();
-    if (!event.dataTransfer || !appState?.workspace || explorerMovePending || fileOperationBusy({ allowSaving: true })) {
+    if (!event.dataTransfer || !appState?.workspace || explorerMovePending || explorerSelection?.selecting || fileOperationBusy({ allowSaving: true })) {
       event.preventDefault();
       return;
     }
     closeFileContextMenu();
-    explorerDrag = { workspaceId: currentWorkspaceId(), path: file.path, type: file.type, row, id: crypto.randomUUID() };
+    if (!explorerSelection?.has(file.path)) selectFileEntry(file, row);
+    const entries = selectedExplorerEntries();
+    const rows = [...$('file-tree').querySelectorAll('.file-row')].filter(node => entries.some(entry => entry.path === node.dataset.path));
+    explorerDrag = { workspaceId: currentWorkspaceId(), path: file.path, type: file.type, entries, rows, row, id: crypto.randomUUID() };
     event.dataTransfer.setData(EXPLORER_DRAG_TYPE, explorerDrag.id);
     event.dataTransfer.effectAllowed = 'move';
-    row.classList.add('file-drag-source');
+    for (const node of rows) node.classList.add('file-drag-source');
   });
   row.addEventListener('dragend', clearExplorerDrag);
   if (file.type === 'directory') bindExplorerDropTarget(row, file.path);
@@ -2245,29 +2539,20 @@ async function moveExplorerEntry(drag, destination) {
     mutationOwned = true;
     refreshControlLocks();
     ++editorReadRequest;
-    const result = await bridge.fileMove({ path: drag.path, destination });
+    const entries = explorerSelectionRoots(drag.entries || [drag]).filter(entry => entry.path.split('/').slice(0, -1).join('/') !== destination);
+    const result = await bridge.fileMove({ ...(entries.length > 1 ? { paths: entries.map(entry => entry.path) } : { path: entries[0].path }), destination });
     if (drag.workspaceId !== currentWorkspaceId()) return;
-    if (selectedPath && (selectedPath === result.source || selectedPath.startsWith(result.source + '/'))) {
-      resetEditorAutosave();
-      selectedPath = result.path + selectedPath.slice(result.source.length);
-      $('preview-filename').textContent = baseName(selectedPath);
-      $('preview-filename').title = selectedPath;
-      window.ForgeEditorHighlight?.refresh(selectedPath);
-      refreshSelectedFile();
-    }
-    if (fileClipboard && (fileClipboard.path === result.source || fileClipboard.path.startsWith(result.source + '/'))) {
-      fileClipboard.path = result.path + fileClipboard.path.slice(result.source.length);
-    }
-    for (const directory of [...expandedDirectories]) {
-      if (directory === result.source || directory.startsWith(result.source + '/')) {
-        expandedDirectories.delete(directory);
-        expandedDirectories.add(result.path + directory.slice(result.source.length));
-      }
-    }
+    const results = result.results || [result];
+    for (const item of results) applyExplorerMove(item);
     if (destination) expandedDirectories.add(destination);
-    selectedEntry = { path: result.path, name: baseName(result.path), type: result.type };
+    const next = (drag.entries || [drag]).map(entry => {
+      const moved = results.find(item => entry.path === item.source || entry.path.startsWith(item.source + '/'));
+      return moved ? { ...entry, path: moved.path + entry.path.slice(moved.source.length) } : entry;
+    });
+    explorerSelection?.set(next);
     selectedRow = null;
     await loadFiles();
+    if (result.error) notice(result.error, true);
   } catch (error) {
     if (drag.workspaceId === currentWorkspaceId()) notice(errorText(error), true);
   } finally {
@@ -2277,10 +2562,37 @@ async function moveExplorerEntry(drag, destination) {
   }
 }
 
+function applyExplorerMove(result) {
+    if (!result?.source || !result.path) return;
+    if (selectedPath && (selectedPath === result.source || selectedPath.startsWith(result.source + '/'))) {
+      resetEditorAutosave();
+      selectedPath = result.path + selectedPath.slice(result.source.length);
+      $('preview-filename').textContent = baseName(selectedPath);
+      $('preview-filename').title = selectedPath;
+      window.ForgeEditorHighlight?.refresh(selectedPath);
+      refreshSelectedFile();
+    }
+    if (fileClipboard) {
+      const remap = path => path === result.source || path.startsWith(result.source + '/') ? result.path + path.slice(result.source.length) : path;
+      if (fileClipboard.paths) fileClipboard.paths = fileClipboard.paths.map(remap);
+      fileClipboard.path = remap(fileClipboard.path);
+    }
+    for (const directory of [...expandedDirectories]) {
+      if (directory === result.source || directory.startsWith(result.source + '/')) {
+        expandedDirectories.delete(directory);
+        expandedDirectories.add(result.path + directory.slice(result.source.length));
+      }
+    }
+}
+
 async function previewFile(path, row, { allowNavigation = false } = {}) {
   if (fileOperationBusy({ allowNavigation })) return false;
   const workspaceId = currentWorkspaceId();
-  if (path === selectedPath) { if (!editorDirty) refreshSelectedFile(); setPreviewOpen(true); showPreviewTab('file'); return true; }
+  const selectionRevision = explorerSelection?.revision;
+  if (path === selectedPath) {
+    if (!row && !explorerSelection?.has(path)) selectFileEntry({ path, type: 'file', name: baseName(path) }, null);
+    if (!editorDirty) refreshSelectedFile(); setPreviewOpen(true); showPreviewTab('file'); return true;
+  }
   if (!(await confirmEditorTransition())) return false;
   if (workspaceId !== currentWorkspaceId() || fileOperationBusy({ allowNavigation })) return false;
   const request = ++editorReadRequest;
@@ -2289,7 +2601,8 @@ async function previewFile(path, row, { allowNavigation = false } = {}) {
     if (request !== editorReadRequest) return false;
     selectedPath = file.path || path;
     resetEditorAutosave();
-    selectFileEntry({ path: selectedPath, name: baseName(selectedPath), type: 'file' }, row || null);
+    if (!row && explorerSelection?.revision === selectionRevision && !explorerSelection?.has(selectedPath))
+      selectFileEntry({ path: selectedPath, name: baseName(selectedPath), type: 'file' }, null);
     $('preview-filename').textContent = baseName(selectedPath);
     $('preview-filename').title = selectedPath;
     editorVersion = file.version;
@@ -2410,6 +2723,12 @@ async function createProject() {
 }
 
 function selectFileEntry(entry, row) {
+  if (explorerSelection) {
+    explorerSelection.set(entry ? [entry] : [], { activePath: entry?.path });
+    selectedEntry = entry;
+    selectedRow = row;
+    return;
+  }
   selectedRow?.classList.remove('selected');
   selectedEntry = entry;
   selectedRow = row;
@@ -2417,11 +2736,25 @@ function selectFileEntry(entry, row) {
 }
 
 function selectedDirectory() {
+  const entries = selectedExplorerEntries();
+  if (entries.length > 1) {
+    const parents = new Set(entries.map(entry => entry.path.split('/').slice(0, -1).join('/')));
+    return parents.size === 1 ? [...parents][0] : '';
+  }
   if (!selectedEntry) return '';
   if (selectedEntry.type === 'directory') return selectedEntry.path;
   const path = String(selectedEntry.path);
   const separator = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
   return separator < 0 ? '' : path.slice(0, separator);
+}
+
+function selectedExplorerEntries() {
+  return explorerSelection ? explorerSelection.entries() : selectedEntry ? [selectedEntry] : [];
+}
+
+function explorerSelectionRoots(entries) {
+  return entries.filter(entry => !entries.some(parent => parent !== entry && parent.type === 'directory'
+    && entry.path.toLowerCase().startsWith(parent.path.toLowerCase() + '/')));
 }
 
 function setEditorDirty(value) {
@@ -2590,10 +2923,13 @@ function answerFileName(value) {
 
 async function explorerAction(action) {
   const entry = selectedEntry;
+  const entries = selectedExplorerEntries();
+  const sourceArgs = entries.length > 1 ? { paths: entries.map(entry => entry.path) } : { path: entry?.path };
   const directory = selectedDirectory();
   const workspaceId = currentWorkspaceId();
   closeFileContextMenu();
   if (!appState?.workspace || fileOperationBusy()) return;
+  if (['open', 'rename', 'reveal'].includes(action) && entries.length > 1) return;
   if (action === 'open' && entry?.type === 'file') return previewFile(entry.path, selectedRow);
   let mutationOwned = false;
   const lock = () => { mutationOwned = true; fileMutationBusy = true; refreshControlLocks(); };
@@ -2603,20 +2939,20 @@ async function explorerAction(action) {
       if (!entry) return;
       lock();
       if (action === 'reveal') await bridge.fileReveal({ path: entry.path });
-      else await bridge.fileCopyPath({ path: entry.path, relative: action === 'copy-relative-path' });
+      else await bridge.fileCopyPath({ ...sourceArgs, relative: action === 'copy-relative-path' });
       return;
     }
     if (action === 'copy' || action === 'cut') {
       if (!entry) return;
       lock();
-      const result = await bridge.fileClipboard({ path: entry.path, mode: action });
+      const result = await bridge.fileClipboard({ ...sourceArgs, mode: action });
       if (workspaceId === currentWorkspaceId()) fileClipboard = result;
       return;
     }
     if ((editorDirty || editorSavePromise) && !(await confirmEditorTransition())) return;
     if (workspaceId !== currentWorkspaceId() || fileOperationBusy()) return;
-    const targetEdited = entry && selectedPath && (entry.path === selectedPath || String(selectedPath).startsWith(`${entry.path}/`) || String(selectedPath).startsWith(`${entry.path}\\`));
-    const movingEditor = action === 'paste' && fileClipboard?.mode === 'cut' && selectedPath && (fileClipboard.path === selectedPath || String(selectedPath).startsWith(`${fileClipboard.path}/`) || String(selectedPath).startsWith(`${fileClipboard.path}\\`));
+    const cutting = action === 'paste' && fileClipboard?.mode === 'cut';
+    const pasteClipboard = cutting ? structuredClone(fileClipboard) : null;
     let args;
     let method;
     if (action === 'new-file' || action === 'new-folder') {
@@ -2632,7 +2968,7 @@ async function explorerAction(action) {
       method = 'fileRename'; args = { path: entry.path, name };
     } else if (action === 'delete') {
       if (!entry) return;
-      method = 'fileDelete'; args = { path: entry.path };
+      method = 'fileDelete'; args = sourceArgs;
     } else if (action === 'paste') {
       if (!fileClipboard) return;
       method = 'filePaste'; args = { destination: directory };
@@ -2642,15 +2978,14 @@ async function explorerAction(action) {
     ++editorReadRequest;
     const result = await bridge[method](args);
     if (workspaceId !== currentWorkspaceId() || result?.canceled) return;
-    if (movingEditor && result?.source && result?.path) {
-      resetEditorAutosave();
-      selectedPath = result.path + selectedPath.slice(result.source.length);
-      $('preview-filename').textContent = baseName(selectedPath);
-      $('preview-filename').title = selectedPath;
-      refreshSelectedFile();
+    const results = result.results || [result];
+    if (cutting) {
+      for (const moved of results) applyExplorerMove(moved);
+      const completed = results.map(item => item.source);
+      const remaining = (pasteClipboard?.paths || [pasteClipboard?.path]).filter(path => path && !completed.some(source => path === source || path.startsWith(source + '/')));
+      fileClipboard = remaining.length ? { ...pasteClipboard, path: remaining[0], ...(pasteClipboard?.paths ? { paths: remaining } : {}) } : null;
     }
-    if (action === 'paste' && fileClipboard?.mode === 'cut') fileClipboard = null;
-    if (targetEdited && action === 'delete') {
+    if (action === 'delete' && selectedPath && results.some(item => item.path === selectedPath || selectedPath.startsWith(item.path + '/'))) {
       resetEditorAutosave();
       selectedPath = null;
       editorVersion = null;
@@ -2660,22 +2995,18 @@ async function explorerAction(action) {
       window.ForgeEditorHighlight?.refresh(null);
       setEditorDirty(false);
       showPreviewTab('file');
-    } else if (targetEdited && action === 'rename') {
-      const target = result.path || result.destination;
-      if (target) {
-        resetEditorAutosave();
-        selectedPath = target + selectedPath.slice(entry.path.length);
-        $('preview-filename').textContent = baseName(selectedPath);
-        $('preview-filename').title = selectedPath;
-        refreshSelectedFile();
-      }
+    } else if (action === 'rename') applyExplorerMove({ ...result, source: entry.path });
+    if (action === 'delete') for (const item of results) {
+      for (const directory of [...expandedDirectories]) if (directory === item.path || directory.startsWith(item.path + '/')) expandedDirectories.delete(directory);
     }
+    explorerSelection?.clear();
     selectedEntry = null;
     selectedRow = null;
     await loadFiles();
     if (workspaceId !== currentWorkspaceId()) return;
     unlock();
     refreshControlLocks();
+    if (result.error) notice(result.error, true);
     if (action === 'new-file' && result?.path) await previewFile(result.path);
   } catch (error) { if (workspaceId === currentWorkspaceId()) notice(errorText(error), true); }
   finally { unlock(); refreshControlLocks(); }
@@ -2689,6 +3020,13 @@ async function requestPreviewOpen(open) {
 }
 
 function bindExplorer() {
+  explorerSelection = window.ForgeExplorerSelection.create($('file-tree'), {
+    onChange: ({ entries, activePath }) => {
+      selectedEntry = entries.find(entry => entry.path === activePath) || entries.at(-1) || null;
+      selectedRow = [...$('file-tree').querySelectorAll('.file-row')].find(row => row.dataset.path === selectedEntry?.path) || null;
+    },
+    onMarquee: () => { clearExplorerDrag(); closeFileContextMenu(); },
+  });
   bindExplorerDropTarget($('project-name'), '');
   $('project-name').title = '拖动文件或文件夹到此处可移至项目根目录';
   document.addEventListener('dragend', clearExplorerDrag);
@@ -2817,6 +3155,7 @@ function showFileContextMenu(x, y) {
   menu.replaceChildren();
   const actions = [['open', '打开', 'Enter'], ['reveal', '打开文件所在位置'], null, ['new-file', '新建文件…'], ['new-folder', '新建文件夹…'], null, ['cut', '剪切', 'Ctrl+X'], ['copy', '复制', 'Ctrl+C'], ['paste', '粘贴', 'Ctrl+V'], null, ['copy-path', '复制路径'], ['copy-relative-path', '复制相对路径'], null, ['rename', '重命名…', 'F2'], ['delete', '删除', 'Delete']];
   const locked = fileOperationBusy();
+  const multiple = selectedExplorerEntries().length > 1;
   for (const action of actions) {
     if (!action) { menu.append(element('div', 'app-menu-separator')); continue; }
     const button = element('button', 'app-menu-item');
@@ -2824,7 +3163,7 @@ function showFileContextMenu(x, y) {
     button.dataset.fileAction = action[0];
     button.setAttribute('role', 'menuitem');
     button.append(element('span', 'app-menu-label', action[1]), element('span', 'app-menu-shortcut', action[2] || ''));
-    button.disabled = locked || (action[0] === 'open' ? selectedEntry?.type !== 'file' : action[0] === 'reveal' || action[0].startsWith('copy-') ? !selectedEntry : (['cut', 'copy', 'rename', 'delete'].includes(action[0]) && !selectedEntry) || (action[0] === 'paste' && !fileClipboard));
+    button.disabled = locked || multiple && ['open', 'reveal', 'rename'].includes(action[0]) || (action[0] === 'open' ? selectedEntry?.type !== 'file' : action[0] === 'reveal' || action[0].startsWith('copy-') ? !selectedEntry : (['cut', 'copy', 'rename', 'delete'].includes(action[0]) && !selectedEntry) || (action[0] === 'paste' && !fileClipboard));
     button.addEventListener('click', () => explorerAction(action[0]));
     menu.append(button);
   }
@@ -2839,7 +3178,94 @@ function showFileContextMenu(x, y) {
   menu.querySelector('button:not(:disabled)')?.focus();
 }
 
+function validTaskChangeEdit(edit) {
+  return edit && edit.kind !== 'undo' && typeof edit.runId === 'string' && edit.runId && typeof edit.path === 'string' && edit.path
+    && ['before', 'after'].every(key => edit[key] === null || typeof edit[key] === 'string');
+}
+
+function rememberTaskChange(event) {
+  if (taskKind === 'undo' || event.kind === 'undo') return;
+  const change = event.fileChange;
+  const edit = { runId: event.runId || activeTaskActivity?.runId, toolCallId: event.toolCallId, sequence: event.sequence,
+    path: change?.path, before: change?.before, after: change?.after };
+  if (!validTaskChangeEdit(edit)) return;
+  if (taskChangeEdits.some(value => value.runId === edit.runId && value.toolCallId && value.toolCallId === edit.toolCallId
+      && value.path.replace(/\\/g, '/').toLowerCase() === edit.path.replace(/\\/g, '/').toLowerCase()
+      && value.before === edit.before && value.after === edit.after)) return;
+  taskChangeEdits.push(edit);
+  let characters = taskChangeEdits.reduce((total, value) => total + (value.before?.length || 0) + (value.after?.length || 0), 0);
+  while (taskChangeEdits.length > 64 || characters > 8 * 1024 * 1024) {
+    const oldest = taskChangeEdits.shift(); characters -= (oldest.before?.length || 0) + (oldest.after?.length || 0);
+  }
+}
+
+function taskChangeControls(entry) {
+  const current = entry.sessionId === sessionId && appState?.sessionId === sessionId;
+  return { canUndo: current && Array.isArray(appState?.undoableRunIds) && appState.undoableRunIds.includes(entry.runId)
+      && typeof bridge?.undoRunChanges === 'function',
+    canRedo: current && Array.isArray(appState?.redoableRunIds) && appState.redoableRunIds.includes(entry.runId)
+      && typeof bridge?.redoRunChanges === 'function', busy: contextBusy() || editorSaving || isChatGPTBusy() };
+}
+
+function refreshTaskChangeControls() {
+  if (!window.ForgeTaskChangeSummary) return;
+  for (const entry of taskChangeCards.values()) window.ForgeTaskChangeSummary.updateControls(entry.card, taskChangeControls(entry));
+}
+
+async function undoTaskChangeSummary(entry, action = 'undo') {
+  const redo = action === 'redo', allowed = redo ? 'canRedo' : 'canUndo';
+  const label = redo ? '取消撤销' : '撤销';
+  const controls = taskChangeControls(entry);
+  if (!controls[allowed] || controls.busy) throw new Error(`此任务当前不可${label}。`);
+  const workspaceId = currentWorkspaceId(), originalSession = sessionId;
+  if ((editorDirty || editorSavePromise) && !(await confirmEditorTransition())) return { status: 'denied', message: `已取消此次${label}操作。` };
+  if (workspaceId !== currentWorkspaceId() || originalSession !== sessionId || !taskChangeControls(entry)[allowed] || contextBusy())
+    throw new Error('会话状态已变化，请重新确认。');
+  taskChangeUndoBusy = true; refreshControlLocks();
+  try {
+    const response = await bridge[redo ? 'redoRunChanges' : 'undoRunChanges']({ runId: entry.runId });
+    let result;
+    try { result = typeof response?.result === 'string' ? JSON.parse(response.result) : response?.result; } catch { /* A plain error remains readable. */ }
+    const value = result && typeof result === 'object' ? result : { status: 'failed', message: String(response?.result || `${label}未完成。`) };
+    const message = typeof value.message === 'string' ? value.message : typeof value.error === 'string' ? value.error : value.status === 'completed' ? redo ? '已取消撤销，已恢复本轮修改。' : '已撤销本轮修改。' : `${label}未完成。`;
+    if (workspaceId === currentWorkspaceId() && originalSession === sessionId) notice(message, value.status !== 'completed');
+    return { status: value.status, message };
+  } finally {
+    try {
+      const next = await bridge.getState();
+      if (workspaceId === currentWorkspaceId() && originalSession === sessionId && next?.sessionId === originalSession) updateState(next);
+    } catch {
+      if (workspaceId === currentWorkspaceId() && originalSession === sessionId)
+        appState = { ...appState, undoableRunIds: [], redoableRunIds: [] };
+    }
+    taskChangeUndoBusy = false; refreshControlLocks();
+  }
+}
+
+function renderTaskChangeSummary(record, { historical = false } = {}) {
+  if (!window.ForgeTaskChangeSummary || record.kind === 'undo' || typeof record.runId !== 'string') return;
+  const existing = taskChangeCards.get(record.runId);
+  if (existing?.card.isConnected) return existing.card;
+  const summary = window.ForgeTaskChangeSummary.aggregate(taskChangeEdits, record.runId, { expectedCount: record.fileChangeCount });
+  if (!summary.files.length && !(summary.expectedCount > summary.recordedCount)) return;
+  const entry = { runId: record.runId, sessionId, historical, card: null };
+  const controls = taskChangeControls(entry);
+  entry.card = window.ForgeTaskChangeSummary.create(summary, { ...controls, historical,
+    onExpand: node => revealFileDisclosure(node),
+    onCopy: text => bridge.copyText({ text }), getControls: () => taskChangeControls(entry),
+    onUndo: () => undoTaskChangeSummary(entry), onRedo: () => undoTaskChangeSummary(entry, 'redo') });
+  taskChangeCards.set(record.runId, entry);
+  $('messages').append(entry.card);
+  return entry.card;
+}
+
 function clearConversation() {
+  cancelFileDisclosureReveal();
+  fileDisclosureScrollPaused = false;
+  imageViewSources = [];
+  renderedImageViews.clear();
+  taskChangeEdits = [];
+  taskChangeCards.clear();
   contextCompactionNotices.clear();
   $('messages').replaceChildren();
   renderedUserMessageIds.clear();
@@ -2902,7 +3328,10 @@ function appendContextCompactionNotice(event, target = taskProcessTarget()) {
   if (event.budgetMode === 'model-capacity' && Number.isFinite(event.contextLimit) && Number.isFinite(event.triggerTokens)) {
     const usage = Number.isFinite(event.estimatedBeforeTokens) && Number.isFinite(event.estimatedAfterTokens)
       ? `预算估算：≈${event.estimatedBeforeTokens.toLocaleString()} → ≈${event.estimatedAfterTokens.toLocaleString()} Token。` : '';
-    note.title = `模型${event.contextLimitKind === 'input' ? '输入上限' : '上下文容量'}：${event.contextLimit.toLocaleString()} Token；自动压缩阈值：≈${event.triggerTokens.toLocaleString()} Token。${usage}按当前请求预算触发，不按会话累计消耗触发；完整聊天记录保留。`;
+    const basis = event.compressionTriggerBasis === 'reported-context-plus-estimated-growth' && Number.isFinite(event.reportedContextTokens)
+      ? `服务端实测基准：${event.reportedContextTokens.toLocaleString()} Token；新增内容估计：≈${Number(event.estimatedGrowthTokens || 0).toLocaleString()} Token。`
+      : '尚无匹配的实测基准，使用保守预算。';
+    note.title = `模型${event.contextLimitKind === 'input' ? '输入上限' : '上下文容量'}：${event.contextLimit.toLocaleString()} Token；自动压缩阈值：${event.triggerTokens.toLocaleString()} Token。${usage}${basis}按当前请求预算触发，不按会话累计消耗触发；完整聊天记录保留。`;
   } else if (Number.isFinite(event.beforeChars) && Number.isFinite(event.afterChars)) {
     note.title = `${event.budgetMode === 'fallback-characters' ? '模型未提供有效容量，使用保守的本地字符阈值。' : ''}发送给模型的上下文：${event.beforeChars.toLocaleString()} → ${event.afterChars.toLocaleString()} 字符；完整聊天记录保留。`;
   }
@@ -2912,6 +3341,11 @@ function appendContextCompactionNotice(event, target = taskProcessTarget()) {
 function renderSessionSnapshot(session) {
   const metrics = session.sessionMetrics || (appState?.sessionId === session.id ? appState.sessionMetrics : null);
   clearConversation();
+  imageViewSources = (session.messages || []).filter(message => message?.role === 'user');
+  const undoRunIds = new Set([...(Array.isArray(session.taskRuns) ? session.taskRuns : []), ...(Array.isArray(session.events) ? session.events : [])]
+    .filter(record => record?.kind === 'undo').map(record => record.runId || record.id));
+  taskChangeEdits = Array.isArray(session.fileEdits) ? session.fileEdits
+    .filter(edit => validTaskChangeEdit(edit) && !undoRunIds.has(edit.runId)).map(edit => ({ ...edit })) : [];
   sessionId = session.id;
   appState = { ...appState, sessionId: session.id, sessionTitle: session.title || '新会话', sessionMetrics: metrics };
   renderSessionMetrics(metrics);
@@ -2923,18 +3357,29 @@ function renderSessionSnapshot(session) {
   const compactions = (session.events || []).filter(event => event.type === 'context-compacted');
   const renderedCompactions = new Set();
   const blocks = window.ForgeTaskHistory.project(session, records);
+  const summariesAfter = new Map();
   blocks.forEach((block) => {
     const index = block.type === 'message' ? block.index : block.record.messageStartIndex;
     compactions.forEach((event) => {
       if (!renderedCompactions.has(event) && Number.isInteger(event.messageIndex) && event.messageIndex <= index) { appendContextCompactionNotice(event); renderedCompactions.add(event); }
     });
-    if (block.type === 'run') renderHistoricalTaskActivity(block.record, block.items);
+    if (block.type === 'run') {
+      renderHistoricalTaskActivity(block.record, block.items);
+      if (block.finalIndex !== null && Number.isInteger(block.finalIndex)) {
+        const waiting = summariesAfter.get(block.finalIndex) || []; waiting.push(block.record); summariesAfter.set(block.finalIndex, waiting);
+      } else renderTaskChangeSummary(block.record, { historical: true });
+    }
     else {
       const message = block.message;
       if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || (message.role === 'user' && messageImageAttachments(message.attachments).length))) addMessage(message.role, message.content, false, { ...message, historical: true });
+      for (const record of summariesAfter.get(block.index) || []) renderTaskChangeSummary(record, { historical: true });
     }
   });
   compactions.forEach((event) => { if (!renderedCompactions.has(event)) appendContextCompactionNotice(event); });
+  for (const runId of new Set(taskChangeEdits.map(edit => edit.runId))) {
+    if (appState?.activeTask?.running && appState.activeTask.runId === runId) continue;
+    if (!taskChangeCards.has(runId)) renderTaskChangeSummary(records.find(record => record.runId === runId) || { runId }, { historical: true });
+  }
   restoreTaskActivityFromState();
   renderSessions(appState?.sessions || []);
   scrollBottom(true);
@@ -2996,10 +3441,21 @@ function addTool(event) {
   commandOutput = null;
   if (activeTaskActivity?.status === 'running') { activeTaskActivity.lastAssistant = null; activeTaskActivity.lastAssistantConfirmed = false; }
   const tool = createToolCard(event);
-  taskProcessTarget().append(tool.card);
+  appendGroupedToolCard(taskProcessTarget(), tool, event);
   pendingTools.push(tool);
   moveTaskActivityToEnd();
   scrollBottom();
+}
+
+function appendGroupedToolCard(target, tool, event) {
+  if (!window.ForgeToolOperationGroups) { target.append(tool.card); return; }
+  window.ForgeToolOperationGroups.appendTool(target, tool.card, xmlFileTool(event.name, event.args) ? { ...event, name: 'read_file' } : event, {
+    onGroup: group => { bindFileDisclosureVisibility(group, group.querySelector(':scope > summary')); fitFileDisclosure(group, $('message-scroll')); },
+  });
+}
+
+function refreshGroupedToolCard(tool) {
+  window.ForgeToolOperationGroups?.refresh(tool.card);
 }
 
 function createToolCard(event) {
@@ -3008,7 +3464,7 @@ function createToolCard(event) {
   const badge = element('span', 'tool-badge', '执行中');
   const title = element('span', 'tool-title', toolActivity(event.name, event.args));
   title.title = event.name || '工具调用';
-  const id = String(event.name || '').replace(/（模拟）/g, '');
+  const id = xmlFileTool(event.name, event.args) ? 'read_file' : String(event.name || '').replace(/（模拟）/g, '');
   const mark = element('span', 'tool-mark');
   mark.setAttribute('aria-hidden', 'true');
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -3030,6 +3486,7 @@ function createToolCard(event) {
   if (commandView) details.append(commandView);
   details.append(technical);
   card.append(summary, details);
+  bindFileDisclosureVisibility(card, summary);
   return { name: event.name, args: event.args, toolCallId: event.toolCallId, card, details, technical, commandView, badge, title };
 }
 
@@ -3101,12 +3558,14 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
     : command && Number.isFinite(result?.exitCode) && result.exitCode !== 0 ? `命令已结束 · 退出代码 ${result.exitCode}`
     : toolActivity(event.name, tool.args, true);
   if (updateActivity) { setTaskActivityPhase('tool', status); scrollBottom(); }
+  refreshGroupedToolCard(tool);
 }
 
 function finishToolWithoutResult(tool) {
   tool.card.classList.remove('running');
   tool.card.dataset.status = 'unknown';
   tool.badge.textContent = '未返回结果';
+  refreshGroupedToolCard(tool);
   if (tool.commandView) {
     tool.title.textContent = '命令结果未返回';
     tool.commandView.dataset.status = 'unknown';
@@ -3316,7 +3775,7 @@ async function runTask(demo = false, mode = 'queue') {
     openSettings();
     return;
   }
-  if (!demo && !account && !config.hasKey) {
+  if (!demo && !account && !savedConnectionReady(provider, currentAuthMode(settings))) {
     notice('请先配置当前服务商的 API Key，再发送任务。');
     openSettings();
     return;
@@ -3405,11 +3864,13 @@ function handleEvent(event) {
     case 'terminal-start': case 'terminal-output': case 'terminal-end': handleTerminalEvent(event); break;
     case 'pending-prompts': ++promptQueueVersion; syncPromptQueue(event.queue); break;
     case 'user-message':
+      if (typeof event.id === 'string' && !imageViewSources.some(message => message.id === event.id))
+        imageViewSources.push({ role: 'user', id: event.id, attachments: event.attachments || [] });
       followOutput = true;
       commandOutput = null;
       if (typeof event.text === 'string' && (!event.id || !renderedUserMessageIds.has(event.id))) {
         finishStream();
-        addMessage('user', event.text, false, { id: event.id, source: event.source, createdAt: event.createdAt, attachments: event.attachments });
+        addMessage('user', event.text, false, { id: event.id, source: event.source, runId: event.runId, createdAt: event.createdAt, attachments: event.attachments });
         $('conversation-title').textContent = conversationTitle();
       }
       scrollBottom(true);
@@ -3429,6 +3890,7 @@ function handleEvent(event) {
       }
       break;
     case 'session':
+      if (event.session) imageViewSources = (event.session.messages || []).filter(message => message?.role === 'user');
       if (event.session?.id && event.session.id !== sessionId) renderSessionSnapshot(event.session);
       if (event.session?.id) sessionId = event.session.id;
       if (event.session) {
@@ -3442,12 +3904,15 @@ function handleEvent(event) {
       contextCompacting = false;
       taskKind = event.kind || 'agent'; taskDemo = event.demo === true;
       setRunning(true, event);
+      if (event.kind === 'undo') break;
       beginTaskActivity(event);
       setTaskActivityPhase(event.kind === 'undo' ? 'tool' : 'waiting', event.kind === 'undo' ? '正在撤销文件修改' : event.demo ? '正在演示任务流程' : '等待模型');
       scrollBottom();
       break;
     case 'telemetry': updateTelemetry(event); break;
+    case 'reconnect': handleReconnect(event); break;
     case 'text-delta':
+      clearTaskReconnect();
       setTaskActivityPhase('generating', '正在生成');
       if (!streamedMessage) { streamedText = ''; streamedMessage = addMessage('assistant', '', true); }
       streamedText = event.replace ? (event.text || '') : streamedText + (event.text || '');
@@ -3462,12 +3927,18 @@ function handleEvent(event) {
       }
       moveTaskActivityToEnd(); scrollBottom(); break;
     }
-    case 'tool-start': addTool(event); break;
-    case 'tool-result': completeTool(event); break;
+    case 'tool-start': if (taskKind !== 'undo') addTool(event); break;
+    case 'tool-result': rememberTaskChange(event); if (taskKind !== 'undo') completeTool(event); break;
+    case 'file-change-recorded': rememberTaskChange(event); break;
+    case 'images-viewed': renderImageViewed(event); break;
     case 'subagent-update':
       renderSubagentUpdate(event);
       moveTaskActivityToEnd(); scrollBottom(); break;
     case 'approval-review':
+      if (taskKind === 'undo') {
+        if (event.status === 'reviewing' && approvals.has(event.id)) resolveComposerApproval(event.id, false, { expired: true });
+        break;
+      }
       renderApprovalReview(event);
       moveTaskActivityToEnd(); scrollBottom(); break;
     case 'approval-request': approvalRequest(event); break;
@@ -3488,22 +3959,28 @@ function handleEvent(event) {
       break;
     case 'run-end': {
       contextCompacting = false;
-      finishStream();
-      moveTaskActivityToEnd();
-      finishTaskActivity(event);
-      setRunning(false);
-      const failed = event.status === 'failed';
-      const errorDetail = failed ? String(event.error || '发生错误') : '';
-      const briefError = errorDetail.split(/\r?\n/, 1)[0].slice(0, 180);
-      const text = failed ? `任务未完成：${briefError}` : event.status === 'stopped' ? '任务已停止' : '任务已完成';
-      $('run-status').textContent = failed ? '任务失败' : event.status === 'stopped' ? '已停止' : '已完成';
-      const result = element('div', `run-result${failed ? ' failed' : ''}`, `${failed ? '×' : '✓'} ${text}`);
-      if (failed && errorDetail !== briefError) {
-        const details = element('details', 'tool-technical-details run-error-details');
-        details.append(element('summary', 'technical-details-summary', '查看错误详情'), element('pre', '', errorDetail));
-        result.append(details);
+      const changeOperation = event.kind === 'undo' || taskKind === 'undo';
+      if (!changeOperation) {
+        finishStream();
+        moveTaskActivityToEnd();
+        finishTaskActivity(event);
       }
-      $('messages').append(result);
+      setRunning(false);
+      if (!changeOperation) {
+        const failed = event.status === 'failed';
+        const errorDetail = failed ? String(event.error || '发生错误') : '';
+        const briefError = errorDetail.split(/\r?\n/, 1)[0].slice(0, 180);
+        const text = failed ? `任务未完成：${briefError}` : event.status === 'stopped' ? '任务已停止' : '任务已完成';
+        $('run-status').textContent = failed ? '任务失败' : event.status === 'stopped' ? '已停止' : '已完成';
+        const result = element('div', `run-result${failed ? ' failed' : ''}`, `${failed ? '×' : '✓'} ${text}`);
+        if (failed && errorDetail !== briefError) {
+          const details = element('details', 'tool-technical-details run-error-details');
+          details.append(element('summary', 'technical-details-summary', '查看错误详情'), element('pre', '', errorDetail));
+          result.append(details);
+        }
+        $('messages').append(result);
+        renderTaskChangeSummary(event);
+      }
       clearComposerApprovals();
       pendingTools.forEach(finishToolWithoutResult);
       pendingTools = [];
@@ -3548,14 +4025,13 @@ function fillProvider(provider) {
   const current = settings.provider === provider;
   $('openai-auth-mode').value = provider === 'openai' && (config.authMode || (current ? settings.authMode : '')) === 'chatgpt' ? 'chatgpt' : 'apiKey';
   $('api-protocol-select').value = config.apiProtocol || (provider === 'relay' ? 'chat-completions' : 'responses');
-  $('base-url-input').value = config.baseUrl || (current ? settings.baseUrl : '') || '';
+  $('base-url-input').value = config.baseUrl || (current ? settings.baseUrl : '') || (provider === 'ollama' ? 'http://localhost:11434' : '');
+  $('ollama-context-window-input').value = String(config.contextWindowTokens ?? 32768);
   $('api-key-input').value = '';
   $('api-key-input').disabled = false;
-  $('api-key-input').placeholder = config.hasKey ? '已保存密钥，留空以保留' : '输入 API Key';
-  $('key-status').textContent = config.hasKey ? '已在本机保存' : '未配置';
+  $('api-key-input').placeholder = config.hasKey ? '已保存密钥，留空以保留' : provider === 'ollama' ? '本机服务留空，反向代理需要时填写' : '输入 API Key';
+  $('key-status').textContent = config.hasKey ? '已在本机保存' : provider === 'ollama' ? '无需配置' : '未配置';
   $('key-status').classList.toggle('saved', !!config.hasKey);
-  $('key-help').textContent = config.hasKey ? '不显示已保存的密钥；留空保留，输入新值替换。' : '密钥只用于你配置的模型 API 请求。';
-  $('clear-key-input').checked = false;
   $('settings-error').hidden = true;
   chatgptLocalError = '';
   renderChatGPTState();
@@ -3754,7 +4230,6 @@ function bindUI() {
   $('openai-auth-mode').addEventListener('change', () => {
     invalidateSettingsCatalog();
     $('api-key-input').value = '';
-    $('clear-key-input').checked = false;
     $('settings-error').hidden = true;
     chatgptLocalError = '';
     renderChatGPTState();
@@ -3774,7 +4249,7 @@ function bindUI() {
     $('settings-error').hidden = true;
     refreshControlLocks();
   });
-  ['base-url-input', 'api-key-input'].forEach((id) => $(id).addEventListener('input', () => {
+  ['base-url-input', 'api-key-input', 'ollama-context-window-input'].forEach((id) => $(id).addEventListener('input', () => {
     invalidateSettingsCatalog();
     renderSettingsCatalog();
     refreshControlLocks();
@@ -3790,23 +4265,37 @@ function bindUI() {
     fillReasoningOptions($('reasoning-effort'), appState?.settings?.provider || 'openai', 'default');
     setReasoningEffort();
   });
-  $('clear-key-input').addEventListener('change', (event) => {
-    invalidateSettingsCatalog();
-    $('api-key-input').disabled = event.target.checked;
-    if (event.target.checked) $('api-key-input').value = '';
-    renderSettingsCatalog();
-    refreshControlLocks();
-  });
   $('settings-form').addEventListener('submit', saveSettings);
   $('task-form').addEventListener('submit', (event) => { event.preventDefault(); runTask(); });
   $('resume-pending').addEventListener('click', resumePendingPrompts);
+  $('pending-edit-form').addEventListener('submit', savePendingPromptEdit);
+  $('pending-edit-input').addEventListener('input', () => { $('pending-edit-error').textContent = ''; renderPendingPromptEditState(); });
+  for (const id of ['pending-edit-close', 'pending-edit-cancel']) $(id).addEventListener('click', () => { if (!pendingPromptEditSaving) $('pending-edit-dialog').close(); });
+  $('pending-edit-dialog').addEventListener('cancel', event => { if (pendingPromptEditSaving) event.preventDefault(); });
+  $('pending-edit-dialog').addEventListener('close', () => {
+    if ($('pending-edit-dialog').open) return; // A queued close can arrive after a quick reopen.
+    pendingPromptEdit = null; $('pending-edit-input').value = '';
+  });
   $('stop-button').addEventListener('click', async () => {
     $('stop-button').disabled = true;
     try { await bridge.stopTask(); } catch (error) { notice(errorText(error), true); }
     finally { $('stop-button').disabled = false; }
   });
   $('task-input').addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); runTask(); } });
-  $('message-scroll').addEventListener('scroll', () => { const node = $('message-scroll'); if (!node.classList.contains('usage-view-open')) followOutput = node.scrollHeight - node.scrollTop - node.clientHeight < 100; });
+  bindConversationDisclosureVisibility();
+  document.addEventListener('forge:round-navigate', () => {
+    cancelFileDisclosureReveal();
+    fileDisclosureScrollPaused = true;
+    followOutput = false;
+  });
+  $('message-scroll').addEventListener('scroll', () => {
+    const node = $('message-scroll');
+    if (node.classList.contains('usage-view-open') || fileDisclosureReveal) return;
+    const remaining = node.scrollHeight - node.scrollTop - node.clientHeight;
+    if (fileDisclosureScrollPaused && remaining > 2) { followOutput = false; return; }
+    fileDisclosureScrollPaused = false;
+    followOutput = remaining < 100;
+  });
   document.addEventListener('pointerdown', (event) => { if (!$('reasoning-popup').hidden && !$('composer-model-control').contains(event.target)) closeReasoningPopup(); });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;

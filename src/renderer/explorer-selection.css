@@ -1,0 +1,19 @@
+#file-tree { user-select: none; }
+#file-tree .file-row:focus-visible:not(.selected) {
+  background: var(--control-hover, rgb(128 150 180 / 12%));
+  outline: 1px solid var(--selection-accent, #82afff);
+  outline-offset: -1px;
+  box-shadow: none;
+}
+#file-tree.marquee-selecting, #file-tree.marquee-selecting * { cursor: crosshair; -webkit-user-drag: none; }
+.explorer-selection-box {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  border: 1px solid var(--selection-accent, #82afff);
+  background: color-mix(in srgb, var(--selection-accent, #82afff) 18%, transparent);
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}

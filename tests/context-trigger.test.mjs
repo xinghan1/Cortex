@@ -145,22 +145,34 @@ test('a live threshold change applies at the next planning boundary without a re
   assert.equal(normal, 2); assert.equal(summaries, 1); assert.equal(records.length, 3);
   assert.equal(new Set(records.map(record => record.id)).size, 3);
   assert.equal(records.reduce((total, record) => total + record.inputTokens, 0), 30);
-  assert.deepEqual(contexts.filter(value => value.status === 'estimated').map(value => value.requestedTriggerTokens), [100000, 5000]);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  assert.deepEqual(requesting.map(value => value.requestedTriggerTokens), [100000, 5000]);
+  assert.deepEqual(requesting.map(value => value.requestId), records.filter(record => record.purpose !== 'context-compaction').map(record => record.id));
+  assert.ok(requesting.every(value => value.usedTokens === null && value.inputTokens === null && value.outputTokens === null));
   assert.equal(messages.filter(message => message.role === 'user').length, 1);
   assert.ok(messages.find(message => message.role === 'tool').content.length > 120000);
 });
 
-test('reported or cumulative usage is not the next request trigger', async () => {
+test('cumulative billing usage does not trigger when each measured request context stays below the threshold', async () => {
+  const threshold = 10000, records = [], contexts = [];
   let requests = 0;
-  await runAgent(agentOptions({ config: { ...config, contextCompressionTriggerTokens: 10000 },
+  await runAgent(agentOptions({ config: { ...config, contextCompressionTriggerTokens: threshold },
+    onUsage: async record => records.push(record), onContextUsage: value => contexts.push(value),
     requestModel: async request => {
       assert.equal(request.messages[0].content.startsWith('[CONTEXT_COMPACTION]'), false);
-      if (++requests === 1) return { ...reply('', [call('read', 'read_file', { path: 'small.txt' })]),
-        usage: { inputTokens: 800000, outputTokens: 1000 } };
+      if (++requests <= 2) return { ...reply('', [call(`read-${requests}`, 'read_file', { path: 'small.txt' })]),
+        usage: { inputTokens: 6000, outputTokens: 100 } };
+      assert.equal(records.reduce((total, record) => total + record.inputTokens + record.outputTokens, 0), 12200,
+        'The third request starts after the cumulative billed usage has already exceeded the threshold');
       return reply();
     },
   }));
-  assert.equal(requests, 2);
+  assert.equal(requests, 3);
+  assert.equal(records.length, 3);
+  assert.ok(records.every(record => record.purpose !== 'context-compaction'));
+  assert.deepEqual(contexts.filter(value => value.status === 'reported').map(value => value.usedTokens), [6100, 6100, 12]);
+  assert.ok(contexts.filter(value => value.status === 'reported').every(value => value.usedTokens < threshold));
+  assert.equal(records.reduce((total, record) => total + record.inputTokens + record.outputTokens, 0), 12212);
 });
 
 test('children follow a live threshold change while root context and accounting remain independent', async () => {
@@ -188,7 +200,11 @@ test('children follow a live threshold change while root context and accounting 
   assert.equal(records.filter(record => record.agentId && record.purpose === 'context-compaction').length, 1);
   assert.equal(records.filter(record => !record.agentId && record.purpose === 'context-compaction').length, 0);
   assert.equal(records.length, 5);
-  assert.equal(contexts.filter(value => value.status === 'estimated').length, 2);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  assert.equal(requesting.length, 2);
+  assert.deepEqual(requesting.map(value => value.requestId), records.filter(record => !record.agentId).map(record => record.id),
+    'The child summary and ordinary requests do not replace the root context stream');
+  assert.ok(requesting.every(value => value.usedTokens === null && value.inputTokens === null && value.outputTokens === null));
 });
 
 test('cancelling a triggered summary preserves archive and checkpoint and records only the partial summary request', async () => {

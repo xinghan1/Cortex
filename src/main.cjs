@@ -1,16 +1,21 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, nativeImage, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, nativeImage, nativeTheme, session: electronSession } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
 const { Store } = require('./core/store.cjs');
+const { makePendingContextUsage } = require('./core/session-metrics.cjs');
+const { installEditorContextMenu } = require('./core/editor-context-menu.cjs');
 const { loadUsageAnalytics } = require('./core/usage-analytics-loader.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
 const { UIPreferences } = require('./core/ui-preferences.cjs');
 const { AppearanceStore } = require('./core/appearance.cjs');
+const { nativeAppearance } = require('./core/native-appearance.cjs');
 const { RecentProjects } = require('./core/recent-projects.cjs');
 const { approvalDecision, validateMode } = require('./core/approval-policy.cjs');
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
+const { isXmlURL } = require('./core/xml-reader.cjs');
 const { resolveDataDirectory } = require('./core/data-path.cjs');
+const { SessionRestore } = require('./core/session-restore.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test');
@@ -39,11 +44,12 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, TerminalSession, ManualFileManager, normalizeImageAttachments;
+let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, TerminalSession, ManualFileManager, normalizeImageAttachments, persistentTaskUndo;
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
 const windows = new Map();
+let sessionRestore, activeWindowHost = null;
 const sessionRenameLocks = new Set();
 let sessionRenameRevision = 0;
 const rendererErrors = [];
@@ -74,8 +80,12 @@ async function readSessionForContext(id) {
 function broadcastAppearance(value) {
   // Background bytes are local UI state. Keep them out of periodic application
   // state, project sessions, model inputs and telemetry.
+  const palette = nativeAppearance(value);
+  nativeTheme.themeSource = palette.theme;
   for (const host of windows.values()) {
     if (!host.win || host.win.isDestroyed() || host.win.webContents.isDestroyed()) continue;
+    host.win.setBackgroundColor(palette.background);
+    if (process.platform === 'win32') host.win.setTitleBarOverlay({ color: palette.caption, symbolColor: palette.symbol, height: 44 });
     host.win.webContents.send('forge:event', { type: 'appearance', appearance: value });
   }
 }
@@ -96,7 +106,7 @@ function projectIdentity(root) { return path.normalize(root).replace(/[\\/]+$/, 
 
 // One native window hosts isolated project runtimes. A project switch changes
 // only the foreground runtime; its peers keep their own tools, model and queue.
-function createWindowHost() {
+function createWindowHost({ restoreTarget = null } = {}) {
   let switching = Promise.resolve();
   let publishTimer = null, lastPublished = 0;
   const host = {
@@ -116,6 +126,11 @@ function createWindowHost() {
     createSession: (...args) => host.active.createSession(...args),
     requestEditorClose: reason => host.active.requestEditorClose(reason),
     scheduleNextPrompt() { for (const value of host.contexts) value.scheduleNextPrompt(); },
+    async rememberSelection(context) {
+      if (!sessionRestore || host.active !== context) return false;
+      try { return await sessionRestore.record(context.currentSession, { active: activeWindowHost === host }); }
+      catch (error) { context.emit({ type: 'storage-error', error: error.message }); return false; }
+    },
     async shutdown() { await Promise.allSettled([...host.contexts].map(value => value.shutdown())); },
     abortAll() { for (const value of host.contexts) value.abort(); },
     publishWorkspaces({ force = false } = {}) {
@@ -150,6 +165,7 @@ function createWindowHost() {
         // Recheck after asynchronous filesystem/history work as well.
         previous.requireSwitchReady();
         host.active = target;
+        await target.rememberSelection();
         previous.refreshBrowserVisibility(); target.refreshBrowserVisibility();
         const nextState = await target.state();
         target.emit({ type: 'workspace-activated', state: nextState, session: target.publicCurrentSession() });
@@ -159,7 +175,7 @@ function createWindowHost() {
       switching = operation.catch(() => {});
       return operation;
     },
-    async initialize() { await host.active.initialize(); return host; },
+    async initialize() { await host.active.initialize({ restoreTarget }); return host; },
   };
   async function rememberOpenProject(root) {
     try { await recentProjects.record(root); }
@@ -178,6 +194,7 @@ const settingsCatalogPreviews = new Map();
 const terminalEvents = [];
 let permissionMode = 'request', browser;
 let eventSequence = 0, localOperation = false, promptPreflights = 0, closeAllowed = false, closing = false, loadedSnapshot = false;
+let initialized = false, lastRememberedSessionId = null;
 let lastFindText = null;
 let fileClipboard = null, editorDirty = false, editorCloseRequest = null, fileOperationDone = null;
 const pendingPrompts = [];
@@ -221,6 +238,7 @@ async function saveProjectSettings(input) {
   // shared, so it keeps the existing all-project idle requirement.
   const connectionChange = !previous || input?.clearKey === true || Boolean(String(input?.apiKey || '').trim())
     || (input?.baseUrl !== undefined && String(input.baseUrl).trim() !== previous.baseUrl)
+    || (input?.contextWindowTokens !== undefined && input.contextWindowTokens !== previous.contextWindowTokens)
     || (input?.apiProtocol !== undefined && input.apiProtocol !== previous.apiProtocol);
   if (connectionChange) {
     const result = await mutateShared(() => store.saveSettings(input));
@@ -247,6 +265,7 @@ async function saveProjectSettings(input) {
 function recordLiveEvent(run, clean) {
   if (!run || ['state', 'session', 'workspace-activated', 'workspace-update', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'find-result', 'window-state', 'telemetry', 'session-metrics'].includes(clean.type)) return;
   const events = run.liveEvents ||= [];
+  if (clean.type === 'reconnect' && clean.resetText) run.streamText = '';
   const previous = events.at(-1);
   if (clean.type === 'text-delta') {
     run.streamText = clean.replace ? String(clean.text || '') : String(run.streamText || '') + String(clean.text || '');
@@ -286,6 +305,9 @@ function rememberTerminalEvent(clean) {
 }
 function emit(event) {
   if (!win || win.isDestroyed()) return;
+  if (event.type === 'reconnect' && event.status === 'waiting' && !Number.isFinite(event.retryAt)) {
+    event = { ...event, retryAt: Date.now() + Math.max(0, Math.min(60_000, Number(event.delayMs) || 0)) };
+  }
   if (activeRun && event.type === 'context-compaction-start') activeRun.compacting = true;
   if (activeRun && event.type === 'context-compacted') activeRun.compacting = false;
   if (activeRun?.kind === 'agent' && event.type === 'telemetry') activeRun.telemetry = telemetrySnapshot(event);
@@ -295,6 +317,13 @@ function emit(event) {
     emitSessionMetrics();
   }
   const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...event, workspaceId, sequence: ++eventSequence })));
+  if (activeRun?.kind === 'agent' && clean.type === 'images-viewed' && clean.version === 1 && currentSession) {
+    clean.messageIndex = currentSession.messages.length - 1;
+    const views = currentSession.imageViews = Array.isArray(currentSession.imageViews) ? currentSession.imageViews : [];
+    if (!views.some(view => view.runId === clean.runId && view.requestId === clean.requestId)) views.push({ ...clean });
+    // Keep lightweight references after the general event suffix rolls over.
+    if (views.length > 256) views.splice(0, views.length - 256);
+  }
   if (activeRun && clean.type === 'subagent-update' && clean.agent?.id && currentSession) {
     const agents = currentSession.subagents = Array.isArray(currentSession.subagents) ? currentSession.subagents : [];
     const index = agents.findIndex(agent => agent.id === clean.agent.id && agent.parentRunId === clean.runId);
@@ -304,14 +333,14 @@ function emit(event) {
     if (agents.length > 64) agents.splice(0, agents.length - 64);
   }
   // Local display metadata stays outside model messages and context budgets.
-  if (activeRun && clean.type === 'tool-result' && clean.fileChange && currentSession) {
+  if (activeRun && ['tool-result', 'file-change-recorded'].includes(clean.type) && clean.fileChange && currentSession) {
     const change = clean.fileChange;
     if (typeof change.path === 'string' && change.path && ['before', 'after'].every(key => change[key] === null || typeof change[key] === 'string')) {
       const edits = currentSession.fileEdits = Array.isArray(currentSession.fileEdits) ? currentSession.fileEdits.filter(item => item && typeof item.path === 'string'
         && ['before', 'after'].every(key => item[key] === null || typeof item[key] === 'string')) : [];
       const previous = edits.findIndex(item => clean.toolCallId && item.runId === clean.runId && item.toolCallId === clean.toolCallId);
       if (previous !== -1) edits.splice(previous, 1);
-      edits.push({ runId: clean.runId, toolCallId: clean.toolCallId, sequence: clean.sequence, path: change.path, before: change.before, after: change.after });
+      edits.push({ runId: clean.runId, kind: activeRun.kind, toolCallId: clean.toolCallId, sequence: clean.sequence, path: change.path, before: change.before, after: change.after });
       let characters = edits.reduce((sum, item) => sum + (item.before?.length || 0) + (item.after?.length || 0), 0);
       while (edits.length > 64 || characters > 8 * 1024 * 1024) {
         const oldest = edits.shift();
@@ -322,10 +351,12 @@ function emit(event) {
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
   if (host.active === context) win.webContents.send('forge:event', clean);
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
-  if (activeRun && activeRun.kind !== 'terminal' && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'user-message', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
+  if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
     // Snapshots have their own bounded archive. Do not retain a second copy
     // in the 150-event suffix after the live event has been delivered.
-    const { fileChange: localSnapshot, ...historicalEvent } = clean;
+    const { fileChange: localSnapshot, ...publicEvent } = clean;
+    const historicalEvent = clean.type === 'user-message'
+      ? { type: clean.type, id: clean.id, source: clean.source, runId: clean.runId, sequence: clean.sequence } : publicEvent;
     const previousAgent = ['subagent-update', 'approval-review'].includes(clean.type)
       ? currentSession.events.findIndex(event => event.type === clean.type && (clean.type === 'subagent-update' ? event.agent?.id === clean.agent?.id : event.id === clean.id)) : -1;
     if (previousAgent === -1) currentSession.events.push(historicalEvent);
@@ -336,17 +367,27 @@ function emit(event) {
 function emitSessionMetrics() {
   if (currentSession) emit({ type: 'session-metrics', sessionId: currentSession.id, metrics: sessionMetricsSnapshot(currentSession) });
 }
+function recordRunFileChange(run, change) {
+  if (activeRun !== run || run.kind !== 'agent' || run.demo) return;
+  run.fileChangeCount++;
+  const report = () => { if (!run.undoPersistenceError) { run.undoPersistenceError = true; emit({ type: 'storage-error', error: '本轮撤销记录保存失败，自动撤销已停用；文件改动仍保留。' }); } };
+  try { persistentTaskUndo.record({ runId: run.id, sessionId: run.sessionId, workspace: tools.root, change }).catch(report); }
+  catch { report(); }
+}
 function rememberTaskRun(record) {
   // Timing and anchors must survive the bounded event suffix. Retain recent
   // tasks plus any parent still referenced by the bounded subagent archive.
-  const fields = ['type', 'runId', 'kind', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'messageStartIndex', 'messageIndex', 'telemetry'];
+  const fields = ['type', 'runId', 'kind', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'fileChangeCount'];
   const runs = new Map();
   for (const value of [...(currentSession.taskRuns || []), ...currentSession.events.filter(event => event.type === 'run-end')]) {
     if (!value || typeof value.runId !== 'string') continue;
     runs.set(value.runId, Object.fromEntries(fields.filter(field => Object.hasOwn(value, field)).map(field => [field, value[field]])));
   }
   runs.set(record.runId, record);
-  const entries = [...runs.values()], parents = new Set((currentSession.subagents || []).map(agent => agent.parentRunId));
+  const entries = [...runs.values()], parents = new Set([
+    ...(currentSession.subagents || []).map(agent => agent.parentRunId),
+    ...(Array.isArray(currentSession.imageViews) ? currentSession.imageViews : []).map(view => view?.runId),
+  ]);
   currentSession.taskRuns = entries.filter((value, index) => index >= entries.length - 64 || parents.has(value.runId));
 }
 function sessionMetricsSnapshot(session) {
@@ -357,8 +398,8 @@ function requireIdle() {
   if (activeRun) throw new Error('请先停止正在执行的任务。');
   if (sessionRenameLocks.has(currentSession?.id)) throw new Error('此会话正在重命名，请稍后重试。');
 }
-function requireTools() { if (!tools) throw new Error('请先打开本地项目。'); return tools; }
-function requireFileManager() { if (!fileManager) throw new Error('请先打开本地项目。'); return fileManager; }
+function requireTools({ allowDuringUndo = false } = {}) { if (!tools) throw new Error('请先打开本地项目。'); if (!allowDuringUndo && persistentTaskUndo.isProjectBusy(tools.root)) throw new Error('此项目正在撤销或恢复修改，请稍后再操作文件。'); return tools; }
+function requireFileManager(options) { requireTools(options); if (!fileManager) throw new Error('请先打开本地项目。'); return fileManager; }
 function requireEditorSettled() { if (editorDirty) throw new Error('请先保存或放弃右侧文件的修改，再切换项目。'); }
 function requestEditorClose(reason = 'window') {
   if (!editorDirty || !win || win.isDestroyed()) return Promise.resolve(true);
@@ -455,11 +496,17 @@ async function submitPrompt(arg) {
   });
 }
 async function managePendingPrompt(arg) {
-  if (typeof arg?.id !== 'string' || !['steer', 'remove'].includes(arg.action)) throw new Error('待发送消息操作无效。');
+  if (typeof arg?.id !== 'string' || !['steer', 'remove', 'edit'].includes(arg.action)) throw new Error('待发送消息操作无效。');
+  if (arg.action === 'edit' && (typeof arg.text !== 'string' || arg.text.trim().length > 40000)) throw new Error('提示词最多支持 40000 个字符。');
   return serializePrompts(async () => {
     const index = pendingPrompts.findIndex(item => item.id === arg.id);
     if (index === -1) throw new Error('这条消息已发送或移除。');
     if (arg.action === 'remove') pendingPrompts.splice(index, 1);
+    else if (arg.action === 'edit') {
+      const item = pendingPrompts[index];
+      if (!arg.text.trim() && !item.attachments?.length) throw new Error('请输入提示词内容。');
+      pendingPrompts[index] = { ...item, text: arg.text.trim() };
+    }
     else {
       if (!activeRun || activeRun.kind !== 'agent' || activeRun.demo || activeRun.controller.signal.aborted || shuttingDown) throw new Error('当前没有可接收引导的模型任务，消息仍保留在待发送列表。');
       pendingPrompts[index].mode = 'steer';
@@ -479,10 +526,18 @@ function takeSteering(run) {
   for (const item of items) emit({ type: 'user-message', id: item.id, text: item.text, source: 'steering', createdAt: item.createdAt, ...(item.attachments?.length ? { attachments: item.attachments } : {}) });
   return items.map(({ id, text, createdAt, attachments }) => ({ id, text, createdAt, source: 'steering', ...(attachments?.length ? { attachments } : {}) }));
 }
-function approve(request, { signal } = {}) {
+async function approve(request, { signal } = {}) {
   const run = activeRun;
-  if (!run || run.controller.signal.aborted || signal?.aborted) return Promise.resolve(false);
-  return approvalController.approve(request, { signal, parentSignal: run.controller.signal, runId: run.id, workspaceId });
+  if (!run || run.controller.signal.aborted || signal?.aborted) return false;
+  let decision;
+  const approved = await approvalController.approve(request, { signal, parentSignal: run.controller.signal, runId: run.id, workspaceId,
+    onDecision: outcome => { decision = outcome; } });
+  if (!approved && decision?.reviewStatus === 'denied') {
+    const error = new Error(`AI 审批已拒绝：${decision.reviewReason || '操作未获批准。'}`);
+    error.code = 'APPROVAL_DENIED';
+    throw error;
+  }
+  return approved;
 }
 function dispatchModelRequest(config) {
   return config.authMode === 'chatgpt' ? chatgpt.requestModel({ ...config, requestModel }) : requestModel(config);
@@ -490,13 +545,14 @@ function dispatchModelRequest(config) {
 async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
   const settings = publicSettings(), context = await catalogContext();
+  if (settings.provider === 'ollama' && !catalogSnapshots.has(context.key)) await fetchModelCatalog();
   run.controller.signal.throwIfAborted();
   if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
   const account = settings.provider === 'openai' && settings.authMode === 'chatgpt';
   if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing
       || run.chatgptProfileId && run.chatgptProfileId !== context.account.session.profileId)) throw new Error('ChatGPT 授权已变更，请停止后重新开始任务。');
   const apiKey = account ? '' : store.key(settings.provider);
-  if (!account && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
+  if (!account && settings.provider !== 'ollama' && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
   const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
   if (!model) throw new Error('请先选择模型。');
   if (!modelOverride && modelCapabilities.supportsTools === false) throw new Error('所选模型不支持编程工具调用。');
@@ -531,11 +587,13 @@ async function state() {
   const history = new Map(sessions.map(session => [projectIdentity(session.workspace), session]));
   const projects = (recentProjects?.list() || []).map(project => ({ ...project, ...(history.get(projectIdentity(project.path)) ? { sessionId: history.get(projectIdentity(project.path)).id } : {}) }));
   const sessionMetrics = sessionMetricsSnapshot(currentSession);
+  const undoableRunIds = persistentTaskUndo.ids(currentSession?.id, tools?.root);
+  const redoableRunIds = persistentTaskUndo.ids(currentSession?.id, tools?.root, 'redo');
   const activeTask = { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true,
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask };
+  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -551,11 +609,12 @@ async function catalogContext(arg = {}, account) {
 }
 function catalogConnectionKey(provider, authMode, config, account) {
   const credential = authMode === 'chatgpt' ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId] : store.settings.providers[provider].encryptedKey || '';
-  return createHash('sha256').update(JSON.stringify([provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl, credential])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl, credential,
+    ...(provider === 'ollama' ? [config.contextWindowTokens] : [])])).digest('hex');
 }
 function capabilitiesFor(context, model) {
   const metadata = catalogSnapshots.get(context.key)?.models.find(item => item.id === model);
-  return deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.authMode === 'chatgpt' ? { officialSource: true } : {}) });
+  return deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true } : {}) });
 }
 function resolvedReasoningEffort(capabilities, selected = 'default') {
   if (selected === 'default' || !Array.isArray(capabilities.reasoningEfforts)) return selected;
@@ -576,7 +635,7 @@ async function modelSettingsDraft(arg) {
   const authMode = arg.authMode ?? settings.providers[provider].authMode;
   const input = { provider, authMode, model: '' };
   if (authMode !== 'chatgpt') {
-    for (const field of ['baseUrl', 'apiProtocol', 'apiKey', 'clearKey']) if (Object.hasOwn(arg, field)) input[field] = arg[field];
+    for (const field of ['baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens']) if (Object.hasOwn(arg, field)) input[field] = arg[field];
   }
   // Validate the draft with exactly the same rules as a saved connection, while
   // keeping its key and all configuration changes in main-process memory only.
@@ -588,11 +647,12 @@ async function modelSettingsDraft(arg) {
   const account = authMode === 'chatgpt' ? await chatgpt.publicState() : null;
   if (authMode === 'chatgpt' && (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId)) throw new Error('请先连接 ChatGPT 并授权套餐用量，再获取模型目录。');
   const apiKey = authMode === 'chatgpt' ? '' : validator.key(provider);
-  if (authMode !== 'chatgpt' && !apiKey) throw new Error('请填写 API Key，再获取模型目录。');
+  if (authMode !== 'chatgpt' && provider !== 'ollama' && !apiKey) throw new Error('请填写 API Key，再获取模型目录。');
   const connection = createHash('sha256').update(JSON.stringify([
     workspaceId, provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl,
     authMode === 'chatgpt' ? 'responses' : config.apiProtocol || 'responses',
     authMode === 'chatgpt' ? account.session.profileId : apiKey,
+    ...(provider === 'ollama' ? [config.contextWindowTokens] : []),
   ])).digest('hex');
   return { input, provider, authMode, config, account, apiKey, connection };
 }
@@ -603,7 +663,7 @@ async function previewModelSettingsCatalog(arg) {
   if (draft.authMode === 'chatgpt') {
     const models = (await chatgpt.listModels({ force: true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
     result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
-  } else result = await modelCatalog.list({ provider: draft.provider, baseUrl: draft.config.baseUrl, apiKey: draft.apiKey, force: true });
+  } else result = await modelCatalog.list({ provider: draft.provider, baseUrl: draft.config.baseUrl, apiKey: draft.apiKey, contextWindowTokens: draft.config.contextWindowTokens, force: true });
   if ((await modelSettingsDraft(arg)).connection !== draft.connection) throw new Error('连接配置或账号已变更，请重新获取目录。');
   let safeResult = redact(JSON.stringify({ ...result, provider: draft.provider, authMode: draft.authMode }));
   if (draft.apiKey) safeResult = safeResult.split(draft.apiKey).join('[已隐藏密钥]');
@@ -642,8 +702,8 @@ async function fetchModelCatalog(arg = {}) {
       result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
     } else {
       const apiKey = store.key(context.provider);
-      if (!apiKey) throw new Error('请先保存此服务商的 API Key，再获取模型目录。');
-      result = await modelCatalog.list({ provider: context.provider, baseUrl: context.config.baseUrl, apiKey, force: arg.force === true });
+      if (context.provider !== 'ollama' && !apiKey) throw new Error('请先保存此服务商的 API Key，再获取模型目录。');
+      result = await modelCatalog.list({ provider: context.provider, baseUrl: context.config.baseUrl, apiKey, contextWindowTokens: context.config.contextWindowTokens, force: arg.force === true });
     }
     if ((await catalogContext({ provider: context.provider, authMode: context.authMode })).key !== context.key) throw new Error('模型连接配置已变更，请重新获取目录。');
     const snapshot = JSON.parse(redact(JSON.stringify({ ...result, provider: context.provider, authMode: context.authMode })));
@@ -663,6 +723,13 @@ async function saveCurrentSession() {
   const clean = JSON.parse(redact(JSON.stringify(currentSession)));
   await store.saveSession(clean);
   currentSession.updatedAt = clean.updatedAt;
+  if (initialized && lastRememberedSessionId !== currentSession.id) await rememberSessionSelection();
+}
+async function rememberSessionSelection() {
+  if (!initialized || host.active !== context) return false;
+  const saved = await host.rememberSelection(context);
+  if (saved) lastRememberedSessionId = currentSession.id;
+  return saved;
 }
 function publicSession(session) {
   const { contextCheckpoint, usageBaseline, contextUsage, ...publicData } = session;
@@ -684,12 +751,15 @@ function setWorkspace(root) {
 }
 async function activateProjectLocal(root, restore = true) {
   const canonical = await fs.realpath(root);
-  const history = restore ? (await store.listSessions()).find(session => projectIdentity(session.workspace) === projectIdentity(canonical)) : null;
-  // Load the historical snapshot before changing either the workspace or editor.
-  const snapshot = history ? await readSessionForContext(history.id) : null;
+  const selected = restore ? await sessionRestore.resolveProject(canonical, {
+    readSession: readSessionForContext, listProjectSessions: root => store.listProjectSessions(root),
+  }) : null;
+  // A missing/corrupt selection falls back to available history or a new chat.
+  const snapshot = selected?.session;
   setWorkspace(canonical);
   if (snapshot) { currentSession = snapshot; loadedSnapshot = true; }
   else await createSession();
+  await persistentTaskUndo.loadSession(currentSession);
   await rememberProject(canonical);
   return state();
 }
@@ -697,8 +767,10 @@ async function createSession({ temporary = false } = {}) {
   currentSession = store.createSession(tools?.root || null);
   loadedSnapshot = false;
   if (temporary) currentSession.temporary = true;
+  await persistentTaskUndo.loadSession(currentSession);
   currentSession.usageLedgerVersion = 1;
   await saveCurrentSession();
+  if (initialized) await rememberSessionSelection();
   return currentSession;
 }
 async function startTask(input) {
@@ -715,6 +787,7 @@ async function startTask(input) {
   const provider = settings.provider;
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
   const modelContext = await catalogContext();
+  if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
   metricsConnectionKey = modelContext.key;
   const modelCapabilities = capabilitiesFor(modelContext, settings.model);
   // Unknown models accept the user's generic choice. Advertised capabilities
@@ -735,7 +808,7 @@ async function startTask(input) {
       if (!chatgptProfileId) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
     } else {
       apiKey = store.key(provider);
-      if (!apiKey) throw new Error('请先在模型设置中填写 API Key。');
+      if (provider !== 'ollama' && !apiKey) throw new Error('请先在模型设置中填写 API Key。');
     }
   }
   if (!demo) {
@@ -743,10 +816,13 @@ async function startTask(input) {
     currentSession.chatgptProfileId = chatgptProfileId;
   }
   if (loadedSnapshot) {
+    const sourceSessionId = currentSession.id;
     const fork = store.createSession(currentSession.workspace);
     // A history continuation inherits only the totals visible at this fork.
     // Later requests in the original session cannot change the branch's totals.
     currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt, usageBaseline: store.sessionUsageTotals(currentSession) };
+    try { await persistentTaskUndo.copySession(sourceSessionId, currentSession); }
+    catch { emit({ type: 'storage-error', error: '历史撤销记录无法复制到新分支，当前文件和历史均已保留。' }); }
     loadedSnapshot = false;
   }
   if (shuttingDown || win?.isDestroyed()) throw new Error('窗口已关闭，任务未启动。');
@@ -754,9 +830,14 @@ async function startTask(input) {
   currentSession.demo = demo;
   currentSession.usageLedgerVersion = 1;
   const userText = demo ? '演示一次代码助手的工作流程（离线，不调用 API）' : text;
+  const previousContextUsage = structuredClone(currentSession.contextUsage || {});
   const userMessage = { id: input?.promptId || randomUUID(), role: 'user', content: userText, createdAt: input?.promptCreatedAt || new Date().toISOString(), ...(input?.promptSource ? { source: input.promptSource } : {}), ...(attachments.length ? { attachments } : {}) };
   currentSession.messages.push(userMessage);
+  if (!demo) currentSession.contextUsage = makePendingContextUsage(previousContextUsage, { provider, model: settings.model,
+    connectionKey: modelContext.key, limit: modelCapabilities.contextWindow ?? null, limitKind: modelCapabilities.contextWindowKind ?? 'total' });
   const run = makeRun('agent');
+  run.sessionId = currentSession.id;
+  run.fileChangeCount = 0;
   run.connectionKey = modelContext.key;
   run.chatgptProfileId = chatgptProfileId;
   run.demo = demo;
@@ -776,12 +857,24 @@ async function startTask(input) {
           emit(event);
         }, approve });
       } else {
-        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : 'apiKey', connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => { if (name.startsWith('browser_')) { emit({ type: 'browser-open' }); return browser.execute(name, args, { ...options, approve }); } return tools.execute(name, args, options); } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : 'apiKey', connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+          if (name === 'read_url' || name.startsWith('browser_')) {
+            if (name !== 'read_url' && !(name === 'browser_navigate' && isXmlURL(args.url))) emit({ type: 'browser-open' });
+            return browser.execute(name, args, { ...options, approve });
+          }
+          return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
-            onCommitted: change => emit({ type: 'files-changed', operation: 'subagent', path: change.path }) }),
+            onCommitted: change => {
+              recordRunFileChange(run, change);
+              emit({ type: 'file-change-recorded', toolCallId: `child-${meta.id}-${randomUUID()}`, fileChange: change });
+              emit({ type: 'files-changed', operation: 'subagent', path: change.path });
+            } }),
           onSubagentManager: manager => { run.subagentManager = manager; },
           takeSteering: () => takeSteering(run),
-          onMessagesChanged: emitSessionMetrics,
+          previousContextUsage,
+          contextMeasurement: previousContextUsage.measurement || previousContextUsage.lastReported?.measurement,
+          onMessagesChanged: () => { currentSession.contextUsage = makePendingContextUsage(currentSession.contextUsage); emitSessionMetrics(); },
           contextCheckpoint: sessionContextCheckpoint(),
           onContextCompacted: () => saveCurrentSession(),
           onContextUsage: sample => {
@@ -798,7 +891,9 @@ async function startTask(input) {
       for (const done of [...approvals.values()]) done(false);
       await approvalController.drain(run.id);
       if (run.controller.signal.aborted) status = 'stopped';
-      const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}) };
+      try { await persistentTaskUndo.seal(run.id, run.sessionId, tools.root); }
+      catch { emit({ type: 'storage-error', error: '本轮撤销记录保存失败，自动撤销已停用；文件改动仍保留。' }); }
+      const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, fileChangeCount: run.fileChangeCount, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}) };
       // Store only one timing/rate summary per task. Streaming estimates stay
       // out of the token ledger, and history never restarts a completed timer.
       currentSession.events.push(endEvent);
@@ -828,6 +923,43 @@ async function startTask(input) {
   catch (cause) { run.controller.abort(); if (currentSession.messages.at(-1) === userMessage) currentSession.messages.pop(); activeRun = null; run.finish(); throw cause; }
   setTimeout(executeRun, 40);
   return { runId: run.id };
+}
+
+async function runPersistedChangeOperation(arg, direction) {
+  requireIdle(); requireSharedReady(); requireEditorSettled();
+  const workspace = requireTools(), name = direction === 'redo' ? 'redo_run_changes' : 'undo_run_changes';
+  if (!arg || typeof arg !== 'object' || Array.isArray(arg) || Object.keys(arg).length !== 1
+      || typeof arg.runId !== 'string' || !/^[a-f\d-]{36}$/iu.test(arg.runId)) throw new Error('本轮撤销或恢复参数无效。');
+  const peers = [...windows.values()].flatMap(value => [...value.contexts]);
+  if (peers.some(peer => peer !== context && peer.tools && projectIdentity(peer.tools.root) === projectIdentity(workspace.root)
+      && (peer.busy || peer.editorDirty || peer.hasPendingPrompts))) throw new Error('此项目在其他窗口仍有任务或未保存内容，请先处理后再撤销或恢复。');
+  if (!persistentTaskUndo.ids(currentSession.id, workspace.root, direction).includes(arg.runId)) throw new Error('此轮没有可用的撤销或恢复记录。');
+  const run = makeRun('undo'); activeRun = run;
+  emit({ type: 'run-start', runId: run.id, kind: 'undo' });
+  emit({ type: 'tool-start', name, args: { runId: arg.runId }, toolCallId: run.id });
+  let status = 'completed', error;
+  try {
+    let sequence = 0;
+    const rawResult = await persistentTaskUndo.operate({ sessionId: currentSession.id, workspace: workspace.root, runId: arg.runId,
+      direction, workspaceTools: workspace, signal: run.controller.signal, onFileChange: change => {
+        emit({ type: 'file-change-recorded', toolCallId: `${run.id}-${++sequence}`, fileChange: change });
+        emit({ type: 'files-changed', operation: direction + '-run', path: change.path });
+      } });
+    const detail = JSON.parse(rawResult);
+    if (detail.status !== 'completed') { status = detail.stopped ? 'stopped' : 'failed'; error = detail.message; }
+    const result = redact(rawResult);
+    emit({ type: 'tool-result', name, toolCallId: run.id, result }); return { result };
+  } catch (cause) { status = 'failed'; error = cause.message; throw cause; }
+  finally {
+    for (const done of [...approvals.values()]) done(false);
+    await approvalController.drain(run.id);
+    const endEvent = { type: 'run-end', runId: run.id, kind: 'undo', status: run.controller.signal.aborted ? 'stopped' : status,
+      ...(error ? { error: redact(error) } : {}), startedAt: run.startedAt, endedAt: Date.now(),
+      elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageIndex: currentSession.messages.length - 1 };
+    currentSession.events.push(endEvent); currentSession.events = currentSession.events.slice(-150); rememberTaskRun(endEvent);
+    try { await saveCurrentSession(); }
+    finally { activeRun = null; run.finish(); emit(endEvent); }
+  }
 }
 
 function buildHandlers() {
@@ -956,59 +1088,24 @@ function buildHandlers() {
       if (typeof arg?.path !== 'string' || !path.isAbsolute(arg.path) || arg.path.includes('\0')) throw new Error('项目路径无效。');
       return host.activateProject(arg.path);
     },
-    listFiles: arg => requireTools().listFiles(arg || {}),
-    readFile: arg => requireTools().readFile(arg || {}),
-    fileList: arg => requireFileManager().list(arg || {}),
+    listFiles: arg => requireTools({ allowDuringUndo: true }).listFiles(arg || {}),
+    readFile: arg => requireTools({ allowDuringUndo: true }).readFile(arg || {}),
+    fileList: arg => requireFileManager({ allowDuringUndo: true }).list(arg || {}),
     listProjectSessions: () => store.listProjectSessions(tools?.root || null),
-    fileRead: arg => requireFileManager().read(arg),
+    fileRead: arg => requireFileManager({ allowDuringUndo: true }).read(arg),
     fileCreate: async arg => fileChanged('create', await requireFileManager().create(arg)),
-    fileRename: async arg => {
-      const result = await requireFileManager().rename(arg);
-      if (fileClipboard && (fileClipboard.path === result.oldPath || fileClipboard.path.startsWith(result.oldPath + '/'))) {
-        fileClipboard.path = result.path + fileClipboard.path.slice(result.oldPath.length);
-      }
-      return fileChanged('rename', result);
-    },
-    fileMove: async arg => {
-      const destination = arg?.destination ?? '';
-      if (typeof arg?.path !== 'string' || typeof destination !== 'string') throw new Error('文件移动参数无效。');
-      const result = await requireFileManager().copyOrMove({ source: arg.path, destination, mode: 'cut' });
-      if (fileClipboard && (fileClipboard.path === result.source || fileClipboard.path.startsWith(result.source + '/'))) {
-        fileClipboard.path = result.path + fileClipboard.path.slice(result.source.length);
-      }
-      return fileChanged('move', result);
-    },
-    fileDelete: async arg => {
-      const manager = requireFileManager();
-      const target = await manager.paths(arg);
-      if (!target.relative) throw new Error('不能删除项目根目录。');
-      const confirmation = await dialog.showMessageBox(win, { type: 'question', title: '移至回收站', message: `将“${target.relative}”移至 Windows 回收站？`, detail: '文件夹内的内容也会一起移入回收站。', buttons: ['移至回收站', '取消'], defaultId: 1, cancelId: 1, noLink: true });
-      if (confirmation.response !== 0) return { canceled: true };
-      const result = await manager.remove(arg);
-      if (fileClipboard && (fileClipboard.path === result.path || fileClipboard.path.startsWith(result.path + '/'))) fileClipboard = null;
-      return fileChanged('delete', result);
-    },
-    fileClipboard: async arg => {
-      if (!['copy', 'cut'].includes(arg?.mode)) throw new Error('请选择复制或剪切。');
-      const target = await requireFileManager().paths(arg);
-      if (!target.relative) throw new Error('请先选择项目内的文件或文件夹。');
-      fileClipboard = { path: target.relative, mode: arg.mode };
-      await broadcastState();
-      return { ...fileClipboard };
-    },
-    filePaste: async arg => {
-      if (!fileClipboard) throw new Error('请先在文件树中复制或剪切文件。');
-      const result = await requireFileManager().copyOrMove({ source: fileClipboard.path, destination: arg?.destination ?? '', mode: fileClipboard.mode });
-      if (fileClipboard.mode === 'cut') fileClipboard = null;
-      return fileChanged('paste', result);
-    },
-    fileCopyPath: async arg => {
-      if (arg?.relative !== undefined && typeof arg.relative !== 'boolean') throw new Error('路径复制参数无效。');
-      const target = await requireFileManager().paths(arg);
-      const text = arg?.relative === true ? target.relative : target.absolute;
-      clipboard.writeText(text);
-      return { text };
-    },
+    ...require('./core/explorer-batch.cjs').createExplorerHandlers({
+      getManager: requireFileManager, getClipboard: () => fileClipboard,
+      setClipboard: value => { fileClipboard = value; }, onChange: fileChanged,
+      broadcast: broadcastState, writeText: text => clipboard.writeText(text),
+      confirmDelete: async targets => {
+        const confirmation = await dialog.showMessageBox(win, { type: 'question', title: '移至回收站',
+          message: targets.length === 1 ? `将“${targets[0].relative}”移至 Windows 回收站？` : `将选中的 ${targets.length} 个项目移至 Windows 回收站？`,
+          detail: (targets.length > 1 ? targets.slice(0, 8).map(target => target.relative).join('\n') + (targets.length > 8 ? '\n…' : '') + '\n\n' : '') + '文件夹内的内容也会一起移入回收站。',
+          buttons: ['移至回收站', '取消'], defaultId: 1, cancelId: 1, noLink: true });
+        return confirmation.response === 0;
+      },
+    }),
     fileReveal: async arg => {
       const target = await requireFileManager().paths(arg);
       shell.showItemInFolder(target.absolute);
@@ -1032,6 +1129,25 @@ function buildHandlers() {
     saveSettings: async arg => { await saveProjectSettings(arg); await broadcastAllStates(); return state(); },
     previewModelCatalog: previewModelSettingsCatalog,
     saveModelSettings: commitModelSettings,
+    getDeepSeekBalance: async () => {
+      const { fetchDeepSeekBalance, isOfficialDeepSeekURL } = await import('./core/deepseek-account.mjs');
+      const baseUrl = store.settings.providers.deepseek.baseUrl;
+      const apiKey = store.key('deepseek');
+      if (!isOfficialDeepSeekURL(baseUrl)) throw new Error('DEEPSEEK_BALANCE_UNOFFICIAL: 余额查询仅支持 DeepSeek 官方 API 地址。');
+      if (!apiKey) throw new Error('DEEPSEEK_BALANCE_KEY: 请先保存 DeepSeek API Key。');
+      let balance;
+      try { balance = await fetchDeepSeekBalance({ apiKey, baseUrl }); }
+      catch (error) {
+        const code = /^DEEPSEEK_BALANCE_[A-Z_]+$/u.test(error?.code) ? error.code : 'DEEPSEEK_BALANCE_NETWORK';
+        // Electron IPC preserves Error.message, not custom properties. The UI
+        // maps this bounded code to a local message and never renders a body.
+        throw new Error(code + ': DeepSeek 余额查询失败。');
+      }
+      if (store.settings.providers.deepseek.baseUrl !== baseUrl || store.key('deepseek') !== apiKey)
+        throw new Error('连接已变更，请重新查询。');
+      return balance;
+    },
+    openDeepSeekAccount: async () => { await shell.openExternal('https://platform.deepseek.com/'); return null; },
     chatgptSignIn: async arg => {
       requireIdle();
       if (arg !== undefined && (!arg || typeof arg !== 'object' || Array.isArray(arg))) throw new Error('登录参数无效。');
@@ -1076,8 +1192,10 @@ function buildHandlers() {
       const loaded = await readSessionForContext(arg?.id);
       if (loaded.workspace && (!tools || projectIdentity(loaded.workspace) !== projectIdentity(tools.root))) throw new Error('请先通过项目下拉菜单切换到此会话所属项目，再打开历史会话。');
       currentSession = loaded;
+      await persistentTaskUndo.loadSession(currentSession);
       loadedSnapshot = true;
       if (tools) await rememberProject(tools.root);
+      await context.rememberSelection();
       await broadcastState();
       return publicSession(loaded);
     },
@@ -1108,6 +1226,8 @@ function buildHandlers() {
       await broadcastAllStates();
       return renamed;
     },
+    undoRunChanges: async arg => runPersistedChangeOperation(arg, 'undo'),
+    redoRunChanges: async arg => runPersistedChangeOperation(arg, 'redo'),
     undoLastChange: async () => {
       requireIdle();
       const workspace = requireTools();
@@ -1163,7 +1283,7 @@ function buildHandlers() {
     const handler = handlers[name];
     handlers[name] = arg => {
       if (shuttingDown || quitting || win?.isDestroyed()) throw new Error('窗口正在关闭，文件操作未开始。');
-      const manager = requireFileManager();
+      const manager = requireFileManager({ allowDuringUndo: !manualMutations.has(name) });
       const pending = manualOperations.then(() => {
         if (win?.isDestroyed() || manager !== fileManager) throw new Error('项目已切换或关闭，文件操作未开始。');
         return handler(arg);
@@ -1180,7 +1300,7 @@ function buildHandlers() {
       });
     };
   }
-  for (const name of ['getSession', 'newSession', 'renameSession', 'runTask', 'undoLastChange', 'runTerminal']) {
+  for (const name of ['getSession', 'newSession', 'renameSession', 'runTask', 'undoLastChange', 'undoRunChanges', 'redoRunChanges', 'runTerminal']) {
     const handler = handlers[name];
     handlers[name] = async arg => {
       if (shuttingDown) throw new Error('窗口正在关闭，请在新窗口继续操作。');
@@ -1298,6 +1418,7 @@ const context = {
     if (localOperation || promptPreflights || fileOperationDone) throw new Error('正在保存文件或准备消息，请稍后切换项目。');
   },
   publicCurrentSession: () => publicSession(currentSession),
+  rememberSelection: rememberSessionSelection,
   activateProjectLocal,
   refreshBrowserVisibility: () => browser?.applyLayout(),
   clearFind: () => { lastFindText = null; },
@@ -1310,11 +1431,24 @@ const context = {
   get hasFileOperation() { return !!fileOperationDone; },
   emit, approve, state, broadcastState, setWorkspace, createSession, shutdown, requestEditorClose, scheduleNextPrompt,
   handlers: buildHandlers(),
-  async initialize() {
-    await createSession();
+  async initialize({ restoreTarget = null } = {}) {
+    if (!activeWindowHost) activeWindowHost = host;
+    // Resolve and load before exposing IPC or the first renderer document.
+    // No queued prompt, model call, terminal or browser operation is resumed.
+    try {
+      if (restoreTarget?.workspace) setWorkspace(restoreTarget.workspace);
+      if (restoreTarget?.session) { currentSession = restoreTarget.session; loadedSnapshot = true; }
+      else await createSession();
+      await persistentTaskUndo.loadSession(currentSession);
+    } catch {
+      tools = null; fileManager = null;
+      await createSession();
+    }
+    initialized = true;
     if (host.win) { win = host.win; initializeBrowser(); return context; }
-    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Synora code', backgroundColor: '#101010', autoHideMenuBar: true,
-      ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#0b0b0b', symbolColor: '#d6dde3', height: 44 } } : {}),
+    const palette = nativeAppearance(appearance.snapshot());
+    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Synora code', backgroundColor: palette.background, autoHideMenuBar: true,
+      ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: palette.caption, symbolColor: palette.symbol, height: 44 } } : {}),
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false, backgroundThrottling: false, offscreen: smoke } });
     host.win = win; initializeBrowser();
     const contentsId = win.webContents.id;
@@ -1326,6 +1460,8 @@ const context = {
       if (level === 'error' || Number(level) >= 2) rendererErrors.push(String(message));
     });
     win.webContents.on('will-navigate', event => event.preventDefault());
+    const disposeEditorContextMenu = installEditorContextMenu({ win, Menu });
+    win.once('closed', disposeEditorContextMenu);
     win.webContents.on('did-start-loading', () => { for (const value of host.contexts) value.clearFind(); });
     win.webContents.on('found-in-page', (_event, result) => host.active.emit({ type: 'find-result', requestId: result.requestId, matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal, finalUpdate: result.finalUpdate }));
     for (const event of ['enter-full-screen', 'leave-full-screen']) win.on(event, () => { host.active.emit({ type: 'window-state', isFullscreen: win.isFullScreen() }); host.broadcastState().catch(() => {}); });
@@ -1346,8 +1482,13 @@ const context = {
     win.webContents.on('render-process-gone', () => { host.abortAll(); });
     const refresh = setInterval(() => { if (!win.isDestroyed()) host.broadcastState().catch(() => {}); }, 60000);
     refresh.unref();
-    win.on('focus', () => host.broadcastState().catch(() => {}));
+    win.on('focus', () => {
+      activeWindowHost = host;
+      host.active.rememberSelection().catch(() => {});
+      host.broadcastState().catch(() => {});
+    });
     win.on('closed', () => clearInterval(refresh));
+    await rememberSessionSelection();
     await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
     if (!smoke) win.show();
     return context;
@@ -1385,6 +1526,10 @@ async function boot() {
   if (legacyMigrationSource) await migrateLegacyData(dataDir, legacyMigrationSource, { encryptionPrepared: true });
   store = new Store(dataDir, safeStorage);
   await store.init();
+  const { PersistentTaskUndo } = await import('./core/persistent-task-undo.mjs');
+  const { legacyTaskUndoRuns } = await import('./core/legacy-task-undo.mjs');
+  persistentTaskUndo = new PersistentTaskUndo({ dataDir, safeStorage, legacyTaskUndoRuns });
+  sessionRestore = await new SessionRestore(dataDir).init();
   recentProjects = new RecentProjects(dataDir);
   await recentProjects.init();
   if (recentProjects.writable && !recentProjects.list().length) {
@@ -1399,13 +1544,16 @@ async function boot() {
     return image.isEmpty() ? null : image.getSize();
   } });
   await appearance.init();
+  nativeTheme.themeSource = nativeAppearance(appearance.snapshot()).theme;
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await chatgpt.init();
   Menu.setApplicationMenu(null);
   electronSession.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   electronSession.defaultSession.setPermissionCheckHandler(() => false);
-  primaryContext = createWindowHost();
+  const restoreTarget = await sessionRestore.resolve({ readSession: readSessionForContext,
+    listProjectSessions: root => store.listProjectSessions(root), listSessions: () => store.listSessions() });
+  primaryContext = createWindowHost({ restoreTarget });
   registerHandlers();
   await primaryContext.initialize();
   win = primaryContext.win;
@@ -1416,7 +1564,7 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
-  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'explorer-drag', 'usage-analytics', 'sessions', 'subagents', 'live-controls', 'context-settings'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1679,6 +1827,9 @@ async function smokeTest() {
   result.personalization = await require('./core/smoke-personalization.cjs')({ win, output, dataDir });
   result.menus = await require('./core/smoke-menus.cjs')({ win, output, dataDir });
   result.promptQueue = await require('./core/smoke-queue.cjs')({ win, output, dataDir, readState: () => primaryContext.state() });
+  result.pendingCompact = await require('./core/smoke-pending-compact.cjs')({ win, output, dataDir });
+  result.toolOperationGroups = await require('./core/smoke-tool-operation-groups.cjs')({ win, output, dataDir });
+  result.xmlReading = await require('./core/smoke-xml-reading.cjs')({ win, output, dataDir, store });
   result.largeResponse = await require('./core/smoke-large-response.cjs')({ win, output, dataDir });
   result.explorer = await require('./core/smoke-explorer.cjs')({ win, output, dataDir });
   result.activity = await require('./core/smoke-activity.cjs')({ win, output, dataDir });
@@ -1696,20 +1847,31 @@ async function smokeTest() {
   result.reasoningCapabilities = await require('./core/smoke-reasoning-capabilities.cjs')({ win, output, dataDir });
   result.liveFiles = await require('./core/smoke-live-files.cjs')({ win, output, dataDir });
   result.explorerDrag = await require('./core/smoke-explorer-drag.cjs')({ win, output, dataDir });
+  result.explorerSelection = await require('./core/smoke-explorer-selection.cjs')({ win, output, dataDir });
   result.sessionMetrics = await require('./core/smoke-session-metrics.cjs')({ win, output });
   result.appearance = await require('./core/smoke-appearance.cjs')({ win, output, dataDir });
   result.conversationColors = await require('./core/smoke-conversation-colors.cjs')({ win, output, dataDir });
   result.backgroundPresets = await require('./core/smoke-background-presets.cjs')({ win, output, dataDir });
+  result.uiStyles = await require('./core/smoke-ui-styles.cjs')({ win, output, dataDir });
+  result.accentPalette = await require('./core/smoke-accent-palette.cjs')({ win, output, dataDir });
+  result.roundNavigator = await require('./core/smoke-round-navigator.cjs')({ win, output, dataDir });
   result.editorHighlight = await require('./core/smoke-editor-highlight.cjs')({ win, output, dataDir });
   result.editorCompletion = await require('./core/smoke-editor-completion.cjs')({ win, output, dataDir });
   result.taskHistory = await require('./core/smoke-task-history.cjs')({ win, output, dataDir });
+  result.taskChangeSummary = await require('./core/smoke-task-change-summary.cjs')({ win, output, dataDir, store });
   result.subagents = await require('./core/smoke-subagents.cjs')({ win, output, dataDir, store });
   result.liveControls = await require('./core/smoke-live-controls.cjs')({ win, output, dataDir, store });
   result.contextSettings = await require('./core/smoke-context-settings.cjs')({ win, output, dataDir, store });
+  result.ollama = await require('./core/smoke-ollama.cjs')({ win, output, dataDir, store });
+  result.editorContextMenu = await require('./core/smoke-editor-context-menu.cjs')({ win, output, dataDir, store });
+  result.deepseekAccount = await require('./core/smoke-deepseek-account.cjs')({ win, output, dataDir, store });
   result.codeDiff = await require('./core/smoke-code-diff.cjs')({ win, output, dataDir });
   result.disclosureMotion = await require('./core/smoke-disclosure-motion.cjs')({ win, output, dataDir });
+  result.disclosureVisibility = await require('./core/smoke-disclosure-visibility.cjs')({ win, output, dataDir });
+  result.imageViewed = await require('./core/smoke-image-viewed.cjs')({ win, output, dataDir, store });
   result.commandResult = await require('./core/smoke-command-result.cjs')({ win, output, dataDir });
   result.composerApproval = await require('./core/smoke-composer-approval.cjs')({ win, output, dataDir });
+  result.reconnect = await require('./core/smoke-reconnect.cjs')({ win, output, dataDir, store });
   if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
   await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
   console.log('FORGEDESK_SMOKE_OK ' + JSON.stringify({ version: result.version, status: result.status, modelRounds: result.modelRounds, integration: result.integration.status, events: [...new Set(result.events)] }));
@@ -1736,7 +1898,14 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (quitting === true) return;
   if (quitting === 'pending') { event.preventDefault(); return; }
-  if (![...windows.values()].some(context => context.activeRun || context.editorDirty || context.hasFileOperation)) { chatgpt?.cancelSignIn(); return; }
+  if (![...windows.values()].some(context => context.activeRun || context.editorDirty || context.hasFileOperation)) {
+    chatgpt?.cancelSignIn();
+    if (sessionRestore?.pending || persistentTaskUndo?.pending) {
+      event.preventDefault(); quitting = 'pending';
+      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush()]).finally(() => { quitting = true; app.quit(); });
+    }
+    return;
+  }
   event.preventDefault(); quitting = 'pending';
   const contexts = [...windows.values()];
   Promise.all(contexts.map(context => context.requestEditorClose('quit'))).then(async allowed => {
@@ -1747,6 +1916,8 @@ app.on('before-quit', event => {
     }
     chatgpt?.cancelSignIn();
     await Promise.allSettled(contexts.map(context => context.shutdown()));
+    await sessionRestore?.flush();
+    await persistentTaskUndo?.flush();
     quitting = true; app.quit();
   }).catch(() => { quitting = false; for (const context of contexts) context.scheduleNextPrompt(); });
 });

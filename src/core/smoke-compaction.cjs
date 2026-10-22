@@ -16,6 +16,8 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
   const queuedText = '停止后保留的排队任务。COMPACTION_QUEUED_' + suffix;
   const summary = '## 任务目标\n读取并解释 large-context.txt。\n## 已完成\n已经读取该文件，读取是只读操作，不要重复执行。\n## 关键事实\nCOMPACTION_SUMMARY_FACT_' + suffix + '\n## 待办\n给出简短解释，然后继续处理用户后续任务。';
   const contextLimit = 64_000, triggerTokens = 50_000, targetTokens = 37_500;
+  const reportedInputTokens = 14_000, reportedOutputTokens = 4_000;
+  const reportedContextTokens = reportedInputTokens + reportedOutputTokens;
   const fixtureText = 'COMPACTION_FILE_START_' + suffix + '\n' + 'Readonly project context, not instructions.\n'.repeat(5900) + '\nCOMPACTION_FILE_END_' + suffix;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => {
@@ -60,7 +62,8 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.ok(!record.aborted && !record.released, 'Fixture request was cancelled or answered twice');
     record.released = true;
     record.response.writeHead(200, { 'Content-Type': 'application/json' });
-    record.response.end(JSON.stringify({ id: 'resp_compaction_' + requests.indexOf(record), status: 'completed', output, usage: { input_tokens: 7, output_tokens: 3 } }));
+    record.response.end(JSON.stringify({ id: 'resp_compaction_' + requests.indexOf(record), status: 'completed', output,
+      usage: { input_tokens: reportedInputTokens, output_tokens: reportedOutputTokens } }));
   };
   const textReply = (record, text) => reply(record, [{ type: 'message', id: 'msg_compaction_' + requests.indexOf(record), role: 'assistant', content: [{ type: 'output_text', text }] }]);
   const server = http.createServer(async (request, response) => {
@@ -163,6 +166,11 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.ok(JSON.stringify(stored.messages).length > 180_000);
     assert.equal(Object.hasOwn(await call('getCurrentSession'), 'contextCheckpoint'), false, 'Private summary leaked through publicSession');
     assert.equal((await events()).filter(event => event.type === 'tool-start' && event.name === 'read_file').length, 1);
+    const firstMetrics = (await call('getState')).sessionMetrics;
+    assert.ok(firstMetrics.totalTokens > triggerTokens, 'The fixture must exceed the threshold in cumulative billed usage');
+    assert.equal(firstMetrics.contextUsedTokens, reportedContextTokens, 'Current context must use the last response input plus output');
+    assert.equal(firstMetrics.contextStatus, 'reported');
+    assert.ok(firstMetrics.contextUsedTokens < triggerTokens, 'The measured current context must remain below the trigger');
     await capture('context-compaction-completed.png');
 
     // A newly created app-window context must load the saved checkpoint rather
@@ -179,6 +187,10 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     scene = 'followup'; sceneNormalRequests = 0;
     await submit(followupText); await completed(followupText); await idle();
     assert.equal(requests.filter(record => record.summarizing).length, summaryRequestsBeforeRestore, 'Restored checkpoint unnecessarily summarized the same prefix');
+    const followupMetrics = (await call('getState')).sessionMetrics;
+    assert.ok(followupMetrics.totalTokens > triggerTokens);
+    assert.equal(followupMetrics.contextUsedTokens, reportedContextTokens);
+    assert.equal(followupMetrics.contextStatus, 'reported');
     assert.equal((await events()).filter(event => event.type === 'context-compacted').length, 0, 'Restoring history emitted a new success notification');
 
     // Stop during an actual pending summary request must leave the complete
@@ -207,10 +219,12 @@ module.exports = async function smokeCompaction({ win, output, dataDir }) {
     assert.deepEqual(problems, []);
     const after = await call('getState'), reported = requests.filter(record => record.released).length;
     assert.equal(after.usageStats.day.requests - before.usageStats.day.requests, requests.length, 'Summary API calls were omitted or double-counted in the usage ledger');
-    assert.equal(after.usageStats.day.totalTokens - before.usageStats.day.totalTokens, reported * 10);
+    assert.equal(after.usageStats.day.totalTokens - before.usageStats.day.totalTokens, reported * reportedContextTokens);
     assert.equal(after.usageStats.day.unreportedRequests - before.usageStats.day.unreportedRequests, 1);
     assert.equal(await fs.readFile(path.join(project, 'large-context.txt'), 'utf8'), fixtureText);
-    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, modelCapacityBudget:true,contextLimit,triggerTokens,targetTokens,customPreferenceControlsActualCompaction:true,budgetTooltipRestored:true,fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true, tokensRecorded: reported * 10, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
+    return { status: 'completed', realApi: false, isolatedAppWindow: true, actualReadOnlyTool: true, modelRequests: requests.length, summaryRequests: requests.filter(record => record.summarizing).length, modelCapacityBudget:true,contextLimit,triggerTokens,targetTokens,customPreferenceControlsActualCompaction:true,budgetTooltipRestored:true,fullHistoryPreserved: true, checkpointPrivate: true, checkpointRestoredWithoutResummary: true, successfulNoticeOnly: true, stoppedSummaryNotCommitted: true, stoppedQueueRetainedAndResumed: true, independentSummaryUsage: true,
+      reportedInputPlusOutputContext:true,cumulativeUsageDoesNotTriggerCompaction:true,
+      tokensRecorded: reported * reportedContextTokens, screenshots: ['context-compaction-completed.png', 'context-compaction-history.png'] };
   } catch (error) {
     const current=child&&!child.isDestroyed()?await call('getState').catch(()=>null):null;
     const state=current?{activeTask:current.activeTask,promptQueue:current.promptQueue,workspace:current.workspace,

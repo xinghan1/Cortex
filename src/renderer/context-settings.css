@@ -2,8 +2,6 @@
 .session-context-trigger { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0 3px 5px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .session-context-trigger:hover { background: rgb(170 200 250 / 8%); }
 .session-context-trigger:focus-visible { outline: 2px solid #a9ccff; outline-offset: 3px; }
-.context-settings-chevron { color: #9aafce; transition: transform 180ms ease; }
-.session-context-trigger[aria-expanded='true'] .context-settings-chevron { transform: rotate(180deg); }
 .context-settings-popup { position: absolute; bottom: calc(100% + 11px); right: 0; width: min(340px, calc(100vw - 44px)); max-height: min(460px, calc(100vh - 80px)); overflow-y: auto; z-index: 80; padding: 16px; border: 1px solid rgb(183 207 250 / 29%); border-radius: 16px; background: linear-gradient(145deg, rgb(105 143 205 / 15%), rgb(115 92 195 / 12%)), #1a263d; box-shadow: 0 15px 45px rgb(2 7 20 / 42%); color: #dce7f8; text-align: left; white-space: normal; font-size: 12px; line-height: 1.7; }
 .context-settings-popup:not([hidden]) { animation: context-settings-enter 180ms ease both; }
 .context-settings-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
@@ -15,4 +13,4 @@
 .context-settings-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; }
 .context-trigger-error { margin: 9px 0; color: #ffb0b0; font-size: 11px; }
 @keyframes context-settings-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) { .context-settings-popup:not([hidden]) { animation: none; } .context-settings-chevron { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .context-settings-popup:not([hidden]) { animation: none; } }

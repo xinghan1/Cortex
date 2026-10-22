@@ -37,6 +37,32 @@ test('tool schemas are complete and expose only the implemented tools', () => {
   }
 });
 
+test('AI approval denial stays structured and never writes or starts a command', async t => {
+  const reason = 'AI 审批已拒绝：该操作超出当前任务范围。';
+  const { root, tools } = await fixture(t, { approve: async () => { throw Object.assign(new Error(reason), { code: 'APPROVAL_DENIED' }); } });
+  const write = await jsonResult(tools.execute('write_file', { path: 'denied.txt', content: 'must not be written' }));
+  assert.deepEqual(write, { denied: true, message: reason });
+  assert.equal(await fs.stat(path.join(root, 'denied.txt')).then(() => true, () => false), false);
+  const command = await jsonResult(tools.execute('run_command', { command: 'echo must-not-start', timeout_ms: 1000 }));
+  assert.deepEqual(command, { denied: true, message: reason });
+  assert.equal(tools.history.length, 0);
+});
+
+test('AI denial of a manual undo preserves the changed bytes and its undo record', async t => {
+  let deny = false;
+  const { root, tools } = await fixture(t, { approve: async () => {
+    if (deny) throw Object.assign(new Error('AI 审批已拒绝：撤销超出任务范围。'), { code: 'APPROVAL_DENIED' });
+    return true;
+  } });
+  await jsonResult(tools.execute('write_file', { path: 'kept.txt', content: 'keep this change' }));
+  deny = true;
+  const result = await jsonResult(tools.undoLastChange());
+  assert.equal(result.denied, true);
+  assert.match(result.message, /AI 审批已拒绝/u);
+  assert.equal(await fs.readFile(path.join(root, 'kept.txt'), 'utf8'), 'keep this change');
+  assert.equal(tools.history.length, 1);
+});
+
 test('confinement rejects traversal, absolute, UNC, ADS and Windows device names before approval', async t => {
   let approvals = 0;
   const { tools } = await fixture(t, { approve: async () => { approvals += 1; return true; } });

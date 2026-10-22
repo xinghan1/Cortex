@@ -54,7 +54,11 @@ test('an in-flight snapshot stays frozen while the next request applies model, e
   assert.deepEqual(records.map(record => [record.model, record.connectionKey, record.configRevision]),
     [['alpha', 'connection-one', 1], ['beta', 'connection-one', 2]]);
   assert.equal(new Set(records.map(record => record.id)).size, 2);
-  assert.deepEqual(contexts.filter(value => value.status === 'estimated').map(value => [value.model, value.limit]), [['alpha', 100000], ['beta', 64000]]);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  assert.deepEqual(requesting.map(value => [value.model, value.limit]), [['alpha', 100000], ['beta', 64000]]);
+  assert.ok(requesting.every(value => value.inputTokens === null && value.outputTokens === null && value.usedTokens === null),
+    'A new request does not turn a local estimate or the preceding model measurement into an actual count');
+  assert.deepEqual(requesting.map(value => value.requestId), records.map(record => record.id));
   assert.deepEqual(events.filter(event => event.type === 'request-config-applied').map(event => [event.model, event.permissionMode]), [['alpha', 'request'], ['beta', 'full']]);
   assert.equal(JSON.stringify(events).includes('first-key'), false);
   assert.equal(messages.filter(message => message.role === 'user').length, 1);
@@ -108,7 +112,10 @@ test('a switch during a paid summary keeps that request attribution and applies 
   assert.equal(paid, 2);
   assert.deepEqual(records.map(record => [record.model, record.purpose]), [['alpha', 'context-compaction'], ['beta', undefined]]);
   assert.equal(compacted[0].contextLimit, 30000);
-  assert.equal(contexts[0].model, 'beta'); assert.equal(contexts[0].limit, 20000);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  assert.deepEqual(requesting.map(value => [value.model, value.limit]), [['beta', 20000]],
+    'The completed compaction invalidates the old measurement before the next request applies its own model capacity');
+  assert.equal(requesting[0].requestId, records[1].id);
 });
 
 async function oversizedCheckpoint() {
@@ -199,7 +206,10 @@ test('running children inherit the getter and apply selections independently at 
   assert.equal(records.filter(value => value.model === 'alpha').length, 3);
   assert.equal(records.filter(value => value.model === 'beta').length, 3);
   assert.equal(records.filter(value => value.agentId).length, 4);
-  assert.deepEqual(contexts.filter(value => value.status === 'estimated').map(value => value.model), ['alpha', 'beta']);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  assert.deepEqual(requesting.map(value => value.model), ['alpha', 'beta']);
+  assert.deepEqual(requesting.map(value => value.requestId), records.filter(record => !record.agentId).map(record => record.id),
+    'Child requests retain their own usage records without replacing the coordinator context');
   assert.equal(events.filter(event => event.type === 'request-config-applied' && event.agentId).length, 4);
 });
 

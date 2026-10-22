@@ -48,8 +48,7 @@
   const grid = node('div', 'usage-activity-grid'); grid.id = 'usage-activity-grid'; grid.setAttribute('role', 'group'); grid.setAttribute('aria-label', '最近 365 天的 Token 活动');
   scroll.append(grid, months);
   activity.append(activityTop, description, scroll);
-  const note = node('p', 'usage-dashboard-note'); note.id = 'usage-dashboard-note';
-  panel.append(top, status, summary, detail, activity, note); scroller.prepend(panel);
+  panel.append(top, status, summary, detail, activity); scroller.prepend(panel);
   const tooltip = node('div', 'usage-activity-tooltip'); tooltip.id = 'usage-activity-tooltip'; tooltip.hidden = true;
   tooltip.setAttribute('role', 'tooltip'); document.body.append(tooltip);
   card.setAttribute('aria-controls', panel.id); card.setAttribute('aria-expanded', 'false');
@@ -178,17 +177,10 @@
       value.textContent = key === 'longestTaskMs' ? duration(raw) : /Streak$/.test(key) && Number.isFinite(raw) ? number(raw) + ' 天' : compact(raw);
       value.title = `${label}：${key === 'longestTaskMs' ? duration(raw) : number(raw)}${key.includes('Tokens') ? ' Token' : ''}`;
     }
-    status.classList.toggle('error', !!data?.error); status.textContent = data?.error || (data?.overflow ? '部分累计值超过精确显示范围，暂以 — 显示。' : '');
+    status.classList.toggle('error', !!data?.error);
+    status.textContent = [data?.error, data?.overflow ? '部分累计值超过精确显示范围，暂以 — 显示。' : '',
+      data?.durationWarning, data?.historyWarning].filter(Boolean).join(' ');
     detail.textContent = data?.error ? '账本未重置，缺失数字暂不显示。' : `输入 ${compact(stats.inputTokens)} · 输出 ${compact(stats.outputTokens)} Token · ${number(stats.requests)} 次请求 · ${number(stats.activeDays)} 个活跃日`;
-    const since = data?.since ? new Date(data.since).toLocaleDateString('zh-CN', { timeZone: 'Asia/Hong_Kong' }) : '';
-    note.textContent = [
-      '仅累计本应用 API 已回报的输入和输出 Token，缓存 Token 不重复计入。日期按香港时间划分；有请求即为活跃日。单日峰值基于全部记录，活动图展示最近 365 天。',
-      stats.unreportedRequests ? `${number(stats.unreportedRequests)} 次请求用量不完整，缺失部分未计入。` : '',
-      data?.historicalApproximate ? '包含旧版历史近似用量。' : '',
-      data?.durationWarning || '', data?.historyWarning || '',
-      '最长任务用时来自已结束任务的记录；当前连续天数允许最后活跃日为今天或昨天。',
-      since ? `统计起始：${since}。` : '',
-    ].filter(Boolean).join(' ');
     renderActivity();
   }
   async function load() {

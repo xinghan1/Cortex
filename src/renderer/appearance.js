@@ -10,12 +10,43 @@
   const presets = window.ForgeBackgroundPresets;
   const colorButtons = [...document.querySelectorAll('#conversation-text-colors [data-text-color]')];
   const presetButtons = [...document.querySelectorAll('#background-preset-options [data-background-preset]')];
+  const styleButtons = [...document.querySelectorAll('#ui-style-options [data-ui-style]')];
+  const selectionButtons = [...document.querySelectorAll('#selection-color-options [data-selection-color]')];
+  const uiStyles = new Set(['glass', 'black', 'white', 'industrial']);
+  const normalizeStyle = value => uiStyles.has(value) ? value : 'glass';
+  const normalizeSelection = value => typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value) ? value.toLowerCase() : null;
+  const luminance = value => {
+    const linear = [1, 3, 5].map(offset => parseInt(value.slice(offset, offset + 2), 16) / 255)
+      .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  };
+  const selectionInk = value => {
+    const light = luminance(value);
+    return (light + 0.05) / 0.05 >= 1.05 / (light + 0.05) ? '#000000' : '#ffffff';
+  };
+  const readableAccent = (value, style) => {
+    // Filled controls keep the exact user color and use selectionInk. Small
+    // transparent labels need a readable tint against the material itself.
+    const background = { white: '#e8eaed', black: '#171717', industrial: '#2b3138', glass: '#28334b' }[style];
+    const backgroundLight = luminance(background);
+    const contrast = color => (Math.max(luminance(color), backgroundLight) + 0.05) / (Math.min(luminance(color), backgroundLight) + 0.05);
+    if (contrast(value) >= 4.5) return value;
+    const target = selectionInk(background) === '#000000' ? 0 : 255;
+    const channels = [1, 3, 5].map(offset => parseInt(value.slice(offset, offset + 2), 16));
+    for (let percent = 1; percent <= 100; percent++) {
+      const color = '#' + channels.map(channel => Math.round(channel + (target - channel) * percent / 100).toString(16).padStart(2, '0')).join('');
+      if (contrast(color) >= 4.5) return color;
+    }
+    return target ? '#ffffff' : '#000000';
+  };
   const settings = [
     { field: 'backgroundTransparency', id: 'background-transparency', initial: 28 },
     { field: 'panelFrost', id: 'panel-frost', initial: 70, filter: '--panel-frost-filter' },
     { field: 'panelTransparency', id: 'panel-transparency', initial: 30, opacity: '--panel-opacity' },
     { field: 'conversationTextColor', kind: 'color', initial: 'white' },
     { field: 'backgroundPreset', kind: 'preset', initial: 'aurora' },
+    { field: 'uiStyle', kind: 'style', initial: 'glass' },
+    { field: 'selectionColor', id: 'selection-color-input', kind: 'selection', initial: null },
   ].map(setting => ({ ...setting, control: setting.id ? $(setting.id) : null, value: setting.initial, dirty: false, revision: 0, queuedRevision: -1 }));
   const defaultImage = 'url("./aurora-background.svg")';
   const rules = new Map();
@@ -46,6 +77,8 @@
       backgroundName: image && typeof value.backgroundName === 'string' ? value.backgroundName : '',
       ...Object.fromEntries(settings.map(({ field, initial, kind }) => [field,
         kind === 'color' ? colors.normalize(value?.[field]) : kind === 'preset' ? presets.normalize(value?.[field])
+          : kind === 'style' ? normalizeStyle(value?.[field])
+          : kind === 'selection' ? normalizeSelection(value?.[field])
           : Number.isInteger(value?.[field]) && value[field] >= 0 && value[field] <= 100 ? value[field] : initial])),
     };
   }
@@ -61,6 +94,10 @@
   }
 
   function render() {
+    const uiStyle = settings.find(setting => setting.kind === 'style').value;
+    document.documentElement.dataset.uiStyle = uiStyle;
+    $('glass-appearance-settings').hidden = uiStyle !== 'glass';
+    for (const button of styleButtons) button.setAttribute('aria-pressed', String(button.dataset.uiStyle === uiStyle));
     const selectedPreset = settings.find(setting => setting.kind === 'preset');
     const preset = presets.get(selectedPreset.value);
     const imported = !!persisted.backgroundImage && !selectedPreset.dirty;
@@ -72,6 +109,18 @@
     ruleFor('.appearance-preview')?.style.setProperty('background-image', image);
     const root = ruleFor(':root');
     for (const setting of settings) {
+      if (setting.kind === 'style') continue;
+      if (setting.kind === 'selection') {
+        const color = setting.value || '#7aa7ff';
+        document.documentElement.dataset.selectionColor = setting.value ? 'custom' : 'default';
+        root?.style.setProperty('--custom-selection-color', color);
+        root?.style.setProperty('--custom-selection-ink', selectionInk(color));
+        root?.style.setProperty('--custom-accent-text', readableAccent(color, uiStyle));
+        setting.control.value = color;
+        $('selection-color-value').value = setting.value ? color.toUpperCase() : '默认';
+        for (const button of selectionButtons) button.setAttribute('aria-pressed', String(button.dataset.selectionColor === setting.value));
+        continue;
+      }
       if (setting.kind === 'preset') {
         for (const button of presetButtons) button.setAttribute('aria-pressed', String(!imported && button.dataset.backgroundPreset === setting.value));
         continue;
@@ -114,9 +163,12 @@
     $('background-import').disabled = value;
     $('background-reset').disabled = value;
     $('frost-reset').disabled = value;
+    $('selection-color-reset').disabled = value;
     for (const setting of settings) if (setting.control) setting.control.disabled = value;
     for (const button of colorButtons) button.disabled = value;
     for (const button of presetButtons) button.disabled = value;
+    for (const button of styleButtons) button.disabled = value;
+    for (const button of selectionButtons) button.disabled = value;
     dialog.setAttribute('aria-busy', String(value));
   }
 
@@ -179,7 +231,8 @@
       const eventsAtRequest = appearanceEvents;
       const next = await bridge.importBackground();
       acceptReply(next, eventsAtRequest);
-      if (before !== persisted.backgroundImage) status('背景图已导入，重启后仍会保留。');
+      if (before !== persisted.backgroundImage) status(persisted.uiStyle === 'glass'
+        ? '背景图已导入，重启后仍会保留。' : '背景图已保存，切换为玻璃风后显示。');
     } catch (error) { status(readableError(error, '背景图导入失败，请重试。'), true); }
     finally { setBusy(false); }
   }
@@ -201,6 +254,8 @@
 
   function edit(setting, value) {
     setting.value = setting.kind === 'color' ? colors.normalize(value) : setting.kind === 'preset' ? presets.normalize(value)
+      : setting.kind === 'style' ? normalizeStyle(value)
+      : setting.kind === 'selection' ? normalizeSelection(value)
       : Math.max(0, Math.min(100, Math.round(value)));
     setting.dirty = true;
     ++setting.revision;
@@ -229,10 +284,25 @@
     edit(settings.find(setting => setting.kind === 'preset'), button.dataset.backgroundPreset);
     saveSettings();
   });
+  for (const button of styleButtons) button.addEventListener('click', () => {
+    if (mutationBusy) return;
+    edit(settings.find(setting => setting.kind === 'style'), button.dataset.uiStyle);
+    saveSettings();
+  });
+  for (const button of selectionButtons) button.addEventListener('click', () => {
+    if (mutationBusy) return;
+    edit(settings.find(setting => setting.kind === 'selection'), button.dataset.selectionColor);
+    saveSettings();
+  });
+  $('selection-color-reset').addEventListener('click', () => {
+    if (mutationBusy) return;
+    edit(settings.find(setting => setting.kind === 'selection'), null);
+    saveSettings();
+  });
   for (const setting of settings.filter(value => value.control)) {
     setting.control.addEventListener('input', () => {
       if (mutationBusy) return;
-      edit(setting, Number(setting.control.value));
+      edit(setting, setting.kind === 'selection' ? setting.control.value : Number(setting.control.value));
       clearTimeout(saveTimer);
       saveTimer = setTimeout(saveSettings, 250);
     });

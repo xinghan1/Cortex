@@ -10,7 +10,7 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
   const call = (name, argument) => js(`window.forge[${JSON.stringify(name)}](${argument === undefined ? '' : JSON.stringify(argument)})`);
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => { for (let count = 0; count < 240; count++) { const result = await predicate(); if (result) return result; await wait(25); } throw new Error('Browser UI smoke timeout: ' + label); };
-  const original = await call('getState'), originalBounds = win.getBounds();
+  const original = await call('getState'), originalBounds = win.getBounds(), originalWindow={opacity:win.getOpacity(),visible:win.isVisible()};
   const project = path.join(dataDir, 'browser-ui-project-' + randomUUID());
   await fs.mkdir(project, { recursive: true });
   const html = '<!doctype html><title>Saved project page</title><h1>Saved project page</h1>';
@@ -53,6 +53,12 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
     } catch (error) { problems.push(error.stack || error.message); response.writeHead(500, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ error: { message: error.message } })); }
   });
   const guest = () => win.contentView.children.find(view => view.webContents && view.webContents !== win.webContents && !view.webContents.isDestroyed());
+  const nativeApprove=async action=>{
+    const request=await until('manual browser '+action+' approval',async()=>(await call('getState')).pendingApprovals.find(item=>item.kind==='browser'&&item.action===action));
+    const point=await until('visible composer browser approval',()=>js(`(()=>{const n=document.querySelector('#composer-approval .approval-accept');if(!n||n.disabled||!n.checkVisibility())return null;const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null;})()`));
+    win.focus();win.webContents.focus();win.webContents.sendInputEvent({type:'mouseMove',...point});win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+    await until('browser approval resolved '+action,async()=>!(await call('getState')).pendingApprovals.some(item=>item.id===request.id));
+  };
   const openMenu = async action => {
     await js(`(()=>{document.querySelector('[data-menu="view"]').click();document.querySelector('#app-menu-popup [data-action="browser"]').click();document.querySelector('#app-menu-submenu [data-action=${JSON.stringify(action)}]').click()})()`);
   };
@@ -65,6 +71,7 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
       && actual.y >= 44 && actual.x + actual.width <= width && actual.y + actual.height <= height && actual;
   });
   try {
+    win.setOpacity(0);win.showInactive();win.focus();win.webContents.focus();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = 'http://127.0.0.1:' + server.address().port;
     await call('openProject', { path: project });
     await until('renderer project', () => js(`appState?.workspace?.root===${JSON.stringify(project)}&&!projectSwitching&&!editorSaving`));
@@ -98,15 +105,17 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
     assert.match(await fs.readFile(path.join(project, 'preview.html'), 'utf8'), /Autosaved browser page/);
     await assertLayout('project preview native bounds');
     await call('saveSettings', { provider: 'deepseek', model: 'smoke-browser-ui', baseUrl: origin + '/v1', apiKey: 'forgedesk-browser-ui-key', reasoningEffort: 'default', maxSteps: 5 });
-    await call('newSession'); await call('setPermissionMode', { mode: 'assist' });
-    await js(`(()=>{window.__browserUISmoke={events:[]};window.__browserUISmoke.off=window.forge.onEvent(event=>{window.__browserUISmoke.events.push(event);if(event.type==='approval-request'&&event.kind==='browser')queueMicrotask(()=>window.forge.respondApproval({id:event.id,approved:true}))})})()`);
+    await call('newSession'); await call('setPermissionMode', { mode: 'request' });
+    await js(`(()=>{window.__browserUISmoke={events:[],nativeApprovals:0};window.__browserUISmoke.off=window.forge.onEvent(event=>window.__browserUISmoke.events.push(event));window.__browserUISmoke.onClick=event=>{if(event.isTrusted&&event.target.closest('#composer-approval .approval-accept'))window.__browserUISmoke.nativeApprovals++;};document.addEventListener('click',window.__browserUISmoke.onClick,true);true;})()`);
     await call('submitPrompt', { text: 'Verify the isolated browser fixture using the browser tools.', mode: 'queue' });
+    for(const action of ['navigate','type','click'])await nativeApprove(action);
     await until('live agent finished', async () => rounds.length === 4 && !(await call('getState')).activeTask.running);
     assert.deepEqual(problems, []);
     assert.equal(await guest().webContents.executeJavaScript("document.getElementById('result').textContent"), 'Action: Live agent tool');
     const events = await js('window.__browserUISmoke.events');
-    assert.ok(events.some(event => event.type === 'approval-auto' && event.kind === 'browser' && event.action === 'navigate'));
-    for (const action of ['type', 'click']) assert.ok(events.some(event => event.type === 'approval-request' && event.kind === 'browser' && event.action === action));
+    for (const action of ['navigate','type','click']) assert.ok(events.some(event => event.type === 'approval-request' && event.kind === 'browser' && event.action === action));
+    assert.equal(events.filter(event=>event.type==='approval-review').length,0,'Request-mode browser regression must not create AI reviewer requests');
+    assert.equal(await js('window.__browserUISmoke.nativeApprovals'),3);
     assert.ok(events.some(event => event.type === 'run-end' && event.status === 'completed'));
     await assertLayout('AI browser pane remains visible');
     win.webContents.invalidate(); await wait(100);
@@ -117,16 +126,20 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
       await until('project switch hides background native guest', () => !oldView.getVisible());
       assert.equal(oldGuest.isDestroyed(), false, 'Switching projects destroyed its retained browser');
     }
-    return { status: 'completed', menuAndLink: true, actualNativeLayout: normal, smallAndLargeWindow: true, overlays: true, autosavePreview: true, liveAgentRounds: rounds.length, liveAgentActions: ['navigate', 'snapshot', 'type', 'click'] };
+    return { status: 'completed', menuAndLink: true, actualNativeLayout: normal, smallAndLargeWindow: true, overlays: true, autosavePreview: true, liveAgentRounds: rounds.length, requestModeNativeApprovals:3,noAiReviewerRequests:true,liveAgentActions: ['navigate', 'snapshot', 'type', 'click'] };
+  } catch(error) {
+    await fs.writeFile(path.join(output,'browser-ui-failure.json'),JSON.stringify({error:error.message,stack:error.stack,problems,rounds:rounds.length,state:await call('getState').catch(()=>null),events:await js('window.__browserUISmoke?.events||[]').catch(()=>[])},null,2));
+    throw error;
   } finally {
     await call('stopTask').catch(() => {});
     await until('cleanup idle', async () => !(await call('getState')).activeTask.running).catch(() => {});
-    await js("window.__browserUISmoke?.off?.();document.getElementById('link-dialog').close()").catch(() => {});
+    await js("window.__browserUISmoke?.off?.();if(window.__browserUISmoke?.onClick)document.removeEventListener('click',window.__browserUISmoke.onClick,true);document.getElementById('link-dialog').close()").catch(() => {});
     await call('openProject', { path: project }).catch(() => {});
     await call('browserCommand', { action: 'close' }).catch(() => {});
     await call('setPermissionMode', { mode: 'request' }).catch(() => {});
     if (original.workspace?.root) await call('openProject', { path: original.workspace.root }).catch(() => {});
     win.setBounds(originalBounds);
+    win.setOpacity(originalWindow.opacity);if(!originalWindow.visible)win.hide();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 };

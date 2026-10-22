@@ -313,7 +313,8 @@ test('session metrics preserve cache reports, compaction charges and frozen hist
   const store = await fixture(t);
   const original = store.createSession('E:\\synthetic-project');
   original.messages.push({ role: 'user', content: 'first turn' });
-  original.contextUsage = { provider: 'openai', model: 'test-model', usedTokens: 100, limit: 1000, status: 'reported' };
+  original.contextUsage = { version: 2, provider: 'openai', model: 'test-model', inputTokens: 100, outputTokens: 20,
+    limit: 1000, status: 'reported', phase: 'complete', measuredAt: '2026-10-21T01:00:00Z' };
   const first = usageRecord({ sessionId: original.id, inputTokens: 100, outputTokens: 20, cachedInputTokens: 40 });
   await store.recordUsage(first);
   await store.recordUsage(first);
@@ -323,11 +324,13 @@ test('session metrics preserve cache reports, compaction charges and frozen hist
   await store.recordUsage(usageRecord({ sessionId: original.id, inputTokens: 900, outputTokens: 10 }));
   await store.recordUsage(usageRecord({ sessionId: branch.id, inputTokens: 50, outputTokens: 10, cachedInputTokens: 0, purpose: 'context-compaction' }));
   await store.recordUsage(usageRecord({ sessionId: branch.id, inputTokens: 100, outputTokens: 5, cachedInputTokens: 100 }));
+  branch.contextUsage = { ...branch.contextUsage, inputTokens: 100, outputTokens: 5 };
   assert.equal(store.sessionMetrics(original).totalTokens, 1030);
   assert.equal(store.sessionMetrics(branch).totalTokens, 285);
   assert.equal(store.sessionMetrics(branch).rounds, 2);
   assert.equal(store.sessionMetrics(branch).cacheHitPercent, 56);
-  assert.equal(store.sessionMetrics(branch).contextPercent, 10);
+  assert.equal(store.sessionMetrics(branch).contextUsedTokens, 105);
+  assert.equal(store.sessionMetrics(branch).contextPercent, 10.5);
   await store.saveSession(branch);
   const restored = new Store(store.dir, mockCrypto); await restored.init();
   const loaded = await restored.getSession(branch.id);

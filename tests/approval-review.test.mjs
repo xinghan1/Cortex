@@ -18,6 +18,13 @@ test('independent reviewer sends only current user intent and complete operation
   assert.equal(calls.length, 1); assert.deepEqual(calls[0].tools, []); assert.equal(calls[0].messages.length, 2);
   assert.match(calls[0].messages[0].content, /^\[APPROVAL_REVIEW\]/);
   assert.match(calls[0].messages[0].content, /不是操作系统沙箱/);
+  assert.match(calls[0].messages[0].content, /默认允许/u);
+  assert.match(calls[0].messages[0].content, /删除不再需要的文件和代码/u);
+  assert.match(calls[0].messages[0].content, /浏览器导航、点击、输入、滚动和验证/u);
+  assert.match(calls[0].messages[0].content, /凭据窃取或泄漏/u);
+  assert.match(calls[0].messages[0].content, /明显超出用户授权范围/u);
+  assert.match(calls[0].messages[0].content, /审批只能允许或拒绝，不向人工转交/u);
+  assert.doesNotMatch(calls[0].messages[0].content, /allow\|deny\|ask/u);
   const payload = JSON.parse(calls[0].messages[1].content);
   assert.deepEqual(payload.userIntent, context.userIntent); assert.equal(payload.operation.command, request.command);
   assert.equal(payload.operation.agentId, 'child-1'); assert.equal(payload.operation.agentName, '测试');
@@ -28,11 +35,11 @@ test('independent reviewer sends only current user intent and complete operation
   assert.equal(usages[0].reported, true); assert.equal(usages[0].partial, false);
 });
 
-test('deny and ask remain distinct public decisions without performing the operation', async () => {
+test('denial is preserved and a legacy ask becomes denial without performing the operation or requesting a human', async () => {
   for (const decision of ['deny', 'ask']) {
     let calls = 0;
     const result = await reviewApproval(options({ requestModel: async () => { calls++; return response(decision, decision === 'deny' ? '包含无关的广泛删除。' : '无法确认项目脚本的实际行为。'); } }));
-    assert.equal(result.decision, decision); assert.equal(calls, 1);
+    assert.equal(result.decision, 'deny'); assert.equal(calls, 1); assert.doesNotMatch(result.reason, /手动确认/u);
   }
 });
 
@@ -48,7 +55,7 @@ test('file diff and browser details remain exact literal data, including embedde
   } }));
 });
 
-test('incomplete, oversized and malformed operations ask without issuing or billing a request', async () => {
+test('incomplete, oversized and malformed operations deny without issuing or billing a request', async () => {
   let calls = 0, usages = 0;
   const invalid = [
     { context: { ...context, complete: false } }, { context: { ...context, userIntent: [] } }, { context: { ...context, userIntent: 'x'.repeat(APPROVAL_REVIEW_LIMITS.intentChars + 1) } },
@@ -59,7 +66,7 @@ test('incomplete, oversized and malformed operations ask without issuing or bill
   ];
   for (const extra of invalid) {
     const result = await reviewApproval(options({ ...extra, requestModel: async () => { calls++; return response(); }, onUsage: () => { usages++; } }));
-    assert.equal(result.decision, 'ask');
+    assert.equal(result.decision, 'deny'); assert.doesNotMatch(result.reason, /手动确认/u);
   }
   assert.equal(calls, 0); assert.equal(usages, 0);
 });
@@ -74,10 +81,10 @@ test('malformed decisions, Markdown fences, extra output, duplicate keys and too
   ];
   for (const content of invalid) {
     const result = await reviewApproval(options({ requestModel: async () => ({ ...response(), message: { content, toolCalls: [] } }) }));
-    assert.equal(result.decision, 'ask', content);
+    assert.equal(result.decision, 'deny', content);
   }
   const result = await reviewApproval(options({ requestModel: async () => ({ ...response(), message: { ...response().message, toolCalls: [{ name: 'run_command' }] } }) }));
-  assert.equal(result.decision, 'ask');
+  assert.equal(result.decision, 'deny');
 });
 
 test('transport failure never exposes raw response or credential and records reported partial usage once', async () => {
@@ -86,7 +93,7 @@ test('transport failure never exposes raw response or credential and records rep
     input.onProgress({ usage: { inputTokens: 30, outputTokens: 4 } });
     throw new Error('RAW_RESPONSE ' + config.apiKey);
   }, onUsage: value => usages.push(value) }));
-  assert.equal(result.decision, 'ask'); assert.equal(usages.length, 1);
+  assert.equal(result.decision, 'deny'); assert.equal(usages.length, 1);
   assert.equal(usages[0].status, 'failed'); assert.equal(usages[0].partial, true); assert.equal(usages[0].inputTokens, 30);
   assert.equal(JSON.stringify([result, usages]).includes(config.apiKey), false);
   assert.equal(JSON.stringify([result, usages]).includes('RAW_RESPONSE'), false);
@@ -114,7 +121,7 @@ test('parent cancellation aborts the isolated request and records stopped usage 
   assert.equal(calls, 0); assert.equal(usages.length, 1);
 });
 
-test('60-second timeout aborts and falls back to a human without retrying even a noncooperating adapter', async t => {
+test('60-second timeout aborts and denies without retrying or asking a human even with a noncooperating adapter', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const entered = deferred(), usages = [];
   let calls = 0, reviewSignal;
@@ -123,7 +130,7 @@ test('60-second timeout aborts and falls back to a human without retrying even a
   t.mock.timers.tick(59999); assert.equal(reviewSignal.aborted, false);
   t.mock.timers.tick(1);
   const result = await promise;
-  assert.equal(result.decision, 'ask'); assert.match(result.reason, /超时/);
+  assert.equal(result.decision, 'deny'); assert.match(result.reason, /超时/); assert.doesNotMatch(result.reason, /手动确认/u);
   assert.equal(reviewSignal.aborted, true); assert.equal(calls, 1); assert.equal(usages.length, 1);
   assert.equal(usages[0].status, 'failed'); assert.equal(usages[0].reported, false);
 });
@@ -131,7 +138,7 @@ test('60-second timeout aborts and falls back to a human without retrying even a
 test('sensitive prompt input is not transmitted and public reasons are redacted independently', async () => {
   let calls = 0;
   const result = await reviewApproval(options({ request: { ...request, command: 'echo ' + config.apiKey }, requestModel: async () => { calls++; return response(); } }));
-  assert.equal(result.decision, 'ask'); assert.equal(calls, 0);
+  assert.equal(result.decision, 'deny'); assert.equal(calls, 0);
   const clean = await reviewApproval(options({ requestModel: async () => response('deny', '目标含 ' + config.apiKey + ' 和 OTHER_SECRET'), redact: value => value.replaceAll('OTHER_SECRET', '[redacted]') }));
   assert.equal(clean.decision, 'deny'); assert.equal(clean.reason.includes(config.apiKey), false); assert.equal(clean.reason.includes('OTHER_SECRET'), false);
 });
@@ -139,5 +146,5 @@ test('sensitive prompt input is not transmitted and public reasons are redacted 
 test('a usage persistence failure cannot silently approve an operation', async () => {
   let usages = 0;
   const result = await reviewApproval(options({ requestModel: async () => response(), onUsage: async () => { usages++; throw new Error('disk failure'); } }));
-  assert.equal(result.decision, 'ask'); assert.equal(usages, 1);
+  assert.equal(result.decision, 'deny'); assert.equal(usages, 1);
 });

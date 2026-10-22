@@ -12,12 +12,16 @@
 
 import { isDeepStrictEqual } from 'node:util';
 import { normalizeImageAttachments } from './message-images.mjs';
+import { randomUUID } from 'node:crypto';
+import { ollamaEndpoint } from './ollama-endpoint.mjs';
+import { retryAfterMilliseconds } from './request-retry.mjs';
 
 const DEFAULT_URLS = Object.freeze({
   openai: 'https://api.openai.com/v1',
   deepseek: 'https://api.deepseek.com',
   anthropic: 'https://api.anthropic.com/v1',
   relay: '',
+  ollama: 'http://localhost:11434',
 });
 const RESOURCES = Object.freeze({
   openai: '/responses',
@@ -37,6 +41,7 @@ const REASONING_LEVELS = Object.freeze({
   deepseek: ['default', 'none', 'low', 'high', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   relay: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  ollama: ['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 });
 
 class ProviderError extends Error {
@@ -150,12 +155,17 @@ function requireString(value, label) {
 }
 
 function protocolName(provider, apiProtocol) {
+  if (provider === 'ollama') return 'Ollama 原生 Chat';
   if (provider === 'relay') return apiProtocol === 'chat-completions' ? '中转站 Chat Completions' : '中转站 Responses';
   if (provider === 'openai') return apiProtocol === 'chat-completions' ? 'OpenAI Chat Completions' : 'OpenAI Responses';
   return provider === 'deepseek' ? 'DeepSeek Chat Completions' : 'Claude Messages';
 }
 
 function endpointFor(provider, baseUrl, apiProtocol) {
+  if (provider === 'ollama') {
+    try { return ollamaEndpoint(baseUrl).href; }
+    catch (error) { fail(error.message, 'INVALID_BASE_URL'); }
+  }
   if (provider === 'relay' && (typeof baseUrl !== 'string' || !baseUrl.trim())) {
     fail('请填写中转站的 Base URL。', 'INVALID_BASE_URL');
   }
@@ -208,6 +218,7 @@ function parseArguments(raw, label = '模型返回的工具参数') {
 }
 
 function assertNativeStateSafe(value, apiKey) {
+  if (!apiKey) return;
   const hasKey = item => {
     if (typeof item === 'string') return item.includes(apiKey);
     if (Array.isArray(item)) return item.some(hasKey);
@@ -435,7 +446,46 @@ function reasoningConfig(provider, model, effort) {
   return { output_config: { effort }, ...(adaptive ? { thinking: { type: 'adaptive' } } : {}) };
 }
 
-function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint, reasoningEffort, authMode, apiProtocol) {
+function ollamaMessages(messages, model, endpoint) {
+  const names = new Map();
+  return messages.map(message => {
+    if (message.role === 'tool') {
+      const name = names.get(message.toolCallId);
+      if (!name) fail('Ollama 工具结果缺少对应调用，未发送无效历史。', 'INVALID_MODEL_INPUT');
+      return { role: 'tool', tool_name: name, content: message.content };
+    }
+    const result = { role: message.role, content: message.content };
+    if (message.attachments?.length) result.images = message.attachments.map(image => image.dataUrl.slice(image.dataUrl.indexOf(',') + 1));
+    if (message.role === 'assistant') {
+      const state = message.providerState;
+      if (state?.provider === 'ollama' && state.model === model && state.endpoint === endpoint && typeof state.message?.thinking === 'string') result.thinking = state.message.thinking;
+      if (message.toolCalls?.length) result.tool_calls = message.toolCalls.map(call => {
+        if (names.has(call.id)) fail('Ollama 历史包含重复工具调用 ID。', 'INVALID_MODEL_INPUT');
+        names.set(call.id, call.name);
+        return { type: 'function', function: { name: call.name, arguments: call.arguments } };
+      });
+    }
+    return result;
+  });
+}
+
+function ollamaThink(effort, capabilities) {
+  if (effort === 'default') return {};
+  const values = capabilities?.ollamaThinkingValues;
+  const value = effort === 'none' ? false : effort === 'enabled' && values?.includes(true) ? true : effort;
+  if (!Array.isArray(values) || !values.includes(value)) fail('Ollama 模型未声明支持此思考选项，请刷新模型目录并选择支持的档位。', 'INVALID_REASONING_EFFORT');
+  return { think: value };
+}
+
+function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint, reasoningEffort, authMode, apiProtocol, modelCapabilities, contextWindowTokens) {
+  if (provider === 'ollama') {
+    const context = modelCapabilities?.contextWindow ?? contextWindowTokens ?? 32768;
+    if (!Number.isSafeInteger(context) || context < 1 || context > 2097152) fail('Ollama 上下文窗口设置无效。', 'INVALID_MODEL_CONFIG');
+    return { model, messages: ollamaMessages(messages, model, endpoint), stream: true,
+      options: { num_ctx: context, ...(maxOutputTokens ? { num_predict: maxOutputTokens } : {}) },
+      ...ollamaThink(reasoningEffort, modelCapabilities),
+      ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}) };
+  }
   if (provider === 'openai' && apiProtocol === 'chat-completions') {
     return {
       model, messages: chatCompatibleMessages(messages, model, endpoint), stream: true, stream_options: { include_usage: true },
@@ -571,12 +621,22 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
   let estimateUnits = 0;
   let phase;
 
+  function contextUsage() {
+    const input = reportedUsage.input_tokens ?? reportedUsage.prompt_tokens;
+    const output = reportedUsage.output_tokens ?? reportedUsage.completion_tokens;
+    const totalInput = provider === 'anthropic' && Number.isSafeInteger(input)
+      ? input + (reportedUsage.cache_creation_input_tokens ?? 0) + (reportedUsage.cache_read_input_tokens ?? 0) : input;
+    return { ...(Number.isSafeInteger(totalInput) ? { inputTokens: totalInput } : {}),
+      ...(Number.isSafeInteger(output) ? { outputTokens: output } : {}), complete };
+  }
+
   function progress(nextPhase, includeUsage = false) {
     if (nextPhase) phase = nextPhase;
     onProgress?.({
       estimatedOutputTokens: Math.ceil(estimateUnits / 12),
       ...(phase ? { phase } : {}),
       ...(includeUsage ? { usage: { ...usage } } : {}),
+      contextUsage: contextUsage(),
     });
   }
 
@@ -1014,13 +1074,96 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       message.providerState = { provider, ...(chatCompatible ? { apiProtocol: 'chat-completions' } : {}), model, endpoint, message: nativeMessage };
     }
     progress(undefined, usageReported);
-    return { message, usage, usageReported };
+    return { message, usage, usageReported, contextUsage: contextUsage() };
   }
 
   return { event, json, done, result, isComplete: () => complete };
 }
 
-async function consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read }, requireSSE = false) {
+function createOllamaAccumulator(onTextDelta, { model, endpoint, apiKey, onProgress, maxModelPayloadBytes, toolNames }) {
+  const payload = createPayloadBudget(maxModelPayloadBytes), indexed = new Map(), calls = [], allowed = new Set(toolNames);
+  let content = '', thinking = '', complete = false, seenMessage = false, estimateUnits = 0;
+  const usage = { inputTokens: null, outputTokens: null };
+  const reported = () => Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens);
+  const contextUsage = () => ({ ...(Number.isSafeInteger(usage.inputTokens) ? { inputTokens: usage.inputTokens } : {}),
+    ...(Number.isSafeInteger(usage.outputTokens) ? { outputTokens: usage.outputTokens } : {}), complete });
+  const progress = phase => onProgress?.({ estimatedOutputTokens: Math.ceil(estimateUnits / 12), ...(phase ? { phase } : {}),
+    ...(reported() ? { usage: { ...usage } } : {}), contextUsage: contextUsage() });
+  const append = (kind, text) => {
+    if (text === undefined) return;
+    if (typeof text !== 'string') fail('Ollama 消息文本格式无效。');
+    payload.append(kind, text);
+    const previous = kind === 'thinking' ? thinking : content;
+    for (const character of text) estimateUnits += character.codePointAt(0) <= 127 ? 3 : 8;
+    if (previous.charCodeAt(previous.length - 1) >= 0xd800 && previous.charCodeAt(previous.length - 1) <= 0xdbff
+        && text.charCodeAt(0) >= 0xdc00 && text.charCodeAt(0) <= 0xdfff) estimateUnits -= 8;
+    if (kind === 'thinking') thinking += text;
+    else { content += text; if (text) onTextDelta?.(text); }
+    progress(kind === 'thinking' ? 'thinking' : 'generating');
+  };
+  const event = value => {
+    if (!isObject(value)) fail('Ollama 响应格式无效。');
+    for (const [source, target] of [['prompt_eval_count', 'inputTokens'], ['eval_count', 'outputTokens']]) {
+      if (value[source] !== undefined) {
+        if (!Number.isSafeInteger(value[source]) || value[source] < 0) fail('Ollama 返回的 Token 用量无效。');
+        usage[target] = value[source];
+      }
+    }
+    if (Number.isSafeInteger(value.prompt_eval_cached_count) && value.prompt_eval_cached_count >= 0
+        && usage.inputTokens !== null && value.prompt_eval_cached_count <= usage.inputTokens) usage.cachedInputTokens = value.prompt_eval_cached_count;
+    progress();
+    if (value.error) {
+      const detail = safeErrorField(typeof value.error === 'string' ? value.error : value.error?.message, apiKey, 700);
+      fail(`Ollama 返回错误，请检查服务状态、已部署模型及模型能力。${detail ? ` 服务详情：${detail}` : ''}`, 'PROVIDER_API_ERROR');
+    }
+    if (value.message !== undefined) {
+      if (!isObject(value.message) || value.message.role !== undefined && value.message.role !== 'assistant') fail('Ollama 响应缺少有效的 assistant 消息。');
+      seenMessage = true;
+      append('thinking', value.message.thinking); append('content', value.message.content);
+      if (value.message.tool_calls !== undefined) {
+        if (!Array.isArray(value.message.tool_calls)) fail('Ollama 工具调用格式无效。', 'INVALID_TOOL_CALL');
+        for (const tool of value.message.tool_calls) {
+          const fn = tool?.function;
+          if (!isObject(tool) || !isObject(fn) || typeof fn.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/u.test(fn.name) || !allowed.has(fn.name))
+            fail('Ollama 返回了未提供的工具名称，工具调用未执行。', 'INVALID_TOOL_CALL');
+          const args = typeof fn.arguments === 'string' ? parseArguments(fn.arguments) : checkArguments(fn.arguments);
+          const index = fn.index ?? tool.index;
+          if (index !== undefined && (!Number.isSafeInteger(index) || index < 0 || index > 10000)) fail('Ollama 工具调用序号无效。', 'INVALID_TOOL_CALL');
+          const previous = index === undefined ? null : indexed.get(index);
+          if (previous) {
+            if (previous.name !== fn.name || !isDeepStrictEqual(previous.arguments, args)) fail('Ollama 同一工具序号出现冲突内容，工具调用未执行。', 'INVALID_TOOL_CALL');
+            continue;
+          }
+          const entry = { id: `ollama-${randomUUID()}`, name: fn.name, arguments: args };
+          const serialized = JSON.stringify({ name: fn.name, arguments: args });
+          payload.full(`tool:${calls.length}`, serialized);
+          for (const character of serialized) estimateUnits += character.codePointAt(0) <= 127 ? 3 : 8;
+          calls.push(entry); if (index !== undefined) indexed.set(index, entry);
+          progress('tool-call');
+        }
+      }
+    }
+    if (value.done !== undefined && typeof value.done !== 'boolean') fail('Ollama 完成标记无效。');
+    if (value.done === true) {
+      if (['length', 'max_tokens', 'limit'].includes(value.done_reason)) fail('Ollama 输出因长度限制未完成，工具调用未执行。', 'PROVIDER_INCOMPLETE_RESPONSE');
+      complete = true;
+    }
+  };
+  return { event, json: event, isComplete: () => complete,
+    result() {
+      if (!complete) fail('Ollama 连接在响应完成前断开，工具调用未执行。', 'PROVIDER_INCOMPLETE_STREAM');
+      if (!seenMessage) fail('Ollama 未返回对话消息，请检查模型是否支持聊天。', 'PROVIDER_API_ERROR');
+      const native = { role: 'assistant', content, ...(thinking ? { thinking } : {}), ...(calls.length ? {
+        tool_calls: calls.map(call => ({ type: 'function', function: { name: call.name, arguments: call.arguments } })),
+      } : {}) };
+      assertNativeStateSafe(native, apiKey);
+      progress();
+      return { message: { role: 'assistant', content, toolCalls: calls,
+        providerState: { provider: 'ollama', model, endpoint, message: native } }, usage: { ...usage }, usageReported: reported(), contextUsage: contextUsage() };
+    } };
+}
+
+async function consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read }, requireSSE = false, requireNDJSON = false) {
   if (!response.body) fail('模型服务未返回响应正文。');
   const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
   // The official direct route may omit Content-Type on an otherwise valid SSE
@@ -1031,7 +1174,8 @@ async function consumeResponse(response, accumulator, { maxResponseBytes, maxEve
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
-  const streaming = requireSSE || response.headers.get('content-type')?.toLowerCase().includes('text/event-stream');
+  const ndjson = requireNDJSON && contentType !== 'application/json';
+  const streaming = ndjson || requireSSE || response.headers.get('content-type')?.toLowerCase().includes('text/event-stream');
   const wireLimit = maxResponseBytes ?? (streaming ? DEFAULT_SSE_RESPONSE_LIMIT : DEFAULT_JSON_RESPONSE_LIMIT);
   let bytes = 0;
   let buffer = '';
@@ -1061,6 +1205,12 @@ async function consumeResponse(response, accumulator, { maxResponseBytes, maxEve
   function line(value) {
     const size = Buffer.byteLength(value, 'utf8');
     if (size > maxEventBytes) fail('模型单个流式事件超过大小上限，已停止接收。', 'PROVIDER_EVENT_TOO_LARGE');
+    if (ndjson) {
+      if (!value.trim()) return;
+      let object;
+      try { object = JSON.parse(value); } catch { fail('Ollama 流式响应包含无效 JSON。', 'PROVIDER_INVALID_JSON'); }
+      accumulator.event(object); return;
+    }
     // Comments/keepalives are discarded immediately. Only retained data/event
     // lines count toward an event's memory budget, independently of wire bytes.
     if (value.startsWith('data:') || value.startsWith('event:')) {
@@ -1164,7 +1314,7 @@ function safeErrorField(value, apiKey, limit) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-async function errorDetails(response, apiKey, limit, read) {
+async function errorDetails(response, apiKey, limit, read, ollama = false) {
   // Only parse bounded structured fields. Never echo a raw body, HTML, prompt,
   // headers, arbitrary JSON properties, or an exception from this diagnostic path.
   if (!response.body) return undefined;
@@ -1182,6 +1332,10 @@ async function errorDetails(response, apiKey, limit, read) {
     }
     source += decoder.decode();
     const body = JSON.parse(source);
+    if (ollama && typeof body?.error === 'string') {
+      const message = safeErrorField(body.error, apiKey, 700);
+      return message ? { message } : undefined;
+    }
     const error = isObject(body?.error) ? body.error : body;
     if (!isObject(error)) return undefined;
     const message = safeErrorField(error.message, apiKey, 700);
@@ -1222,7 +1376,7 @@ function withErrorDetails(error, detail, includeHints = true) {
 
 /**
  * @param {object} options
- * @param {'openai'|'deepseek'|'anthropic'|'relay'} options.provider
+ * @param {'openai'|'deepseek'|'anthropic'|'relay'|'ollama'} options.provider
  * @param {string} options.apiKey
  * @param {'apiKey'|'chatgpt'} [options.authMode='apiKey'] chatgpt accepts only the fixed official endpoint;
  * its apiKey argument contains the OAuth token managed by the privileged main process.
@@ -1251,7 +1405,7 @@ function withErrorDetails(error, detail, includeHints = true) {
 export async function requestModel({
   provider, apiKey, baseUrl, model, messages, tools = [], signal, onTextDelta, onProgress, reasoningEffort = 'default',
   authMode = 'apiKey', apiProtocol = provider === 'relay' ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
-  timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens,
+  timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens, contextWindowTokens,
   maxEventBytes = DEFAULT_EVENT_LIMIT, maxModelPayloadBytes = DEFAULT_MODEL_PAYLOAD_LIMIT,
 } = {}) {
   if (!Object.hasOwn(DEFAULT_URLS, provider)) fail('不支持的模型供应商。', 'INVALID_MODEL_CONFIG');
@@ -1264,7 +1418,10 @@ export async function requestModel({
   if (['openai', 'relay'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)) {
     fail('API 协议无效，请选择 Responses 或 Chat Completions。', 'INVALID_API_PROTOCOL');
   }
-  requireString(apiKey, authMode === 'chatgpt' ? 'ChatGPT 登录凭据' : 'API 密钥');
+  if (provider === 'ollama') {
+    if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.length > 4096 || /[\x00-\x1f\x7f]/u.test(apiKey))) fail('Ollama 可选凭据格式无效。', 'INVALID_MODEL_CONFIG');
+    apiKey = apiKey?.trim() || '';
+  } else requireString(apiKey, authMode === 'chatgpt' ? 'ChatGPT 登录凭据' : 'API 密钥');
   requireString(model, '模型名称');
   if (typeof fetchImpl !== 'function') fail('请求传输配置无效。', 'INVALID_MODEL_CONFIG');
   if (onTextDelta !== undefined && typeof onTextDelta !== 'function') fail('流式回调格式无效。', 'INVALID_MODEL_CONFIG');
@@ -1298,54 +1455,72 @@ export async function requestModel({
   const effectiveReasoningEffort = provider === 'relay' && relayEffortDisabled ? 'default' : reasoningEffort;
   validateCapabilities(modelCapabilities, effectiveReasoningEffort, modelMessages, tools);
   let body;
-  try { body = JSON.stringify(makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint, effectiveReasoningEffort, authMode, effectiveProtocol)); }
+  try { body = JSON.stringify(makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint, effectiveReasoningEffort, authMode, effectiveProtocol, modelCapabilities, contextWindowTokens)); }
   catch (error) {
     if (error instanceof ProviderError) throw error;
     fail('对话或工具定义不能序列化为 JSON。', 'INVALID_MODEL_INPUT');
   }
   const lifetime = requestLifetime(signal, timeoutMs);
   const { controller } = lifetime;
-  let response;
+  let response, callbackFailed = false, transportFailed = false;
+  const transport = async operation => {
+    try { return await operation(); }
+    catch (error) { transportFailed = true; throw error; }
+  };
+  const notify = (callback, value) => {
+    try { callback?.(value); }
+    catch (error) { callbackFailed = true; throw error; }
+  };
   try {
     if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
-    response = await lifetime.wait(() => fetchImpl(endpoint, {
+    response = await lifetime.wait(() => transport(() => fetchImpl(endpoint, {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: {
-        'Content-Type': 'application/json', Accept: authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
+        'Content-Type': 'application/json', Accept: provider === 'ollama' ? 'application/x-ndjson, application/json' : authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
         ...(provider === 'anthropic'
           ? { 'x-api-key': apiKey.trim(), 'anthropic-version': '2023-06-01' }
-          : { Authorization: `Bearer ${apiKey.trim()}` }),
+          : provider === 'ollama' && !apiKey ? {} : { Authorization: `Bearer ${apiKey.trim()}` }),
       },
       body,
-    }), lateResponse => cancelResponseBody(lateResponse?.body));
+    })), lateResponse => cancelResponseBody(lateResponse?.body));
     lifetime.touch();
     if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
     if (!response.ok) {
-      const detail = await errorDetails(response, apiKey.trim(), Math.min(MAX_ERROR_RESPONSE_BYTES, maxResponseBytes ?? MAX_ERROR_RESPONSE_BYTES), lifetime.read);
-      const unavailableGroup = authMode !== 'chatgpt' && [400, 403, 404, 422, 429, 500, 502, 503].includes(response.status) && modelGroupUnavailable(detail);
+      const detail = await errorDetails(response, apiKey.trim(), Math.min(MAX_ERROR_RESPONSE_BYTES, maxResponseBytes ?? MAX_ERROR_RESPONSE_BYTES), lifetime.read, provider === 'ollama');
+      const unavailableGroup = provider !== 'ollama' && authMode !== 'chatgpt' && [400, 403, 404, 422, 429, 500, 502, 503].includes(response.status) && modelGroupUnavailable(detail);
       const failure = unavailableGroup
         ? new ProviderError(`HTTP ${response.status}：中转站当前分组没有可用的上游账号或渠道支持此模型。请更换当前分组可用的模型、切换分组，或联系服务商配置上游渠道。`, `PROVIDER_HTTP_${response.status}`)
         : httpError(response.status, effectiveReasoningEffort, authMode);
       const error = withErrorDetails(failure, detail, !unavailableGroup);
+      error.retryAfterMs = retryAfterMilliseconds(response.headers.get('retry-after'));
+      // A transient HTTP status must not disguise permanent routing, account,
+      // billing, or authorization failures reported by the provider.
+      if (unavailableGroup || /^(?:insufficient_quota|quota_exceeded|billing_hard_limit_reached|insufficient_balance|authentication_error|invalid_api_key|subscription_sharing_usage_limit_exceeded|subscription_sharing_user_not_eligible|subscription_sharing_unsupported_capability|subscription_sharing_route_not_supported|chatpass_v2_scope_not_authorized)$/iu.test(detail?.code || '')) error.retryable = false;
       if (response.status === 404 && authMode !== 'chatgpt' && !unavailableGroup) {
         const path = safeErrorField(new URL(endpoint).pathname, apiKey.trim(), 240);
-        error.message += ` 当前协议：${protocolName(provider, effectiveProtocol)}；请求路径：${path}。模型目录可用不代表服务商支持此推理接口或模型路由，请核对中转站文档中的协议与模型权限。`;
+        error.message += provider === 'ollama' ? ` 当前协议：Ollama 原生 API；请求路径：${path}。请检查服务地址及已部署模型；应用不会自动下载模型。`
+          : ` 当前协议：${protocolName(provider, effectiveProtocol)}；请求路径：${path}。模型目录可用不代表服务商支持此推理接口或模型路由，请核对中转站文档中的协议与模型权限。`;
       }
       if (!unavailableGroup && [400, 415, 422].includes(response.status) && modelMessages.some(message => message.attachments?.length)) {
         error.message += '。本次包含图片，请确认所选模型和 API 地址支持图片输入，或移除图片后重试。';
       }
       throw error;
     }
-    const accumulator = createAccumulator(transportProvider, onTextDelta, { model, endpoint, apiKey: apiKey.trim(),
-      onProgress, authMode, apiProtocol: effectiveProtocol, maxModelPayloadBytes, sourceProvider: provider,
-      toolNames: tools.map(tool => tool.name) });
-    await consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read: lifetime.read }, authMode === 'chatgpt');
+    const accumulatorOptions = { model, endpoint, apiKey: apiKey.trim(),
+      onProgress: onProgress ? value => notify(onProgress, value) : undefined, authMode, apiProtocol: effectiveProtocol, maxModelPayloadBytes, sourceProvider: provider,
+      toolNames: tools.map(tool => tool.name) };
+    const textDelta = onTextDelta ? value => notify(onTextDelta, value) : undefined;
+    const accumulator = provider === 'ollama' ? createOllamaAccumulator(textDelta, accumulatorOptions)
+      : createAccumulator(transportProvider, textDelta, accumulatorOptions);
+    await consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read: reader => transport(() => lifetime.read(reader)) }, authMode === 'chatgpt', provider === 'ollama');
     if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
     return accumulator.result();
   } catch (error) {
     if (lifetime.timedOut()) {
       const duration = timeoutMs < 1000 ? `${timeoutMs} 毫秒` : `${timeoutMs / 1000} 秒`;
-      throw new ProviderError(`模型连接等待超时：已连续 ${duration}未收到网络数据，已停止等待；请检查网络或稍后重试。`, 'PROVIDER_TIMEOUT');
+      const failure = new ProviderError(`模型连接等待超时：已连续 ${duration}未收到网络数据，已停止等待；请检查网络或稍后重试。`, 'PROVIDER_TIMEOUT');
+      if (response && !response.ok && ![408, 429].includes(response.status) && response.status < 500) failure.retryable = false;
+      throw failure;
     }
     if (controller.signal.aborted || error?.name === 'AbortError') {
       const aborted = new Error('模型请求已取消。');
@@ -1353,13 +1528,21 @@ export async function requestModel({
       aborted.code = 'ABORT_ERR';
       throw aborted;
     }
-    if (error instanceof ProviderError) throw error;
+    if (error instanceof ProviderError) { if (callbackFailed) error.retryable = false; throw error; }
+    if (!transportFailed) {
+      const failure = new ProviderError(callbackFailed ? '模型响应处理回调失败，已停止本次请求。' : '模型服务返回的响应结构无效，已停止本次请求。',
+        callbackFailed ? 'PROVIDER_CALLBACK_ERROR' : 'PROVIDER_PROTOCOL_ERROR');
+      failure.retryable = false;
+      throw failure;
+    }
     // Native fetch errors and arbitrary callback exceptions can contain input
     // values. Only disclose a known, non-secret network error code.
     const code = error?.cause?.code;
     const known = ['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
       'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].includes(code) ? `（${code}）` : '';
-    throw new ProviderError(`无法连接模型服务${known}，请检查网络、代理和 API 地址。`, 'PROVIDER_NETWORK_ERROR');
+    const failure = new ProviderError(`无法连接模型服务${known}，请检查网络、代理和 API 地址。`, 'PROVIDER_NETWORK_ERROR');
+    if (callbackFailed || ['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'SELF_SIGNED_CERT_IN_CHAIN'].includes(code)) failure.retryable = false;
+    throw failure;
   } finally {
     lifetime.dispose();
     cancelResponseBody(response?.body);

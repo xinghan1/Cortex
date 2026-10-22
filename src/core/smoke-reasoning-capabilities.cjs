@@ -63,7 +63,7 @@ module.exports = async function smokeReasoningCapabilities({ win, output, dataDi
       assert.equal(body.reasoning_effort, scenes[name].effort, 'Explicit chosen reasoning or the service default was not serialized correctly');
       assert.equal(requests.filter(record => record.name === name).length, 1, 'Inference was automatically retried');
       if (name === 'unsupported') {
-        response.writeHead(524, { 'Content-Type': 'application/json' });
+        response.writeHead(524, { 'Content-Type': 'application/json', 'Retry-After': '61' });
         response.end(JSON.stringify({ error: { code: 'server_error', message: 'Fixture upstream did not respond within the gateway deadline.' } })); return;
       }
       response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -155,7 +155,7 @@ module.exports = async function smokeReasoningCapabilities({ win, output, dataDi
     assert.equal(catalog.models.find(item => item.id === models.unknown).reasoningEfforts, undefined);
     assert.deepEqual(catalog.models.find(item => item.id === models.unsupported).reasoningEfforts, []);
     await popup(); await available(fallback, 'unknown');
-    assert.match(await js("document.getElementById('reasoning-hint').textContent"), /通用档位/u);
+    assert.equal(await js("document.getElementById('reasoning-hint')===null"), true);
     await setEffort('low'); await setEffort('high');
     await settingsMatch(fallback, 'unknown');
     assert.equal((await run('unknownAfter')).status, 'completed');
@@ -180,7 +180,7 @@ module.exports = async function smokeReasoningCapabilities({ win, output, dataDi
     assert.equal(failed.status, 'failed'); assert.match(failed.error, /HTTP 524/u); assert.match(failed.error, /超时/u);
     assert.match(failed.error, /中转|网关|上游/u);
     assert.doesNotMatch(failed.error, /模型不存在|请求参数.*不受支持|API 地址或模型不存在/u);
-    await wait(250); assert.equal(requests.filter(record => record.name === 'unsupported').length, 1, 'HTTP 524 caused an automatic retry');
+    await wait(250); assert.equal(requests.filter(record => record.name === 'unsupported').length, 1, 'A gateway cooldown beyond the automatic retry window must not be shortened');
     assert.ok(await js("document.getElementById('messages').textContent.includes('HTTP 524')"));
     await capture('reasoning-http-524.png');
 

@@ -10,6 +10,7 @@ const EFFORTS = {
   deepseek: ['default', 'none', 'low', 'high', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   relay: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  ollama: ['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
 const API_PROTOCOLS = ['responses', 'chat-completions'];
 const validTokens = value => Number.isSafeInteger(value) && value >= 0;
@@ -86,6 +87,7 @@ const DEFAULTS = {
     deepseek: { model: '', baseUrl: 'https://api.deepseek.com', reasoningEffort: 'default' },
     anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default' },
     relay: { model: '', baseUrl: '', reasoningEffort: 'default', apiProtocol: 'chat-completions' },
+    ollama: { model: '', baseUrl: 'http://localhost:11434', reasoningEffort: 'default', contextWindowTokens: 32768 },
   }
 };
 
@@ -110,6 +112,10 @@ class Store {
           this.settings.providers[name].apiProtocol = DEFAULTS.providers[name].apiProtocol; migrated = true;
         }
       }
+      if (!Number.isSafeInteger(this.settings.providers.ollama.contextWindowTokens)
+          || this.settings.providers.ollama.contextWindowTokens < 4096 || this.settings.providers.ollama.contextWindowTokens > 2097152) {
+        this.settings.providers.ollama.contextWindowTokens = DEFAULTS.providers.ollama.contextWindowTokens; migrated = true;
+      }
       if (!['apiKey', 'chatgpt'].includes(this.settings.providers.openai.authMode)) this.settings.providers.openai.authMode = 'apiKey';
       const openai = this.settings.providers.openai;
       openai.modelsByAuth = { apiKey: '', chatgpt: '', ...openai.modelsByAuth, [openai.authMode]: openai.model };
@@ -119,7 +125,7 @@ class Store {
   }
   publicSettings() {
     const providers = {};
-    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: name === 'openai' ? value.authMode || 'apiKey' : 'apiKey', ...(name === 'openai' ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), hasKey: Boolean(value.encryptedKey) };
+    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: name === 'openai' ? value.authMode || 'apiKey' : 'apiKey', ...(name === 'openai' ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
     return { provider: this.settings.provider, ...providers[this.settings.provider], providers };
   }
   async saveSettings(input) {
@@ -134,9 +140,14 @@ class Store {
     let parsed;
     try { parsed = new URL(baseUrl); } catch { throw new Error('API 地址不是有效 URL。'); }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
-    if ((parsed.protocol !== 'https:' && !(local && parsed.protocol === 'http:')) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('API 地址必须使用 HTTPS；本机服务可使用 HTTP，地址不能包含密码或查询参数。');
+    const ollama = input.provider === 'ollama';
+    if ((parsed.protocol !== 'https:' && !((local || ollama) && parsed.protocol === 'http:')) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(ollama ? 'Ollama 地址必须使用 HTTP 或 HTTPS，且不能包含密码或查询参数。' : 'API 地址必须使用 HTTPS；本机服务可使用 HTTP，地址不能包含密码或查询参数。');
+    if (ollama && (/[?#\u0000-\u001f\u007f]/.test(baseUrl) || /^[a-z][a-z\d+.-]*:\/\/[^/]*@/i.test(baseUrl))) throw new Error('Ollama 地址不能包含登录信息、查询参数或控制字符。');
+    if (input.contextWindowTokens !== undefined && (!ollama || !Number.isSafeInteger(input.contextWindowTokens)
+        || input.contextWindowTokens < 4096 || input.contextWindowTokens > 2097152)) throw new Error('Ollama 模型上下文必须是 4,096 至 2,097,152 之间的整数 Token。');
     const next = structuredClone(this.settings);
     const value = next.providers[input.provider];
+    if (ollama && input.contextWindowTokens !== undefined) value.contextWindowTokens = input.contextWindowTokens;
     if (input.authMode !== undefined && (!['apiKey', 'chatgpt'].includes(input.authMode) || (input.provider !== 'openai' && input.authMode !== 'apiKey'))) throw new Error('此服务商不支持所选的登录方式。');
     if (input.provider === 'openai' && input.authMode !== undefined) value.authMode = input.authMode;
     if (['openai', 'relay'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;

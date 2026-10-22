@@ -39,16 +39,42 @@ test('retained result events supplement edit snapshots once, and malformed snaps
   assert.deepEqual(output[0].fileChange, { path: 'a.js', before: null, after: 'const x = 1;' });
 });
 
-test('manual undo restores its independent committed change without hiding chat messages', () => {
+test('viewed image references survive event rollover and deduplicate without copying image bytes', () => {
+  const view = { type: 'images-viewed', version: 1, requestId: 'image-request', runId: 'r', messageIndex: 0,
+    images: [{ messageId: 'message-image', attachmentIndex: 0, attachmentId: 'image-one', dataUrl: 'PRIVATE_BYTES' }], providerState: 'PRIVATE' };
+  const session = { messages: [{ ...user('查看图片'), id: 'message-image' }, assistant('已查看')],
+    taskRuns: [record('r', 0, 1)], events: [], imageViews: [view] };
+  const restored = events(runBlocks(project(session))[0]).filter(event => event.type === 'images-viewed');
+  assert.equal(restored.length, 1);
+  assert.deepEqual(restored[0].images, [{ messageId: 'message-image', attachmentIndex: 0, attachmentId: 'image-one' }]);
+  assert.equal(JSON.stringify(restored).includes('PRIVATE'), false);
+  session.events.push(view);
+  assert.equal(events(runBlocks(project(session))[0]).filter(event => event.type === 'images-viewed').length, 1);
+});
+
+test('a legacy unmarked multi-user task restores actual image receipts without guessing its grouping', () => {
+  const first = { type: 'images-viewed', version: 1, requestId: 'first-image', runId: 'r', messageIndex: 0,
+    images: [{ messageId: 'initial-user', attachmentIndex: 0 }] };
+  const second = { ...first, requestId: 'second-image', messageIndex: 2, images: [{ messageId: 'steering-user', attachmentIndex: 0 }] };
+  const session = { messages: [{ ...user('先看图片'), id: 'initial-user' }, assistant('正在查看'),
+    { ...user('再看这张'), id: 'steering-user' }, assistant('完成')], taskRuns: [record('r', 0, 3)],
+    events: [first], imageViews: [first, second] };
+  const blocks = project(session), run = runBlocks(blocks)[0];
+  assert.equal(run.unanchored, true);
+  assert.deepEqual(events(run).filter(event => event.type === 'images-viewed').map(event => event.requestId), ['first-image', 'second-image']);
+  assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.message.content), ['先看图片', '正在查看', '再看这张', '完成']);
+});
+
+test('manual undo/redo remains archived without adding a model task or hiding chat messages', () => {
   const undo = { runId: 'manual-undo', kind: 'undo', messageIndex: 1, elapsedMs: 3000, status: 'completed' };
   const session = { messages: [user('创建文件'), assistant('已创建')], taskRuns: [record('create-run', 0, 1), undo], events: [],
     fileEdits: [{ runId: 'manual-undo', toolCallId: 'undo-tool', path: 'note.txt', before: 'created\n', after: null }] };
   const blocks = project(session);
   assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.message.content), ['创建文件', '已创建']);
-  assert.deepEqual(blocks.map(block => block.type === 'message' ? block.message.content : block.record.runId), ['创建文件', 'create-run', '已创建', 'manual-undo']);
-  const output = events(runBlocks(blocks).find(block => block.record.kind === 'undo'));
-  assert.deepEqual(output.map(item => item.type), ['tool-start', 'tool-result']);
-  assert.deepEqual(output[1].fileChange, { path: 'note.txt', before: 'created\n', after: null });
+  assert.deepEqual(blocks.map(block => block.type === 'message' ? block.message.content : block.record.runId), ['创建文件', 'create-run', '已创建']);
+  assert.equal(runBlocks(blocks).some(block => block.record.kind === 'undo'), false);
+  assert.equal(session.taskRuns.includes(undo), true);
+  assert.deepEqual(session.fileEdits[0], { runId: 'manual-undo', toolCallId: 'undo-tool', path: 'note.txt', before: 'created\n', after: null });
 });
 
 test('completed run keeps user and final answer visible and reconstructs tool inputs/results without retained events', () => {
@@ -113,11 +139,63 @@ test('legacy missing or out-of-range anchors preserve original messages and prov
   }
 });
 
-test('steering messages inside one run stay flat and in original order', () => {
-  const messages = [user('开始'), assistant('先检查'), { ...user('额外要求'), source: 'steer' }, assistant('已完成')];
-  const blocks = project({ messages }, [record('r', 0, 3)]);
-  assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.message.content), ['开始', '先检查', '额外要求', '已完成']);
-  assert.equal(runBlocks(blocks)[0].unanchored, true);
+test('unmarked, queued and unrelated user messages inside a range stay flat instead of being guessed as steering', () => {
+  for (const source of [undefined, 'steer', 'queue', 'direct']) {
+    const messages = [user('开始'), assistant('先检查'), { ...user('额外要求'), ...(source ? { source } : {}) }, assistant('已完成')];
+    const blocks = project({ messages }, [record('r', 0, 3)]);
+    assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.message.content), ['开始', '先检查', '额外要求', '已完成']);
+    assert.equal(runBlocks(blocks)[0].unanchored, true);
+  }
+});
+
+test('consumed steering stays at its real message boundary among reconstructed tools, images and the separate queued task', () => {
+  const image = { name: 'diagram.png', mediaType: 'image/png', dataUrl: 'data:image/png;base64,eA==' };
+  const messages = [user('开始'), assistant('先读取', [call('a', 'read_file', { path: 'a.js' })]), result('a', 'A'),
+    { ...user('先补测试'), id: 'steering-one', source: 'steering', providerState: 'PRIVATE_STEERING' },
+    assistant('再读取', [call('b', 'read_file', { path: 'b.js' })]), result('b', 'B'),
+    { ...user(''), id: 'steering-image', source: 'steering', attachments: [image] },
+    assistant('查看图片后修改', [call('c', 'write_file', { path: 'c.js' })]), result('c', '{"path":"c.js"}'), assistant('当前任务完成'),
+    { ...user('下一个排队任务'), source: 'queue' }, assistant('排队任务完成')];
+  const receipt = { type: 'images-viewed', version: 1, runId: 'r', requestId: 'view-steering', messageIndex: 6,
+    images: [{ messageId: 'steering-image', attachmentIndex: 0 }] };
+  const session = deepFreeze({ messages, taskRuns: [record('r', 0, 9), record('queued', 10, 11)], events: [], imageViews: [receipt],
+    fileEdits: [{ runId: 'r', toolCallId: 'c', path: 'c.js', before: null, after: 'created' }] });
+  const blocks = project(session), run = runBlocks(blocks)[0];
+  assert.deepEqual(blocks.map(block => block.type === 'message' ? block.message.content : block.record.runId),
+    ['开始', 'r', '当前任务完成', '下一个排队任务', 'queued', '排队任务完成']);
+  assert.equal(run.unanchored, undefined); assert.equal(run.finalIndex, 9);
+  assert.deepEqual(run.items.map(item => item.type === 'message' ? `message:${item.index}`
+    : item.event.type === 'images-viewed' ? 'images' : `${item.event.type}:${item.event.toolCallId}`),
+  ['message:1', 'tool-start:a', 'tool-result:a', 'message:3', 'message:4', 'tool-start:b', 'tool-result:b',
+    'message:6', 'images', 'message:7', 'tool-start:c', 'tool-result:c']);
+  assert.deepEqual(run.items.find(item => item.index === 6).message, messages[6]);
+  assert.deepEqual(events(run).find(event => event.toolCallId === 'c' && event.type === 'tool-result').fileChange,
+    { path: 'c.js', before: null, after: 'created' });
+  assert.equal(JSON.stringify(blocks).includes('PRIVATE_STEERING'), false);
+});
+
+test('lightweight steering boundaries place event-only progress after the actual message without rendering duplicate user events', () => {
+  const messages = [user('开始'), assistant('相同的过程文本'), { ...user('补充'), id: 's', source: 'steering' },
+    assistant('相同的过程文本'), assistant('完成')];
+  const eventLog = [
+    { type: 'user-message', id: 's', source: 'steering' },
+    { type: 'subagent-update', agent: { id: 'after-steering', name: '测试', status: 'completed' } },
+    { type: 'assistant-message', text: '相同的过程文本' },
+    { type: 'context-compacted', count: 1 },
+  ].map((event, sequence) => ({ ...event, sequence, runId: 'r' }));
+  const run = runBlocks(project({ messages, events: eventLog }, [record('r', 0, 4)]))[0];
+  assert.deepEqual(run.items.map(item => item.type === 'message' ? `message:${item.index}` : item.event.type),
+    ['message:1', 'message:2', 'subagent-update', 'message:3', 'context-compacted']);
+  assert.equal(run.items.filter(item => item.type === 'message' && item.message.role === 'user').length, 1);
+  assert.equal(events(run).some(event => event.type === 'user-message'), false);
+  assert.equal(run.finalIndex, 4);
+});
+
+test('a real overlap involving an interior steering message still keeps all messages visible once', () => {
+  const messages = [user('开始'), assistant('先检查'), { ...user('补充'), source: 'steering', id: 's' }, assistant('继续'), assistant('完成')];
+  const blocks = project({ messages }, [record('r', 0, 4), record('ambiguous', 2, 4)]);
+  assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.index), [0, 1, 2, 3, 4]);
+  assert.equal(runBlocks(blocks).length, 2); assert.ok(runBlocks(blocks).every(block => block.unanchored));
 });
 
 test('ambiguous overlapping records leave all message content visible', () => {

@@ -207,7 +207,8 @@ module.exports = async function smokeApiProtocol({ win, output, dataDir }) {
     configured = true;
     const beforeDraft = (await call('getState')).settings;
     assert.equal(await js("!!document.getElementById('model-input')||!!document.querySelector('[id^=\"settings-reasoning-\"]')"),false);
-    await js(`(()=>{for(const [id,value] of [['base-url-input',${JSON.stringify(baseUrl)}],['api-key-input',${JSON.stringify(apiKey)}]]){const input=document.getElementById(id);input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));}document.getElementById('clear-key-input').checked=false;return true;})()`);
+    await js(`(()=>{for(const [id,value] of [['base-url-input',${JSON.stringify(baseUrl)}],['api-key-input',${JSON.stringify(apiKey)}]]){const input=document.getElementById(id);input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));}return true;})()`);
+    assert.equal(await js("document.getElementById('clear-key-input')===null"),true);
     assert.equal(await js("document.getElementById('save-settings').disabled"),true,'Settings saved before fetching a catalog');
     await js("document.getElementById('settings-form').requestSubmit()");await wait(100);
     assert.deepEqual((await call('getState')).settings,beforeDraft,'Forced form submission stored an unfetched draft');

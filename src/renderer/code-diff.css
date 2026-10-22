@@ -110,6 +110,11 @@
   scrollbar-width: thin;
 }
 
+.file-edit-card .code-diff-card > .code-diff-scroll,
+.task-change-entry .code-diff-card > .code-diff-scroll {
+  max-height: var(--file-edit-preview-height, 360px);
+}
+
 .code-diff-card .code-diff-lines {
   display: block;
   width: max-content;

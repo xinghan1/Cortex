@@ -45,18 +45,77 @@ test('assist waits for isolated review and rejects stale human responses while r
   assert.deepEqual(f.events.map(event => event.type === 'approval-review' ? event.status : event.type), ['reviewing', 'allowed', 'approval-auto', 'approval-resolved']);
 });
 
-test('AI denial resolves false; ask and review failure fall back to explicit human confirmation', async () => {
+test('AI denial, legacy ask, malformed results and review failure deny without a human approval request', async () => {
   const denied = fixture(), deniedResult = denied.approve(); await turn();
   denied.calls[0].resolve({ decision: 'deny', reason: '无关广泛删除' }); assert.equal(await deniedResult, false);
   assert.ok(denied.events.some(event => event.type === 'approval-review' && event.status === 'denied'));
-  for (const failure of [false, true]) {
-    const f = fixture(), result = f.approve(); await turn();
-    if (failure) f.calls[0].reject(new Error('PRIVATE_SECRET')); else f.calls[0].resolve({ decision: 'ask', reason: '需要用户确认' });
-    await turn(); assert.equal(f.pending.get('approval-1').request.reviewStatus, 'manual');
-    assert.ok(f.events.some(event => event.type === 'approval-review' && event.status === 'manual'));
-    assert.equal(f.controller.respond({ id: 'approval-1', approved: false }), true); assert.equal(await result, false);
+  for (const failure of ['ask', 'throw', 'missing', 'unknown', 'allow-without-reason']) {
+    const f = fixture(), outcomes = [], result = f.approve(request, { onDecision: value => outcomes.push(value) }); await turn();
+    if (failure === 'throw') f.calls[0].reject(new Error('PRIVATE_SECRET'));
+    else f.calls[0].resolve(failure === 'missing' ? null : failure === 'allow-without-reason' ? { decision: 'allow' } : { decision: failure, reason: '无法确认用户授权范围。' });
+    assert.equal(await result, false); await f.controller.drain('run-1'); assert.equal(f.pending.size, 0);
+    assert.ok(f.events.some(event => event.type === 'approval-review' && event.status === 'denied'));
+    assert.equal(f.events.some(event => event.type === 'approval-request' || event.status === 'manual'), false);
+    assert.equal(f.controller.respond({ id: 'approval-1', approved: true }), false);
     assert.equal(JSON.stringify(f.events).includes('PRIVATE_SECRET'), false);
+    assert.equal(outcomes.length, 1); assert.equal(outcomes[0].approved, false); assert.equal(outcomes[0].reviewStatus, 'denied');
+    assert.equal(typeof outcomes[0].reviewReason, 'string'); assert.equal(JSON.stringify(outcomes).includes('PRIVATE_SECRET'), false);
   }
+});
+
+test('decision callback runs exactly once with only the safe binary outcome and a readable denial reason', async () => {
+  const f = fixture(), outcomes = [];
+  const result = f.approve({ ...request, providerState: 'PRIVATE_STATE' }, { onDecision: value => outcomes.push(value) }); await turn();
+  f.calls[0].resolve({ decision: 'deny', reason: '超出授权范围 PRIVATE_SECRET', rawResponse: 'PRIVATE_STATE' });
+  assert.equal(await result, false); await f.controller.drain('run-1');
+  assert.deepEqual(outcomes, [{ approved: false, reviewReason: '超出授权范围 [redacted]', reviewStatus: 'denied' }]);
+  assert.equal(f.controller.respond({ id: 'approval-1', approved: true }), false); f.controller.reconcile();
+  assert.equal(outcomes.length, 1); assert.equal(JSON.stringify(outcomes).includes('PRIVATE_'), false);
+  const resolved = f.events.find(event => event.type === 'approval-resolved');
+  assert.equal(resolved.reviewed, true); assert.equal(resolved.reviewReason, outcomes[0].reviewReason);
+});
+
+test('decision callback exceptions and rejected callback promises do not change the result', async () => {
+  for (const asyncFailure of [false, true]) {
+    const f = fixture(), outcomes = [];
+    const result = f.approve(request, { onDecision: value => {
+      outcomes.push(value);
+      if (asyncFailure) return Promise.reject(new Error('callback failed'));
+      throw new Error('callback failed');
+    } }); await turn();
+    f.calls[0].resolve({ decision: 'allow', reason: '用户目标内的必要测试。' });
+    assert.equal(await result, true); await f.controller.drain('run-1'); await turn();
+    assert.deepEqual(outcomes, [{ approved: true, reviewReason: '用户目标内的必要测试。', reviewStatus: 'allowed' }]);
+    assert.equal(f.pending.size, 0);
+  }
+});
+
+test('decision callbacks preserve request/full behavior and report cancellation without reviewer data', async () => {
+  const manual = fixture('request'), manualOutcomes = [];
+  const waiting = manual.approve(request, { onDecision: value => manualOutcomes.push(value) });
+  manual.controller.respond({ id: 'approval-1', approved: false }); assert.equal(await waiting, false);
+  assert.deepEqual(manualOutcomes, [{ approved: false, reviewReason: null, reviewStatus: 'manual' }]);
+  const full = fixture('full'), autoOutcomes = [];
+  assert.equal(await full.approve(request, { onDecision: value => autoOutcomes.push(value) }), true);
+  assert.deepEqual(autoOutcomes, [{ approved: true, reviewReason: null, reviewStatus: 'auto' }]);
+  const stopped = fixture(), parent = new AbortController(), stoppedOutcomes = []; parent.abort();
+  assert.equal(await stopped.approve(request, { parentSignal: parent.signal, onDecision: value => stoppedOutcomes.push(value) }), false);
+  assert.deepEqual(stoppedOutcomes, [{ approved: false, reviewReason: null, reviewStatus: 'cancelled' }]);
+  assert.equal(stopped.calls.length, 0);
+});
+
+test('cancelled or superseded reviews cannot deliver another callback or leak an old review reason', async () => {
+  const cancelled = fixture(), parent = new AbortController(), cancelledOutcomes = [];
+  const stopped = cancelled.approve(request, { parentSignal: parent.signal, onDecision: value => cancelledOutcomes.push(value) }); await turn();
+  parent.abort(); assert.equal(await stopped, false);
+  cancelled.calls[0].resolve({ decision: 'allow', reason: 'PRIVATE_SECRET old review' }); await cancelled.controller.drain('run-1');
+  assert.deepEqual(cancelledOutcomes, [{ approved: false, reviewReason: null, reviewStatus: 'cancelled' }]);
+  const rerouted = fixture(), reroutedOutcomes = [];
+  const result = rerouted.approve(request, { onDecision: value => reroutedOutcomes.push(value) }); await turn();
+  rerouted.mode('request'); rerouted.calls[0].resolve({ decision: 'deny', reason: 'PRIVATE_SECRET old review' }); await turn();
+  assert.equal(reroutedOutcomes.length, 0);
+  rerouted.controller.respond({ id: 'approval-1', approved: false }); assert.equal(await result, false); await rerouted.controller.drain('run-1');
+  assert.deepEqual(reroutedOutcomes, [{ approved: false, reviewReason: null, reviewStatus: 'manual' }]);
 });
 
 test('changing assist to request aborts the old generation and a late allow cannot approve', async () => {

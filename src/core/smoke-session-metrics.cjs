@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { aggregateSessionUsage, createSessionMetrics, makePendingContextUsage } = require('./session-metrics.cjs');
 
 module.exports = async function smokeSessionMetrics({ win, output }) {
   assert.equal(win.webContents.isOffscreen(), true, 'Session metrics smoke requires an isolated offscreen window');
@@ -9,8 +10,12 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
   const metrics = {
     rounds: 3, steps: 7, totalTokens: 128900, inputTokens: 120000, outputTokens: 8900,
     cachedInputTokens: 99000, cacheHitPercent: 82.5, cacheStatus: 'partial', usageStatus: 'partial',
-    contextUsedTokens: 32000, contextLimit: 128000, contextPercent: 25,
-    contextStatus: 'estimated', contextDescription: '文字和工具定义估算；模型返回实际输入用量后校正。',
+    contextUsedTokens: 32000, contextInputTokens: 28000, contextOutputTokens: 4000,
+    contextLimit: 128000, contextPercent: 25, contextLimitKind: 'total',
+    contextStatus: 'reported', contextPhase: 'complete',
+    contextDisplay: { source: 'current', pending: false, inputTokens: 28000, outputTokens: 4000, usedTokens: 32000,
+      limit: 128000, percent: 25, limitKind: 'total', model: 'metrics-fixture', measuredAt: '2026-10-21T01:00:00Z' },
+    contextDescription: '最近完成请求实际回报：输入 28,000 + 输出 4,000 = 32,000 Token；缓存输入已包含在输入中。',
   };
   let installed = false;
   try {
@@ -41,12 +46,86 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     assert.equal(reported.total, '128,900');
     assert.equal(reported.totalPartial, true);
     assert.match(reported.totalTitle, /仅累计已知用量/);
-    assert.equal(reported.context, '≈25%');
-    assert.match(reported.contextTitle, /估算/);
+    assert.equal(reported.context, '25%');
+    assert.match(reported.contextTitle, /输入\s*28,000.*输出\s*4,000/u);
+    assert.doesNotMatch(reported.contextTitle, /字符估算|不含输出|≈/u);
     assert.equal(reported.progress, '25 100');
     assert.equal(reported.ariaValue, '25');
     assert.equal(reported.providerVisible, true);
     assert.equal(reported.tokenText, await js('window.__sessionMetricsSmoke.tokenText'));
+
+    const unmeasured = await js(`(() => {
+      const values = {};
+      for (const status of ['pending', 'partial', 'unknown', 'estimated']) {
+        const partial = status === 'partial';
+        updateState({ ...appState, sessionMetrics: { ...${JSON.stringify(metrics)},
+          contextStatus: status, contextPhase: status === 'pending' ? 'requesting' : 'changed',
+          contextInputTokens: partial ? 28000 : null, contextOutputTokens: null, contextPercent: null, contextUsedTokens: null,
+          contextLastReported: null, contextDisplay: { source: 'none', pending: true, percent: null, usedTokens: null },
+          contextDescription: '当前请求尚未完整回报，等待服务端实测。'
+        } });
+        values[status] = { text:$('session-context-value').textContent,title:$('session-context').title,
+          aria:$('session-context').getAttribute('aria-valuenow'),
+          progress:$('session-context-progress').getAttribute('stroke-dasharray'),
+          unknown:$('session-context').classList.contains('unknown') };
+      }
+      updateState({ ...appState, sessionMetrics: ${JSON.stringify(metrics)} });
+      return values;
+    })()`);
+    for (const [status, value] of Object.entries(unmeasured)) {
+      assert.equal(value.text, '0%', status + ' must use the requested empty-state placeholder');
+      assert.equal(value.aria, null); assert.equal(value.progress, '0 100'); assert.equal(value.unknown, true);
+      assert.match(value.title, /尚未完整回报/u); assert.doesNotMatch(value.title, /最近完整请求实测/u);
+      assert.doesNotMatch(value.title, /当前请求[：:]\s*32,000/u, 'A previous measurement must not be called the current request');
+    }
+
+    // Exercise the actual core projection and the shipped renderer in account
+    // mode. All counts and profile identities are synthetic; no SDK/auth calls.
+    const officialBinding = { provider: 'openai', model: 'official-display-fixture', connectionKey: 'synthetic-chatgpt-profile-a' };
+    const officialReport = { ...officialBinding, version: 2, status: 'reported', phase: 'complete',
+      inputTokens: 35662, outputTokens: 208, limit: 128000, limitKind: 'total', measuredAt: '2026-10-21T01:00:00Z' };
+    const officialPending = makePendingContextUsage(officialReport);
+    const projected = (contextUsage, expectedContext = officialBinding) => createSessionMetrics({ contextUsage }, aggregateSessionUsage([]), { expectedContext });
+    const officialFixtures = {
+      pending: projected(officialPending),
+      partial: projected({ ...officialPending, status: 'partial', phase: 'requesting', inputTokens: 36000, outputTokens: 2 }),
+      stopped: projected({ ...officialPending, status: 'unknown', phase: 'stopped' }),
+      otherModel: projected(officialPending, { ...officialBinding, model: 'different-official-model' }),
+      otherConnection: projected(officialPending, { ...officialBinding, connectionKey: 'synthetic-chatgpt-profile-b' }),
+      complete: projected({ ...officialReport, inputTokens: 36000, outputTokens: 300, measuredAt: '2026-10-21T01:01:00Z' }),
+    };
+    const official = await js(`(() => {
+      const saved = window.__sessionMetricsSmoke, settings = appState.settings;
+      const accountSettings = { ...settings, provider:'openai', authMode:'chatgpt', model:${JSON.stringify(officialBinding.model)},
+        providers:{ ...settings.providers, openai:{ ...settings.providers.openai, authMode:'chatgpt', model:${JSON.stringify(officialBinding.model)} } } };
+      const result = {};
+      for (const [name, fixture] of Object.entries(${JSON.stringify(officialFixtures)})) {
+        updateState({ ...appState, settings: accountSettings, sessionMetrics:fixture });
+        result[name] = { text:$('session-context-value').textContent,title:$('session-context').title,
+          aria:$('session-context').getAttribute('aria-valuenow'),progress:$('session-context-progress').getAttribute('stroke-dasharray'),
+          pending:$('session-context').classList.contains('pending'),unknown:$('session-context').classList.contains('unknown'),
+          accountMode:$('provider-hint').textContent.startsWith('ChatGPT 账号') };
+      }
+      updateState({ ...appState, settings:accountSettings, sessionMetrics:${JSON.stringify(officialFixtures.pending)} });
+      return result;
+    })()`);
+    for (const name of ['pending', 'partial', 'stopped']) {
+      const value = official[name];
+      assert.equal(value.accountMode, true); assert.equal(value.text, '28%'); assert.equal(value.aria, '28');
+      assert.equal(value.progress, '28 100'); assert.equal(value.pending, true); assert.equal(value.unknown, false);
+      assert.match(value.title, /最近完整请求实测：35,870/u); assert.match(value.title, /输入 35,662 \/ 输出 208/u);
+      assert.match(value.title, /当前新增内容待回报/u); assert.doesNotMatch(value.title, /暂无完整实测数据/u);
+    }
+    for (const name of ['otherModel', 'otherConnection']) {
+      assert.equal(official[name].text, '0%'); assert.equal(official[name].aria, null);
+      assert.equal(official[name].unknown, true); assert.equal(official[name].pending, false);
+      assert.doesNotMatch(official[name].title, /35,662|35,870/u, 'Another model/account cannot inherit this report');
+    }
+    assert.equal(official.complete.text, '28.4%'); assert.equal(official.complete.pending, false);
+    assert.match(official.complete.title, /输入 36,000 \/ 输出 300/u);
+    win.webContents.invalidate(); await new Promise(resolve => setTimeout(resolve, 110));
+    await fs.writeFile(path.join(output, 'session-metrics-chatgpt-pending.png'), (await win.webContents.capturePage()).toPNG());
+    await js(`updateState({ ...window.__sessionMetricsSmoke.state, sessionMetrics:${JSON.stringify(metrics)} }, { syncActiveTask:false,allowWorkspaceChange:true });true`);
 
     const rates = await js(`(() => {
       const read = () => ({ text: $('generation-speed').textContent, unknown: $('session-speed').classList.contains('unknown'), title: $('session-speed').title });
@@ -91,12 +170,12 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       return { waiting, estimated, foreign, blocked, completed, oldLocationHidden, historical, unreported, otherSession, otherWorkspace,
         inMetrics: $('session-metrics').contains($('generation-speed')), uniqueSpeedId: document.querySelectorAll('#generation-speed').length === 1 };
     })()`);
-    assert.equal(rates.waiting.text, '— tok/s');
+    assert.equal(rates.waiting.text, '0 tok/s');
     assert.equal(rates.estimated.text, '≈251.3 tok/s');
     assert.match(rates.estimated.title, /排除工具执行与审批等待/);
     assert.match(rates.estimated.title, /估算速度不计入用量统计/);
     assert.equal(rates.foreign.text, rates.estimated.text);
-    assert.ok(Object.values(rates.blocked).every(value => value.unknown && value.text === '— tok/s'));
+    assert.ok(Object.values(rates.blocked).every(value => value.unknown && value.text === '0 tok/s'));
     assert.equal(rates.completed.text, '88.2 tok/s');
     assert.equal(rates.oldLocationHidden, true);
     assert.equal(rates.historical.text, '48.1 tok/s');
@@ -107,16 +186,21 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     assert.equal(rates.uniqueSpeedId, true);
 
     const isolation = await js(`(() => {
-      const before = $('session-rounds').textContent;
+      const before = $('session-rounds').textContent, beforeContext = $('session-context-value').textContent;
       handleEvent({ type: 'session-metrics', workspaceId: 'different-synthetic-workspace', metrics: { rounds: 999 } });
       const after = $('session-rounds').textContent;
+      handleEvent({ type: 'session-metrics', workspaceId: appState.workspaceId, sessionId: 'different-synthetic-session',
+        metrics: { ...${JSON.stringify(metrics)}, contextUsedTokens: 128000, contextPercent: 100,
+          contextDisplay:{source:'current',pending:false,usedTokens:128000,inputTokens:124000,outputTokens:4000,limit:128000,percent:100} } });
+      const afterForeignSession = $('session-context-value').textContent;
       updateState({ ...appState, sessionId: 'synthetic-other-session', sessionMetrics: {
         rounds: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0,
         cacheHitPercent: null, cacheStatus: 'unavailable', usageStatus: 'unavailable',
-        contextPercent: null, contextStatus: 'unknown', contextDescription: '模型目录未提供上下文容量。'
+        contextPercent: null, contextStatus: 'unknown', contextDisplay:{source:'none',pending:false,percent:null,usedTokens:null},
+        contextDescription: '模型目录未提供上下文容量。'
       } });
       return {
-        before, after, rounds: $('session-rounds').textContent,
+        before, after, beforeContext, afterForeignSession, rounds: $('session-rounds').textContent,
         cache: $('session-cache-value').textContent, total: $('session-total-value').textContent,
         context: $('session-context-value').textContent,
         ariaValue: $('session-context').getAttribute('aria-valuenow'),
@@ -125,10 +209,11 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       };
     })()`);
     assert.equal(isolation.before, isolation.after, 'Other workspace events must not change current metrics');
+    assert.equal(isolation.beforeContext, isolation.afterForeignSession, 'Other session events must not change current context');
     assert.equal(isolation.rounds, '0 轮对话');
-    assert.equal(isolation.cache, '—');
+    assert.equal(isolation.cache, '0');
     assert.equal(isolation.total, '0');
-    assert.equal(isolation.context, '—');
+    assert.equal(isolation.context, '0%');
     assert.equal(isolation.ariaValue, null);
     assert.equal(isolation.unknownRing, true);
     assert.match(isolation.contextTitle, /未提供上下文容量/);
@@ -178,7 +263,13 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     win.webContents.invalidate();
     await new Promise(resolve => setTimeout(resolve, 110));
     await fs.writeFile(path.join(output, 'session-metrics.png'), (await win.webContents.capturePage()).toPNG());
-    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true, estimatedContext: true, unknownContext: true, workspaceIsolation: true, narrowLayout: true, footerRightAligned:true, oldReviewHintRemoved:true, outputSpeedInMetrics:true, ratePhaseGating:true, completedAndHistoricalRates:true, rateSessionIsolation:true };
+    return { status: 'completed', rounds: true, partialCache: true, cumulativeUsage: true,
+      reportedInputPlusOutputContext: true, unmeasuredContextHidden: true, legacyEstimatesNotPresentedAsMeasured: true,
+      lastCompleteContextVisibleWhilePending:true, syntheticChatGPTModeWithoutAuthentication:true,
+      contextModelAndConnectionIsolation:true, stoppedRequestPreservesLastReport:true,
+      unknownContext: true, workspaceIsolation: true, contextSessionIsolation: true, narrowLayout: true,
+      footerRightAligned:true, oldReviewHintRemoved:true, outputSpeedInMetrics:true, ratePhaseGating:true,
+      completedAndHistoricalRates:true, rateSessionIsolation:true };
   } finally {
     if (installed && !win.isDestroyed()) await js(`(() => {
       const saved = window.__sessionMetricsSmoke;

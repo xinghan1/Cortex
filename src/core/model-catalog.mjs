@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import { ollamaEndpoint } from './ollama-endpoint.mjs';
 
 // Discovery schemas verified 2026-10-19. A catalog entry is not an inference entitlement.
 // https://developers.openai.com/api/reference/resources/models/methods/list
 // https://api-docs.deepseek.com/api/list-models/
 // https://platform.claude.com/docs/en/api/models/list
-const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', anthropic: 'https://api.anthropic.com/v1', relay: '' };
+const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 class CatalogError extends Error {
@@ -73,6 +74,7 @@ function reasoningMetadata(provider, metadata) {
  */
 export function deriveModelCapabilities(provider, id, metadata = {}) {
   if (!object(metadata)) metadata = {};
+  if (provider === 'ollama') return ollamaCapabilities(metadata);
   const result = {};
   const capacities = [metadata, metadata.capabilities].filter(object);
   for (const source of capacities) {
@@ -135,8 +137,47 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
   return result;
 }
 
+function ollamaCapabilities(metadata) {
+  const declared = Array.isArray(metadata.capabilities) && metadata.capabilities.every(value => typeof value === 'string') ? metadata.capabilities : null;
+  const text = declared ? declared.includes('completion') : metadata.textCompatible === true;
+  const tools = text && (declared ? declared.includes('tools') : metadata.supportsTools === true);
+  const result = { supportsTools: tools, supportsImages: declared ? declared.includes('vision') : metadata.supportsImages === true,
+    textCompatible: text, compatible: tools,
+    ...(!tools ? { compatibilityReason: text ? '此 Ollama 模型支持文本聊天，但目录未声明工具调用能力，可用于独立 AI 审批。'
+      : '此 Ollama 模型未声明文本生成能力，嵌入或其他专用模型不能用于编程会话与审批。' } : {}) };
+  const info = object(metadata.model_info) ? metadata.model_info : {};
+  const architecture = typeof info['general.architecture'] === 'string' ? info['general.architecture'] : '';
+  const declaredTraining = architecture ? info[`${architecture}.context_length`] : undefined;
+  const training = declaredTraining ?? metadata.trainingContextWindow;
+  const userContext = metadata.contextWindowTokens ?? 32768;
+  if (!Number.isSafeInteger(userContext) || userContext < 4096 || userContext > 2097152) throw failure('CATALOG_INVALID_CONFIG', 'Ollama 上下文窗口须为 4096 至 2097152 的整数。');
+  const validTraining = Number.isSafeInteger(training) && training > 0;
+  result.contextWindowTokens = userContext;
+  result.contextWindow = validTraining ? Math.min(userContext, training) : userContext;
+  result.contextWindowKind = 'total';
+  if (validTraining) result.trainingContextWindow = training;
+  // Modelfile num_ctx is a runtime default, overridden by explicit request
+  // options. Keep it as reference metadata rather than a training ceiling.
+  const defaults = typeof metadata.parameters === 'string' ? [...metadata.parameters.matchAll(/^\s*num_ctx\s+(\d+)\s*$/gmu)] : [];
+  const modelDefault = defaults.length ? Number(defaults.at(-1)[1]) : metadata.modelDefaultContextWindow;
+  if (Number.isSafeInteger(modelDefault) && modelDefault > 0) result.modelDefaultContextWindow = modelDefault;
+  const values = metadata.thinking?.values ?? metadata.ollamaThinkingValues;
+  result.ollamaThinkingValues = Array.isArray(values) && values.length <= 32
+    && values.every(value => typeof value === 'boolean' || typeof value === 'string' && /^[a-z][a-z0-9_-]{0,39}$/u.test(value))
+    ? [...new Set(values)] : [];
+  const mapped = value => value === false ? 'none' : value === true ? 'enabled' : value;
+  result.reasoningEfforts = [...new Set(result.ollamaThinkingValues.map(mapped).filter(value => [...EFFORTS, 'enabled'].includes(value)))];
+  const preferred = mapped(metadata.thinking?.default ?? metadata.defaultReasoningEffort);
+  if (result.reasoningEfforts.includes(preferred)) result.defaultReasoningEffort = preferred;
+  return result;
+}
+
 function endpointFor(provider, baseUrl) {
   if (!Object.hasOwn(DEFAULTS, provider)) throw failure('CATALOG_INVALID_CONFIG', '模型目录服务商无效。');
+  if (provider === 'ollama') {
+    try { return ollamaEndpoint(baseUrl, 'tags'); }
+    catch (error) { throw failure('CATALOG_INVALID_URL', error.message); }
+  }
   const raw = baseUrl === undefined || baseUrl === '' ? DEFAULTS[provider] : baseUrl;
   if (provider === 'relay' && !raw) throw failure('CATALOG_INVALID_URL', '请先填写中转站的 Base URL，再获取模型目录。');
   if (typeof raw !== 'string' || /[?#\u0000-\u001f]/.test(raw)) throw failure('CATALOG_INVALID_URL', '模型目录 API 地址不能包含查询参数、片段或控制字符。');
@@ -204,7 +245,7 @@ function abortable(promise, signal) {
   });
 }
 
-async function boundedJSON(response, signal, budget, limit) {
+async function boundedJSON(response, signal, budget, limit, arrayField = 'data') {
   if (!response.body?.getReader) throw failure('CATALOG_INVALID_RESPONSE', '模型目录响应缺少 JSON 正文。');
   const advertised = Number(response.headers?.get('content-length'));
   if (Number.isFinite(advertised) && advertised > limit - budget.bytes) throw failure('CATALOG_RESPONSE_TOO_LARGE', '模型目录响应超过大小上限。');
@@ -222,7 +263,7 @@ async function boundedJSON(response, signal, budget, limit) {
     text += decoder.decode();
     let result;
     try { result = JSON.parse(text); } catch { throw failure('CATALOG_INVALID_RESPONSE', '模型目录响应不是有效 JSON。'); }
-    if (!object(result) || !Array.isArray(result.data) || result.error) throw failure('CATALOG_INVALID_RESPONSE', '模型目录响应缺少有效的 data 数组。');
+    if (!object(result) || result.error || arrayField && !Array.isArray(result[arrayField])) throw failure('CATALOG_INVALID_RESPONSE', arrayField === 'data' ? '模型目录响应缺少有效的 data 数组。' : 'Ollama 模型目录响应结构无效。');
     return result;
   } catch (error) {
     if (error instanceof CatalogError || error?.name === 'AbortError') throw error;
@@ -254,14 +295,16 @@ export class ModelCatalog {
     this.#maxModels = maxModels; this.#maxPages = maxPages; this.#clock = clock;
   }
 
-  async list({ provider, baseUrl, apiKey, force = false, signal, fetchImpl = globalThis.fetch } = {}) {
+  async list({ provider, baseUrl, apiKey, force = false, signal, fetchImpl = globalThis.fetch, contextWindowTokens = 32768 } = {}) {
     const endpoint = endpointFor(provider, baseUrl);
-    if (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 4096 || /[\u0000-\u001f\u007f]/.test(apiKey)) throw failure('CATALOG_INVALID_CONFIG', '请提供有效的 API Key 后读取模型目录。');
+    if (provider === 'ollama' && apiKey === undefined) apiKey = '';
+    if (typeof apiKey !== 'string' || provider !== 'ollama' && !apiKey.trim() || apiKey.length > 4096 || /[\u0000-\u001f\u007f]/.test(apiKey)) throw failure('CATALOG_INVALID_CONFIG', '请提供有效的 API Key 后读取模型目录。');
+    if (provider === 'ollama' && (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens < 4096 || contextWindowTokens > 2097152)) throw failure('CATALOG_INVALID_CONFIG', 'Ollama 上下文窗口须为 4096 至 2097152 的整数。');
     if (typeof fetchImpl !== 'function') throw failure('CATALOG_INVALID_CONFIG', '模型目录网络请求组件不可用。');
     if (signal?.aborted) throw cancelled();
     const key = apiKey.trim();
-    const secrets = credentialForms(key);
-    const cacheKey = `${provider}\0${endpoint.href}\0${createHash('sha256').update(key).digest('hex')}`;
+    const secrets = key ? credentialForms(key) : [];
+    const cacheKey = `${provider}\0${endpoint.href}\0${createHash('sha256').update(key).digest('hex')}${provider === 'ollama' ? `\0${contextWindowTokens}` : ''}`;
     const cached = this.#cache.get(cacheKey);
     if (!force && cached && cached.expiresAt > this.#clock()) return clone(cached.result);
     const controller = new AbortController();
@@ -273,7 +316,37 @@ export class ModelCatalog {
     const official = officialEndpoint(provider, endpoint);
     let cursor;
     try {
-      for (let page = 0; page < this.#maxPages; page++) {
+      if (provider === 'ollama') {
+        const fetchJSON = async (resource, model) => {
+          if (combined.aborted) throw cancelled();
+          const response = await abortable(fetchImpl(ollamaEndpoint(baseUrl, resource).href, { method: model ? 'POST' : 'GET',
+            redirect: 'error', signal: combined, headers: { Accept: 'application/json', ...(model ? { 'Content-Type': 'application/json' } : {}),
+              ...(key ? { Authorization: `Bearer ${key}` } : {}) }, ...(model ? { body: JSON.stringify({ model, verbose: false }) } : {}) }), combined);
+          if (!response || !Number.isInteger(response.status)) throw failure('CATALOG_INVALID_RESPONSE', 'Ollama 模型目录网络响应无效。');
+          if (!response.ok) { try { Promise.resolve(response.body?.cancel()).catch(() => {}); } catch {} throw httpError(response.status); }
+          return boundedJSON(response, combined, budget, this.#maxResponseBytes, resource === 'tags' ? 'models' : null);
+        };
+        const tags = await fetchJSON('tags');
+        if (tags.models.length > this.#maxModels) throw failure('CATALOG_RESPONSE_TOO_LARGE', 'Ollama 模型目录条目数超过上限。');
+        const listed = [];
+        for (const item of tags.models) {
+          const id = typeof item?.name === 'string' ? item.name : item?.model;
+          // Reuse ID/credential checks before requesting any model details.
+          normalizeModel(provider, { id, contextWindowTokens }, false, secrets);
+          if (!ids.has(id)) { ids.add(id); listed.push(id); }
+        }
+        for (let index = 0; index < listed.length; index += 4) {
+          let firstError;
+          const group = await Promise.allSettled(listed.slice(index, index + 4).map(async id => {
+            try {
+              const details = await fetchJSON('show', id);
+              return normalizeModel(provider, { ...details, id, name: id, contextWindowTokens }, false, secrets);
+            } catch (error) { firstError ||= error; controller.abort(); throw error; }
+          }));
+          if (firstError) throw firstError;
+          models.push(...group.map(value => value.value));
+        }
+      } else for (let page = 0; page < this.#maxPages; page++) {
         if (combined.aborted) throw cancelled();
         const url = new URL(endpoint);
         if (provider === 'anthropic') { url.searchParams.set('limit', '1000'); if (cursor) url.searchParams.set('after_id', cursor); }
@@ -318,6 +391,6 @@ export class ModelCatalog {
       if (error?.name === 'AbortError') throw cancelled();
       // Neither upstream bodies nor arbitrary transport errors may reflect a key.
       throw failure('CATALOG_NETWORK_ERROR', '无法连接模型目录，请检查网络、代理和 API 地址。');
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); if (provider === 'ollama') controller.abort(); }
   }
 }

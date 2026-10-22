@@ -82,9 +82,17 @@ test('two independent real agent loops run in parallel, return matching results,
   assert.ok(records.every(record => record.runId === 'parent-run' && record.sessionId === 'parent-session'));
   assert.equal(new Set(records.filter(record => record.agentId).map(record => record.agentId)).size, 2);
   assert.deepEqual(events.filter(event => event.type === 'usage').at(-1), { type: 'usage', inputTokens: 60, outputTokens: 12 });
-  assert.equal(contexts.length, 4, 'Only the coordinator emits one estimate and one reported measurement per request');
-  assert.equal(contexts.filter(value => value.status === 'estimated').length, 2);
-  assert.equal(contexts.filter(value => value.status === 'reported').length, 2);
+  const requesting = contexts.filter(value => value.phase === 'requesting' && value.status === 'pending');
+  const reported = contexts.filter(value => value.status === 'reported');
+  const coordinatorRequestIds = records.filter(record => !record.agentId).map(record => record.id);
+  assert.equal(requesting.length, 2, 'Only the coordinator publishes the initial unknown context for each coordinator request');
+  assert.ok(requesting.every(value => value.inputTokens === null && value.outputTokens === null && value.usedTokens === null));
+  assert.deepEqual(requesting.map(value => value.requestId), coordinatorRequestIds);
+  assert.deepEqual(reported.map(value => value.requestId), coordinatorRequestIds);
+  assert.deepEqual(reported.map(value => [value.inputTokens, value.outputTokens, value.usedTokens]), [[10, 2, 12], [10, 2, 12]],
+    'Reported context is the coordinator request input plus output, not the combined parent and child billing ledger');
+  assert.ok(contexts.every(value => value.requestId === null || coordinatorRequestIds.includes(value.requestId)),
+    'Child context samples never enter the coordinator context stream');
   assert.equal(events.filter(event => event.type === 'text-delta').some(event => event.text.includes('Child')), false);
   const publicData = JSON.stringify({ events, messages });
   assert.equal(publicData.includes('fixture-secret'), false);

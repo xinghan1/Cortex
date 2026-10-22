@@ -22,6 +22,9 @@ test('portable upgrade copies existing encrypted settings and sessions once with
   await fs.writeFile(path.join(oldData, 'projects.json'), '{"version":1,"projects":[]}');
   await fs.writeFile(path.join(oldData, 'sessions', id + '.json'), '{}');
   await fs.writeFile(path.join(oldData, 'sessions', 'not-a-session.txt'), 'ignore');
+  await fs.mkdir(path.join(oldData, 'task-undo'));
+  await fs.writeFile(path.join(oldData, 'task-undo', id + '.json'), '{"version":1,"encrypted":"synthetic-undo-ciphertext"}');
+  await fs.writeFile(path.join(oldData, 'task-undo', 'not-an-undo.txt'), 'ignore');
   await fs.mkdir(path.join(oldData, 'chromium')); await fs.writeFile(path.join(oldData, 'chromium', 'cookie'), 'ignore');
   const cryptoState = { audit_enabled: true, encrypted_key: 'synthetic-os-protected-key' };
   await fs.writeFile(path.join(oldData, 'chromium', 'Local State'), JSON.stringify({ os_crypt: cryptoState, unrelated_browser_state: 'do not copy' }));
@@ -34,6 +37,8 @@ test('portable upgrade copies existing encrypted settings and sessions once with
   assert.equal(await fs.readFile(path.join(newData, 'preferences.json'), 'utf8'), '{"version":1,"textScale":130}');
   assert.equal(await fs.readFile(path.join(newData, 'projects.json'), 'utf8'), '{"version":1,"projects":[]}');
   assert.deepEqual(await fs.readdir(path.join(newData, 'sessions')), [id + '.json']);
+  assert.deepEqual(await fs.readdir(path.join(newData, 'task-undo')), [id + '.json']);
+  assert.equal(await fs.readFile(path.join(newData, 'task-undo', id + '.json'), 'utf8'), '{"version":1,"encrypted":"synthetic-undo-ciphertext"}');
   assert.deepEqual(await fs.readdir(path.join(newData, 'chromium')), ['Local State']);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(newData, 'chromium', 'Local State'), 'utf8')), { os_crypt: cryptoState });
   assert.deepEqual((await fs.readdir(path.join(newData, 'chatgpt'))).sort(), ['chatgpt-auth.json', 'chatgpt-host.json']);
@@ -117,12 +122,15 @@ test('encrypted credentials without their encryption context are never migrated 
     assert.ok(path.basename(temp).startsWith('forgedesk-migration-'));
     await fs.rm(temp, { recursive: true, force: true });
   });
-  for (const kind of ['account', 'api-key']) {
+  for (const kind of ['account', 'api-key', 'undo']) {
     const source = path.join(temp, kind), target = path.join(temp, kind + '-target');
     await fs.mkdir(source);
     if (kind === 'account') {
       await fs.mkdir(path.join(source, 'chatgpt'));
       await fs.writeFile(path.join(source, 'chatgpt', 'chatgpt-auth.json'), 'synthetic encrypted account');
+    } else if (kind === 'undo') {
+      await fs.mkdir(path.join(source, 'task-undo'));
+      await fs.writeFile(path.join(source, 'task-undo', randomUUID() + '.json'), '{"encrypted":"synthetic encrypted undo"}');
     } else await fs.writeFile(path.join(source, 'settings.json'), JSON.stringify({ providers: { openai: { encryptedKey: 'synthetic encrypted key' } } }));
     await assert.rejects(migrateLegacyData(target, source), /缺少配套的本机加密状态/);
     await assert.rejects(fs.access(path.join(target, 'settings.json')), { code: 'ENOENT' });

@@ -1,0 +1,588 @@
+/* Interface materials. Glass deliberately has no overrides: its saved photo,
+   frost, opacity and text preferences continue to use the original sheets. */
+html[data-ui-style='black'] {
+  color-scheme: dark;
+  --ui-root: #000;
+  --ui-panel: #000;
+  --ui-raised: #101010;
+  --ui-control: #171717;
+  --ui-code: #080808;
+  --ui-hover: #242424;
+  --ui-selected: #2b2b2b;
+  --ui-text: #ededed;
+  --ui-muted: #aaa;
+  --ui-border: #383838;
+  --ui-soft-border: #262626;
+  --ui-accent: #e5e5e5;
+  --ui-accent-ink: #111;
+  --ui-selection: #454545;
+  --ui-good: #79d99b;
+  --ui-good-bg: #102a1b;
+  --ui-bad: #ff9197;
+  --ui-bad-bg: #30171b;
+  --ui-warning: #e8c47d;
+  --ui-warning-bg: #302715;
+  --ui-radius: 8px;
+  --ui-scroll: #555;
+}
+
+html[data-ui-style='white'] {
+  color-scheme: light;
+  --ui-root: #e9ebee;
+  --ui-panel: #f2f3f5;
+  --ui-raised: #f8f9fa;
+  --ui-control: #e8eaed;
+  --ui-code: #f4f5f7;
+  --ui-hover: #e0e3e7;
+  --ui-selected: #e5e9ee;
+  --ui-text: #1b2026;
+  --ui-muted: #59636e;
+  --ui-border: #cdd2d8;
+  --ui-soft-border: #e0e4e8;
+  --ui-accent: #263d58;
+  --ui-accent-ink: #fff;
+  --ui-selection: #c5d8ee;
+  --ui-good: #19723b;
+  --ui-good-bg: #e4f4e8;
+  --ui-bad: #b52a3b;
+  --ui-bad-bg: #fce7e9;
+  --ui-warning: #805500;
+  --ui-warning-bg: #fff2cf;
+  --ui-radius: 8px;
+  --ui-scroll: #a6adb6;
+}
+
+html[data-ui-style='industrial'] {
+  color-scheme: dark;
+  --ui-root: #16191d;
+  --ui-panel: #202428;
+  --ui-raised: #282d33;
+  --ui-control: #2b3138;
+  --ui-code: #171b20;
+  --ui-hover: #363e47;
+  --ui-selected: #46391f;
+  --ui-text: #e7e9ec;
+  --ui-muted: #afb7c0;
+  --ui-border: #535b64;
+  --ui-soft-border: #394149;
+  --ui-accent: #edb64c;
+  --ui-accent-ink: #20180a;
+  --ui-selection: #675024;
+  --ui-good: #8bd9a5;
+  --ui-good-bg: #213a2c;
+  --ui-bad: #ff9d9e;
+  --ui-bad-bg: #40272a;
+  --ui-warning: #edbf69;
+  --ui-warning-bg: #44371e;
+  --ui-radius: 3px;
+  --ui-scroll: #69737e;
+}
+
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) {
+  --bg: var(--ui-root);
+  --panel: var(--ui-panel);
+  --panel2: var(--ui-control);
+  --text: var(--ui-text);
+  --text-secondary: var(--ui-muted);
+  --muted: var(--ui-muted);
+  --line: var(--ui-border);
+  --line-soft: var(--ui-soft-border);
+  --accent: var(--ui-accent);
+  --accent-dark: var(--ui-selected);
+  --warn: var(--ui-warning);
+  --red: var(--ui-bad);
+  --control-hover: var(--ui-hover);
+  --selection: var(--ui-selection);
+  --conversation-text-color: var(--ui-text);
+  --radius-panel: var(--ui-radius);
+  --radius-card: var(--ui-radius);
+  --radius-control: var(--ui-radius);
+  --glass-edge: var(--ui-border);
+  --glass-highlight: none;
+  --glass-shadow: none;
+  --glass-blur: none;
+  --panel-frost-filter: none;
+  --panel-opacity: 1;
+}
+
+/* The background preferences are retained, but have no visual effect on a
+   solid interface. These selectors also beat the photo CSSOM preview rule. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #app-background {
+  display: none;
+  background: none !important;
+  opacity: 0;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(body, .app-shell, .workspace-layout) {
+  background: var(--ui-root);
+  color: var(--ui-text);
+}
+
+/* Explicit surface lists avoid recoloring tokens, status indicators, image
+   content, or the embedded website. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .topbar, .sidebar, .conversation, .preview-panel, .editor-layout .preview-panel,
+  .conversation-header, .composer-area, .preview-header, .preview-tabs,
+  .file-preview-heading, .editor-status, .terminal-panel, .terminal-heading,
+  .terminal-form, .browser-preview, .browser-empty, .browser-toolbar, .find-bar,
+  .sidebar-footer, .browser-status
+) {
+  background: var(--ui-panel);
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .sidebar, .conversation, .preview-panel, .editor-layout .preview-panel,
+  .composer, .user-message-bubble, .tool-card, .approval-card,
+  .composer-approval .composer-approval-card, .task-change-summary, .subagent-card,
+  .notice, .pending-prompts, .pending-content > .pending-text, .deepseek-account,
+  .privacy-note, .chatgpt-panel, .usage-summary, .usage-activity,
+  .image-view-thumbnail-button, .image-view-entry > .image-view-unavailable,
+  .user-message-image, .attachment-draft, .attachment-loading
+) {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-panel);
+  color: var(--ui-text);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.composer, .user-message-bubble, .pending-content > .pending-text, .chatgpt-panel, .privacy-note) {
+  background: var(--ui-control);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.composer:focus-within, .file-row.file-drop-target, :where(#project-name.file-drop-target)) {
+  border-color: var(--ui-accent);
+  box-shadow: inset 0 0 0 1px var(--ui-accent);
+}
+
+/* Menus, popovers and every native dialog use opaque matching materials. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  dialog, dialog.settings-dialog, dialog.link-dialog, dialog.file-name-dialog,
+  dialog.editor-unsaved-dialog, dialog.image-preview-dialog,
+  dialog.permission-danger-dialog, dialog.appearance-dialog, .session-rename-dialog,
+  .pending-edit-dialog, .project-dropdown, .session-dropdown, .app-menu-popup,
+  .file-context-menu, .permission-popup, .reasoning-popup, .context-settings-popup,
+  :where(#chatgpt-usage-popover), .dropdown-select-popup, .editor-completion-list,
+  .usage-activity-tooltip
+) {
+  color: var(--ui-text);
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-raised);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) dialog::backdrop {
+  background: rgb(0 0 0 / 48%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html[data-ui-style='white'] dialog::backdrop { background: rgb(25 31 38 / 28%); }
+
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  button, .button, .permission-trigger, .model-reasoning-pill,
+  .project-switcher, .popup-model-button,
+  .model-search, .form-field input, .form-field select, .approval-reviewer-field select,
+  .browser-address, :where(#find-input, #terminal-input, #context-trigger-input),
+  .pending-edit-dialog textarea, .chatgpt-usage-button
+) {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-control);
+  color: var(--ui-text);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Text, menu rows and icon buttons retain their original hit areas. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .icon-button, .attach-images, .text-button, .user-message-copy,
+  .app-menu-trigger, .app-menu-item, .file-row, .permission-option, .model-option,
+  .session-menu-button, .session-dropdown button, .recent-project,
+  .project-dropdown-actions > button, .preview-tab, .session-context-trigger,
+  .code-diff-copy, .subagent-stop, .pending-prompt-actions button,
+  .pending-more, .composer-approval-expand, .usage-period, .popup-reasoning-reset
+) {
+  background: transparent;
+  color: var(--ui-text);
+  box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  button:hover, .button:hover, .button.subtle:hover, .file-row:hover,
+  .app-menu-item:focus, .file-context-menu .app-menu-item:focus,
+  .permission-option:focus-visible, .session-dropdown button:focus-visible,
+  .tool-summary:hover, .tool-operation-group-summary:hover, .subagent-header:hover,
+  .image-view-header:hover, .pending-more:hover, :where(#usage-stats-button:hover)
+) {
+  background: var(--ui-hover);
+  border-color: var(--ui-border);
+  color: var(--ui-text);
+  box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .file-row.selected, .file-row:focus-visible, .recent-project.active,
+  .session-history-item[aria-checked='true'], .model-option.selected,
+  .dropdown-select-option[data-active='true'], .editor-completion-option[aria-selected='true'],
+  .app-menu-trigger.active, .app-menu-trigger[aria-expanded='true'],
+  .permission-option[aria-checked='true'], .usage-period.active, .popup-reasoning-reset.active
+) {
+  background: var(--ui-selected);
+  border-color: var(--ui-accent);
+  color: var(--ui-text);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .button.solid, .send-button, .approval-accept, .permission-danger-confirm
+) {
+  background: var(--ui-accent) !important;
+  border-color: var(--ui-accent) !important;
+  color: var(--ui-accent-ink) !important;
+  box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .button.solid:hover, .send-button:hover, .approval-accept:hover, .permission-danger-confirm:hover
+) { filter: brightness(.92); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline-color: var(--ui-accent);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(input, textarea)::placeholder { color: var(--ui-muted); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) input { accent-color: var(--ui-accent); }
+
+/* Override decorative blue/white labels without touching semantic token spans. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .conversation-heading :where(#conversation-title), .conversation-header h1,
+  .project-title strong, .usage-row strong, .welcome h2, .dialog-header h2,
+  .form-field > span, .form-field > label, .model-option-copy strong,
+  .model-list-heading strong, .popup-reasoning-value, .approval-title,
+  .approval-header strong, .change-path, .file-preview-heading > span,
+  .tool-summary, .tool-title, .tool-edit-filename, .task-change-count,
+  .context-settings-heading strong, .deepseek-balance-total,
+  .usage-dashboard h2, .usage-activity h3, .usage-summary-metric strong,
+  .preview-tab.active, .completion-label, .session-history-preview,
+  .pending-preview-text, .pending-text, .subagent-name
+) { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .sidebar-heading, .sidebar-empty, .sidebar-empty p, .tree-loading, .file-arrow,
+  .preview-empty, .preview-empty p, .browser-empty, .welcome p, .welcome .welcome-note,
+  .welcome-eyebrow, .run-status, .generation-speed, .message-header,
+  .user-message-time, .user-message-source, .user-message-copy-feedback,
+  .composer-footer, :where(#provider-hint, #token-usage), .keyboard-hint, .pill-separator,
+  .usage-heading, .usage-row, .sidebar-footer, .project-chevron,
+  .app-menu-shortcut, .project-dropdown h2, .project-dropdown-actions small,
+  .recent-project-path, .recent-project-empty, .project-history-badge,
+  .session-list-heading, .session-history-meta, .session-list-status, .session-menu-caret,
+  .permission-heading, .permission-option small, .permission-check, .popup-hint,
+  .model-list-status, .model-option-copy small, .model-option-check,
+  .dialog-intro, .form-field small, .privacy-note p, .dialog-footer > span,
+  .chatgpt-help, .chatgpt-message, .chatgpt-usage-status, .chatgpt-usage-message,
+  .chatgpt-usage-meta, .context-settings-description, .session-rename-hint,
+  .task-activity, .task-activity-meta, .task-activity-phase, .task-activity-speed,
+  .tool-mark, .tool-badge, .tool-label, .technical-details-summary,
+  .tool-operation-group, .tool-operation-group-count, .tool-operation-group-status,
+  .image-view-card, .image-view-name, .image-view-unavailable,
+  .approval-detail, .approval-path, .approval-header, .approval-proposal,
+  .composer-approval-proposal, .composer-approval-expand, .composer-approval-full > summary,
+  .approval-actions > span, .approval-resolved, .change-status,
+  .pending-heading, .pending-prompt-mark, .pending-prompt-mode, .pending-more,
+  .completion-detail, .completion-help, .subagent-status, .subagent-usage,
+  .subagent-chevron, .subagent-section-title, .subagent-raw > summary,
+  .task-change-warning, .task-change-status, .terminal-heading, .terminal-command,
+  .terminal-form label, .terminal-run-result, :where(#terminal-status), .editor-status,
+  .browser-address, .browser-status, .usage-dashboard-intro, .usage-dashboard-eyebrow,
+  .usage-dashboard-status, .usage-dashboard-detail, .usage-dashboard-note,
+  .usage-summary-metric > span, .usage-activity-description, .usage-activity-months,
+  .deepseek-account-status, .deepseek-balance-details, .deepseek-balance-empty
+) { color: var(--ui-muted); }
+/* ID-based legacy controls are overridden separately so their specificity
+   cannot promote every button or text label in a forgiving selector list. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(#find-input, #terminal-input, #context-trigger-input) {
+  background: var(--ui-control); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(#find-input, #terminal-input, #context-trigger-input):focus { outline-color: var(--ui-accent); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #chatgpt-usage-popover {
+  background: var(--ui-raised); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation-heading #conversation-title { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(#provider-hint, #token-usage, #terminal-status) { color: var(--ui-muted) !important; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #usage-stats-button:hover { background: var(--ui-hover); box-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #project-name.file-drop-target { background: var(--ui-selected); color: var(--ui-text); border-color: var(--ui-accent); box-shadow: inset 0 0 0 1px var(--ui-accent); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.welcome h2, .message-body, .project-avatar) { text-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation .message:is(.user, .assistant) .message-body {
+  color: var(--ui-text);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .markdown-body :is(strong, .markdown-heading, blockquote) { color: inherit; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .markdown-body :is(a, a:hover) { color: var(--ui-accent); text-decoration-color: currentColor; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .markdown-body :not(pre) > code {
+  background: var(--ui-control); border-color: var(--ui-border); color: var(--ui-text);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .markdown-body :is(.markdown-table-wrap, th, td, hr, blockquote) { border-color: var(--ui-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .markdown-body th { background: var(--ui-control); color: var(--ui-text); }
+
+/* Code surfaces share the material; token colors remain independently scoped. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .message-code, .message.user .message-code, .message-code pre, .command-output,
+  .approval-command, .composer-approval .approval-command, .diff-side, .diff-side pre,
+  .tool-details, .tool-details pre, .subagent-raw > pre, .code-diff-card,
+  .code-content, .file-editor, .editor-layout .file-editor, .file-code-editor,
+  .terminal-output, .terminal-run-output, .command-result
+) {
+  background: var(--ui-code); border-color: var(--ui-border); color: var(--ui-text);
+  box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .message-code, .command-output, .approval-command, .diff-side,
+  .tool-details, .tool-details pre, .subagent-raw > pre, .code-diff-card
+) { border-radius: var(--ui-radius); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .message-code-label, .message.user .message-code-label, .code-diff-header,
+  .diff-heading, .diff-side.before .diff-heading, .completion-help,
+  .file-code-editor > .file-line-numbers
+) { background: var(--ui-control); color: var(--ui-muted); border-color: var(--ui-soft-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation .message .message-code :is(pre, pre > code) { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation .message:is(.user, .assistant) .message-body .message-code,
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation .message:is(.user, .assistant) .message-body .message-code :is(pre, pre > code) { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation .message:is(.user, .assistant) .message-body .message-code-label { color: var(--ui-muted); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.session-metrics, .session-metric, .session-context) { color: var(--ui-muted); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .session-metrics strong { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.file-highlight, .code-diff-code, .code-diff-filename, .command-result-command, .command-result-stdout) { color: var(--ui-text); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-line-number, .code-diff-sign, .code-diff-gap, .code-diff-notice, .code-diff-inline-note, .code-diff-no-newline) { color: var(--ui-muted); }
+
+/* The highlighted mirror owns visible glyphs. Never recolor the overlaid
+   editable textarea: that would render a second copy over every token. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .file-code-editor > #file-content {
+  background: var(--ui-code); color: var(--ui-text); caret-color: var(--ui-text);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .file-code-editor.syntax-ready > #file-content {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  background: transparent;
+  caret-color: var(--ui-text);
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .file-code-editor.syntax-ready > #file-content::selection {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background: var(--ui-selection);
+}
+html[data-ui-style='white'] .syntax-token.syntax-keyword { color: #7137a8; }
+html[data-ui-style='white'] .syntax-token.syntax-control { color: #b3263e; }
+html[data-ui-style='white'] .syntax-token.syntax-string { color: #24743c; }
+html[data-ui-style='white'] .syntax-token.syntax-number { color: #9d490d; }
+html[data-ui-style='white'] .syntax-token.syntax-function { color: #175eaa; }
+html[data-ui-style='white'] .syntax-token:is(.syntax-property, .syntax-variable) { color: #95430a; }
+html[data-ui-style='white'] .syntax-token.syntax-type { color: #806100; }
+html[data-ui-style='white'] .syntax-token.syntax-operator { color: #006d80; }
+html[data-ui-style='white'] .syntax-token.syntax-comment { color: #5c6a65; }
+
+/* Status colors stay semantic, with darker accessible versions on white. */
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .code-diff-added, .task-change-added, .tool-edit-added, .key-status.saved,
+  .subagent-card[data-status='completed'] .subagent-status,
+  .approval-review-card[data-status='allowed'] .approval-review-heading
+) { color: var(--ui-good) !important; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .code-diff-removed, .task-change-removed, .tool-edit-removed, .form-error,
+  .notice.error, .run-result.failed, .context-trigger-error, .subagent-stop-error,
+  .subagent-error-section, .subagent-card[data-status='failed'] .subagent-status,
+  .approval-review-card[data-status='denied'] .approval-review-heading,
+  .tool-card[data-status='failed'] .tool-badge, .deepseek-account-status.error,
+  .usage-dashboard-status.error, .permission-trigger[data-mode='full']
+) { color: var(--ui-bad) !important; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.notice.error, .code-diff-remove) { background: var(--ui-bad-bg); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-add, .deepseek-account-availability) { background: var(--ui-good-bg); color: var(--ui-good); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .code-diff-add :is(.code-diff-sign, .code-diff-line-number) { color: var(--ui-good); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .code-diff-remove :is(.code-diff-sign, .code-diff-line-number) { color: var(--ui-bad); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-add .code-diff-line-number) { box-shadow: inset 3px 0 0 var(--ui-good); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-remove .code-diff-line-number) { box-shadow: inset 3px 0 0 var(--ui-bad); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .tool-operation-group:is([data-status='failed'], [data-status='denied'], [data-status='unknown']) > summary .tool-operation-group-status { color: var(--ui-bad) !important; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.tool-card.running .tool-badge, .run-status.running, .tool-operation-group[data-status='running'] > summary .tool-operation-group-status) { color: var(--ui-accent) !important; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.project-run-badge, .temporary-indicator) { color: var(--ui-accent); background: var(--ui-selected); border-color: var(--ui-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.project-run-badge[data-status='approval'], .deepseek-account-availability[data-available='false']) { color: var(--ui-warning); background: var(--ui-warning-bg); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.permission-danger-icon, .permission-danger-emphasis, .model-option-warning) { color: var(--ui-warning); }
+
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(
+  .app-menu-separator, .reasoning-visual-track, .session-context-track,
+  .reasoning-visual-fill, .reasoning-visual-thumb, .project-avatar
+) { background: var(--ui-accent); box-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .preview-tab.active::after,
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .reasoning-visual-fill::after,
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .reasoning-visual-thumb::after {
+  background: var(--ui-accent); box-shadow: none;
+}
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .project-avatar { color: var(--ui-accent-ink); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .reasoning-visual-track { background: var(--ui-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .app-menu-separator { background: var(--ui-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .sidebar-resizer::after,
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .run-status.running::before,
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .streaming .message-header::after { background: var(--ui-accent); box-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .brand-logo { filter: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.reasoning-value.is-max, #composer-reasoning-label.is-max) { color: var(--ui-accent); -webkit-text-fill-color: var(--ui-accent); background: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .session-context-track { stroke: var(--ui-border); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .session-context-progress { stroke: var(--ui-accent); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) ::selection { color: var(--ui-text); background: var(--ui-selection); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) ::-webkit-scrollbar-thumb { background-color: var(--ui-scroll); box-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) ::-webkit-scrollbar-thumb:hover { background-color: var(--ui-muted); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) ::-webkit-scrollbar-track { background: var(--ui-panel); }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-scroll, .approval-body, .tool-operation-group-items, .image-view-gallery) { scrollbar-color: var(--ui-scroll) var(--ui-panel); }
+html[data-ui-style='white'] .usage-activity-cell:not([data-level]),
+html[data-ui-style='white'] .usage-activity-cell[data-level='0'] { background: #e9ecef; }
+html[data-ui-style='white'] .completion-kind { color: #7137a8; border-color: #c4afd8; }
+html[data-ui-style='white'] .completion-kind:is([data-kind='function'], [data-kind='method']) { color: #175eaa; border-color: #9fb9d5; }
+html[data-ui-style='white'] .completion-kind:is([data-kind='variable'], [data-kind='property']) { color: #24743c; border-color: #9bc3a6; }
+html[data-ui-style='white'] .completion-kind:is([data-kind='tag'], [data-kind='attribute'], [data-kind='snippet']) { color: #95430a; border-color: #cfb295; }
+html[data-ui-style='white'] .file-row .file-icon[data-kind] { color: #526d8e; }
+html[data-ui-style='white'] .file-row .file-icon:is([data-kind='folder'], [data-kind='json'], [data-kind='javascript']) { color: #8a650d; }
+html[data-ui-style='white'] .file-row .file-icon:is([data-kind='css'], [data-kind='csharp'], [data-kind='image']) { color: #7653a2; }
+html[data-ui-style='white'] .file-row .file-icon:is([data-kind='html'], [data-kind='java'], [data-kind='svelte']) { color: #a05224; }
+html[data-ui-style='white'] .file-row .file-icon:is([data-kind='vue'], [data-kind='table']) { color: #28744b; }
+
+/* Industrial chrome uses hard graphite edges and a solid amber rule. */
+html[data-ui-style='industrial'] .topbar { background: #242a30; box-shadow: inset 0 -2px 0 var(--ui-accent); }
+html[data-ui-style='industrial'] :is(.conversation-header, .preview-header, .dialog-header, .tool-operation-group-summary) { border-radius: 3px; }
+html[data-ui-style='industrial'] :is(.welcome-mark, .project-avatar, .task-change-actions button, .task-change-file, .subagent-header, .image-view-header) { border-radius: 3px; }
+html[data-ui-style='industrial'] .welcome-mark { background: var(--ui-control); border-color: var(--ui-border); box-shadow: none; }
+html:is([data-ui-style='black'], [data-ui-style='white']) .welcome-mark { background: var(--ui-control); border-color: var(--ui-border); box-shadow: none; }
+
+/* Compact solid panes; industrial panes meet at a single divider. Keep the
+   overlay resizer hit areas and the floating browser's reserved right margin. */
+html:is([data-ui-style='black'], [data-ui-style='white']) .workspace-layout { margin: 4px; }
+html:is([data-ui-style='black'], [data-ui-style='white']) .conversation { margin-left: 3px; }
+html:is([data-ui-style='black'], [data-ui-style='white']).sidebar-hidden .conversation { margin-left: 0; }
+html:is([data-ui-style='black'], [data-ui-style='white']).preview-pinned #preview-panel { margin-left: 3px; }
+html[data-ui-style='industrial'] .workspace-layout { margin: 0; gap: 0; }
+html[data-ui-style='industrial'] .conversation { margin-left: 0; }
+html[data-ui-style='industrial'] .workspace-layout > :is(.sidebar, .conversation) { border: 0; border-radius: 0; }
+html[data-ui-style='industrial'] .workspace-layout > .sidebar { border-right: 1px solid var(--ui-border); }
+html[data-ui-style='industrial'] #preview-panel { margin-left: 0; border: 0; border-left: 1px solid var(--ui-border); border-radius: 0; }
+
+/* Four material choices, including an intentional miniature glass preview.
+   Swatches are illustrations only; their palette never changes the app. */
+.ui-style-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0 18px; }
+.ui-style-option { display: flex; flex-direction: column; align-items: stretch; gap: 7px; min-width: 0; padding: 8px; text-align: left; border: 1px solid var(--ui-border, rgb(205 224 255 / 24%)); border-radius: var(--ui-radius, 10px); color: var(--ui-text, #e7efff); background: var(--ui-control, rgb(255 255 255 / 4%)); font: inherit; cursor: pointer; }
+.ui-style-option > strong { color: inherit; font-size: 12px; font-weight: 600; }
+.ui-style-option > small { color: var(--ui-muted, #a8bbd6); font-size: 10px; line-height: 1.6; }
+.ui-style-option:hover { border-color: var(--ui-accent, #a9caff); }
+.ui-style-option[aria-pressed='true'] { border-color: var(--ui-accent, #a9caff) !important; box-shadow: inset 0 0 0 1px var(--ui-accent, #a9caff) !important; }
+.ui-style-option:focus-visible { outline: 2px solid var(--ui-accent, #a9caff); outline-offset: 3px; }
+.ui-style-swatch { display: grid; grid-template-columns: 19% 1fr 22%; gap: 4px; height: 57px; padding: 9px 6px 6px; overflow: hidden; border: 1px solid var(--swatch-border); border-radius: var(--swatch-radius, 5px); background: var(--swatch-bg); }
+.ui-style-swatch > span { display: block; border: 1px solid var(--swatch-border); border-radius: var(--swatch-radius, 3px); background: var(--swatch-panel); }
+.ui-style-swatch > span:nth-child(2)::before { content: ''; display: block; width: 64%; height: 3px; margin: 8px 4px 5px; background: var(--swatch-ink); box-shadow: 0 6px 0 var(--swatch-ink); opacity: .65; }
+.style-swatch-glass { --swatch-bg: linear-gradient(135deg, #397cbd, #142a50 47%, #7150c9); --swatch-panel: rgb(220 235 255 / 14%); --swatch-border: rgb(225 236 255 / 35%); --swatch-ink: #d8e7ff; }
+.style-swatch-black { --swatch-bg: #000; --swatch-panel: #080808; --swatch-border: #484848; --swatch-ink: #d4d4d4; }
+.style-swatch-white { --swatch-bg: #e9ebee; --swatch-panel: #f2f3f5; --swatch-border: #cbd0d5; --swatch-ink: #3c434b; }
+.style-swatch-industrial { --swatch-bg: #171b20; --swatch-panel: #2b3138; --swatch-border: #77705f; --swatch-ink: #edb64c; --swatch-radius: 1px; border-top-color: #edb64c; }
+@media (max-width: 620px) { .ui-style-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (forced-colors: active) {
+  html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .file-code-editor.syntax-ready > #file-content {
+    color: CanvasText !important; -webkit-text-fill-color: CanvasText !important; caret-color: CanvasText;
+  }
+}
+
+/* One optional selection palette applies across materials. A null preference
+   keeps each material's existing palette; selected text uses computed contrast. */
+html[data-selection-color='custom'] {
+  --selection-accent: var(--custom-selection-color);
+  --ui-accent: var(--custom-selection-color);
+  --ui-accent-ink: var(--custom-selection-ink);
+  --accent: var(--custom-selection-color);
+  --accent-dark: color-mix(in srgb, var(--custom-selection-color) 18%, transparent);
+  --ui-selected: color-mix(in srgb, var(--custom-selection-color) 22%, var(--ui-control, #152037));
+  --ui-selection: color-mix(in srgb, var(--custom-selection-color) 35%, var(--ui-control, #152037));
+  --selection: var(--ui-selection);
+}
+.selection-color-settings { margin: 0 0 20px; }
+.selection-color-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.selection-color-heading h3 { margin: 0; }
+.selection-color-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.selection-color-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.selection-color-swatch { width: 28px; height: 28px; border-radius: 50%; padding: 0; border: 2px solid transparent; cursor: pointer; background: var(--palette-color) !important; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%); }
+.selection-color-swatch[aria-pressed='true'] { outline: 2px solid var(--ui-text, #e7efff); outline-offset: 2px; }
+.selection-color-swatch:focus-visible { outline: 2px solid var(--ui-accent, #a9caff); outline-offset: 3px; }
+.selection-color-swatch[data-selection-color='#6b9eff'] { --palette-color: #6b9eff; }
+.selection-color-swatch[data-selection-color='#4cbfc3'] { --palette-color: #4cbfc3; }
+.selection-color-swatch[data-selection-color='#63b77b'] { --palette-color: #63b77b; }
+.selection-color-swatch[data-selection-color='#dbb254'] { --palette-color: #dbb254; }
+.selection-color-swatch[data-selection-color='#e69a5c'] { --palette-color: #e69a5c; }
+.selection-color-swatch[data-selection-color='#de737d'] { --palette-color: #de737d; }
+.selection-color-swatch[data-selection-color='#a28ae7'] { --palette-color: #a28ae7; }
+.selection-color-swatch[data-selection-color='#d382bd'] { --palette-color: #d382bd; }
+.selection-color-custom { display: inline-flex; align-items: center; gap: 7px; color: var(--ui-text, #e7efff); font-size: 12px; cursor: pointer; }
+.selection-color-custom input[type='color'] { width: 32px; height: 28px; padding: 2px; border: 1px solid var(--ui-border, rgb(205 224 255 / 30%)); border-radius: 5px; background: var(--ui-control, transparent); cursor: pointer; }
+.selection-color-value { font-size: 11px; color: var(--ui-muted, #a8bbd6); font-variant-numeric: tabular-nums; }
+html[data-selection-color='custom'] :is(
+  .file-row.selected, .recent-project.active, .session-history-item[aria-checked='true'],
+  .model-option.selected, .dropdown-select-option[data-active='true'],
+  .editor-completion-option[aria-selected='true'], .app-menu-trigger.active,
+  .app-menu-trigger[aria-expanded='true'], .permission-option[aria-checked='true'],
+  .usage-period.active, .popup-reasoning-reset.active
+) {
+  background: var(--custom-selection-color) !important;
+  border-color: var(--custom-selection-color);
+  color: var(--custom-selection-ink) !important;
+  box-shadow: inset 2px 0 0 var(--custom-selection-ink);
+}
+html[data-selection-color='custom'] :is(
+  .file-row.selected, .recent-project.active, .session-history-item[aria-checked='true'],
+  .model-option.selected, .dropdown-select-option[data-active='true'],
+  .editor-completion-option[aria-selected='true'], .permission-option[aria-checked='true']
+) :is(span, small, strong, .file-icon) { color: var(--custom-selection-ink) !important; }
+html[data-selection-color='custom'] :is(.ui-style-option, .background-preset-option)[aria-pressed='true'] {
+  border-color: var(--custom-selection-color) !important;
+  box-shadow: inset 0 0 0 1px var(--custom-selection-color) !important;
+}
+html[data-selection-color='custom'] .preview-tab.active::after { background: var(--custom-selection-color); }
+html[data-selection-color='custom'] input:is([type='checkbox'], [type='radio'], [type='range']) { accent-color: var(--custom-selection-color); }
+html[data-selection-color='custom'] ::selection { background: var(--custom-selection-color); color: var(--custom-selection-ink); }
+
+/* A chosen color is the interface accent, including the older glass controls
+   whose fills and focus rings predate the material tokens. Keep semantic
+   error/success colors and the palette/background previews independent. */
+html[data-selection-color='custom'] :is(.project-avatar, .button.solid, .send-button, .approval-accept, .permission-danger-confirm) {
+  background: var(--custom-selection-color) !important;
+  border-color: var(--custom-selection-color) !important;
+  color: var(--custom-selection-ink) !important;
+  box-shadow: none;
+}
+html[data-selection-color='custom'] .composer:focus-within {
+  border-color: var(--custom-selection-color);
+  box-shadow: inset 0 0 0 1px var(--custom-selection-color), 0 0 0 3px color-mix(in srgb, var(--custom-selection-color) 12%, transparent);
+}
+html[data-selection-color='custom'] :is(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline-color: var(--custom-selection-color);
+}
+html[data-selection-color='custom'] :is(.form-field input, .form-field select):focus-visible {
+  border-color: var(--custom-selection-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--custom-selection-color) 12%, transparent);
+}
+html[data-selection-color='custom'] :is(.popup-reasoning-value, .reasoning-value, #composer-reasoning-label):not(.is-unavailable) {
+  background: none;
+  color: var(--custom-accent-text);
+  -webkit-text-fill-color: var(--custom-accent-text);
+}
+html[data-selection-color='custom'] .reasoning-slider-visual:not(.is-unavailable) :is(.reasoning-visual-fill, .reasoning-visual-thumb),
+html[data-selection-color='custom'] .reasoning-slider-visual:not(.is-unavailable) :is(.reasoning-visual-fill, .reasoning-visual-thumb)::after {
+  background: var(--custom-selection-color);
+  box-shadow: none;
+}
+html[data-selection-color='custom'] .reasoning-slider-visual:focus-within { outline-color: var(--custom-selection-color); }
+html[data-selection-color='custom'] #round-navigator .round-navigator-tick:is(:hover, :focus-visible, [aria-current='step']) {
+  color: var(--custom-accent-text);
+}
+html[data-selection-color='custom'] #round-navigator .round-navigator-tick:focus-visible { outline-color: var(--custom-selection-color); }
+html[data-selection-color='custom'] :is(.session-context-progress, .session-context-button:hover .session-context-progress) { stroke: var(--custom-selection-color); }
+html[data-selection-color='custom'] :is(.preview-tab.active)::after,
+html[data-selection-color='custom'] :is(.sidebar-resizer, .editor-resizer):is(:hover, :focus-visible)::after,
+html[data-selection-color='custom'] :is(.run-status.running)::before,
+html[data-selection-color='custom'] .streaming .message-header::after { background: var(--custom-selection-color); box-shadow: none; }
+html[data-selection-color='custom'] :is(.file-row.file-drop-target, #project-name.file-drop-target) {
+  background: color-mix(in srgb, var(--custom-selection-color) 22%, var(--ui-control, #152037));
+  box-shadow: inset 0 0 0 1px var(--custom-selection-color);
+  border-color: var(--custom-selection-color);
+}
+html[data-selection-color='custom'] :is(a, .text-button, .tool-card.running .tool-badge, .task-activity.running .task-activity-marker) {
+  color: var(--custom-accent-text);
+}
+html[data-selection-color='custom'] :is(.file-code-editor.syntax-ready > #file-content, .composer textarea) { caret-color: var(--custom-accent-text); }

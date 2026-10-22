@@ -27,12 +27,14 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
   const marker = name => `QUEUE_SMOKE_${name}_${suffix}`;
   const markers = Object.fromEntries(['FIFO_START', 'FIFO_ONE', 'FIFO_TWO', 'REMOVED', 'STEER_START', 'STEERING', 'STOP_START', 'STOP_WAIT', 'FAIL_START', 'FAIL_WAIT'].map(name => [name, marker(name)]));
   const prompts = Object.fromEntries(Object.entries(markers).map(([name, value]) => [name, `${({ FIFO_START: '正在处理当前任务', FIFO_ONE: '排队任务一', FIFO_TWO: '排队任务二', REMOVED: '应删除且不发送的任务', STEER_START: '继续当前实现', STEERING: '补充要求：先检查边界条件', STOP_START: '等待停止的任务', STOP_WAIT: '停止后等待继续', FAIL_START: '模拟失败的当前任务', FAIL_WAIT: '失败后等待继续' })[name]} · ${value}`]));
+  const editedSteering=prompts.STEERING+'（编辑后：补充异常、空值与退出行为。）';
   const records = [];
   const problems = [];
   const originalOpen = dialog.showOpenDialog;
   let other;
   let installed = false;
   let configured = false;
+  const originalWindow={bounds:win.getBounds(),opacity:win.getOpacity(),visible:win.isVisible()};
   const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => typeof part === 'string' ? part : part?.text || '').join('\n') : '';
   const server = http.createServer(async (request, response) => {
     try {
@@ -50,6 +52,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
       const text = textOf(latestUser?.content);
       const name = Object.keys(markers).find(key => text.includes(markers[key]));
       if (!name) throw new Error('Queue fixture received an unexpected user message');
+      if(name==='STEERING')assert.equal(text,editedSteering,'Steering must send the edited pending text');
       const record = { name, body, response, released: false, aborted: false };
       records.push(record);
       // A held response proves queue/steer changes do not abort the current request.
@@ -63,7 +66,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
   const release = (record, failed = false) => {
     assert.ok(record && !record.released && !record.aborted, 'Held request was unavailable or aborted');
     record.released = true;
-    record.response.writeHead(failed ? 503 : 200, { 'Content-Type': 'application/json' });
+    record.response.writeHead(failed ? 401 : 200, { 'Content-Type': 'application/json' });
     record.response.end(JSON.stringify(failed
       ? { error: { message: 'Queue smoke simulated provider failure', code: 'queue_smoke_failure' } }
       : { id: 'resp_' + randomUUID(), status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `本机测试回复：${record.name}` }] }], usage: { input_tokens: 3, output_tokens: 2 } }));
@@ -91,7 +94,13 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     await fs.writeFile(path.join(output, name), (await win.webContents.capturePage()).toPNG());
   };
   const assertAbsent = (value, name, message) => assert.ok(!JSON.stringify(value).includes(markers[name]), message || name + ' unexpectedly entered context');
+  const nativeClick=async selector=>{
+    const point=await until('revealed native queue action '+selector,()=>js(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n||n.disabled||!n.checkVisibility())return null;n.scrollIntoView({block:'nearest',behavior:'instant'});const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null;})()`));
+    win.focus();win.webContents.focus();win.webContents.sendInputEvent({type:'mouseMove',...point});win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});await wait(40);
+  };
+  const typeEditor=async text=>{await nativeClick('#pending-edit-input');win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await until('native select-all reached pending editor',()=>js(`$('pending-edit-input').selectionStart===0&&$('pending-edit-input').selectionEnd===$('pending-edit-input').value.length`));await win.webContents.insertText(text);assert.equal(await js(`$('pending-edit-input').value`),text,'Native editor input must reach the actual textarea');};
   try {
+    win.setContentSize(1440,1000);win.setOpacity(0);win.showInactive();win.focus();win.webContents.focus();
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const fixture = path.join(dataDir, 'project');
     await fs.mkdir(fixture, { recursive: true });
@@ -126,7 +135,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     assert.equal(secondQueued.disposition, 'queued');
     assert.equal(removed.disposition, 'queued');
     await until('remove action rendered', () => js(`!!document.querySelector('.pending-prompt[data-prompt-id=${JSON.stringify(removed.id)}] .pending-remove')`));
-    await js(`(()=>{const button=document.querySelector('.pending-prompt[data-prompt-id=${JSON.stringify(removed.id)}] .pending-remove');if(button.disabled)throw new Error('Remove action disabled');button.click();})()`);
+    await nativeClick('.pending-prompt[data-prompt-id='+JSON.stringify(removed.id)+'] .pending-remove');
     await until('card removed pending prompt', async () => !(await state()).promptQueue.items.some(item => item.id === removed.id));
     const waiting = await until('two queued items', async () => {
       const observed = await state();
@@ -144,6 +153,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     const controls = await js(`(()=>{const visible=id=>{const node=document.getElementById(id);return !!node&&!node.hidden&&!!node.getClientRects().length;};return{inputEnabled:!document.getElementById('task-input').disabled,sendEnabled:!document.getElementById('send-button').disabled,sendVisible:visible('send-button'),stopVisible:visible('stop-button'),composerSteerRemoved:!document.getElementById('steer-button'),queueHintRemoved:!document.getElementById('send-mode-hint'),pendingVisible:visible('pending-prompts'),cards:document.querySelectorAll('#pending-items .pending-prompt').length};})()`);
     assert.ok(controls.inputEnabled && controls.sendEnabled && controls.sendVisible && controls.stopVisible && controls.composerSteerRemoved && controls.queueHintRemoved && controls.pendingVisible, 'Composer controls or hidden queue/steer affordances are incorrect: ' + JSON.stringify(controls));
     assert.equal(controls.cards, 2);
+    assert.equal(await js(`document.querySelectorAll('#pending-count,#pending-status,.pending-prompt-mode').length`),0);
     await capture('queue.png');
     assert.equal(first.aborted, false, 'Queue submission aborted the active response');
     assert.equal(records.length, 1, 'Queued prompts started while the first response was held');
@@ -188,8 +198,16 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     const steerFirst = await requestFor('STEER_START');
     const steering = await call('submitPrompt', { text: prompts.STEERING, mode: 'queue' });
     assert.equal(steering.disposition, 'queued');
+    const beforeEdit=(await state()).promptQueue.items.find(item=>item.id===steering.id);
+    const steeringCard='.pending-prompt[data-prompt-id='+JSON.stringify(steering.id)+']';
+    await nativeClick(steeringCard+' .pending-edit');await typeEditor('此编辑会被取消');await nativeClick('#pending-edit-cancel');
+    assert.equal((await state()).promptQueue.items.find(item=>item.id===steering.id).text,prompts.STEERING);
+    await nativeClick(steeringCard+' .pending-edit');await typeEditor(editedSteering);await nativeClick('#pending-edit-save');
+    await until('edited pending prompt saved',async()=>{const item=(await state()).promptQueue.items.find(item=>item.id===steering.id);return item?.text===editedSteering&&await js(`!$('pending-edit-dialog').open`);});
+    const afterEdit=(await state()).promptQueue.items.find(item=>item.id===steering.id);
+    assert.equal(afterEdit.id,beforeEdit.id);assert.equal(afterEdit.mode,beforeEdit.mode);assert.deepEqual(afterEdit.attachments,beforeEdit.attachments);
     await until('steer action rendered', () => js(`!!document.querySelector('.pending-prompt[data-prompt-id=${JSON.stringify(steering.id)}] .pending-steer')`));
-    await js(`(()=>{const button=document.querySelector('.pending-prompt[data-prompt-id=${JSON.stringify(steering.id)}] .pending-steer');if(button.disabled)throw new Error('Steer action disabled');button.click();})()`);
+    await nativeClick(steeringCard+' .pending-steer');
     await until('queued item promoted to steering', async () => (await state()).promptQueue.items.some(item => item.id === steering.id && item.mode === 'steer'));
     assert.equal(steerFirst.aborted, false);
     assertAbsent(steerFirst.body, 'STEERING');
@@ -203,8 +221,18 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     assert.equal(duringSteering.filter(event => event.type === 'run-start').length, 1);
     assert.equal(duringSteering.filter(event => event.type === 'run-end').length, 0, 'Steering was deferred to a separate run');
     assert.deepEqual(sourceEvents(duringSteering).map(event => [event.id, event.source]), [[steerStart.id, 'direct'], [steering.id, 'steering']]);
+    assert.equal(sourceEvents(duringSteering).at(-1).text,editedSteering);
+    await assert.rejects(call('managePendingPrompt',{id:steering.id,action:'edit',text:'CONSUMED_ITEM_MUST_NOT_CHANGE'}),/已发送|移除/u);
+    const steerRunId=duringSteering.find(event=>event.type==='run-start').runId,steerSessionId=(await state()).sessionId;
+    const assertSteeringPlacement=async label=>{
+      const placement=await js(`(()=>{const group=document.querySelector('.task-activity[data-run-id="${steerRunId}"]'),users=[...document.querySelectorAll('.message.user[data-message-id="${steering.id}"]')],user=users[0],before=[...group.querySelectorAll('.message.assistant')].find(n=>n.textContent.includes('本机测试回复：STEER_START'));const after=[...$('messages').querySelectorAll('.message.assistant')].find(n=>n.textContent.includes('本机测试回复：STEERING'));return {users:users.length,inside:!!user?.closest('.task-activity-events'),sameRun:user?.closest('.task-activity')===group,before:!!before&&!!user&&!!(before.compareDocumentPosition(user)&Node.DOCUMENT_POSITION_FOLLOWING),after:!!after&&!!user&&!!(user.compareDocumentPosition(after)&Node.DOCUMENT_POSITION_FOLLOWING),text:user?.querySelector('.message-body')?.textContent};})()`);
+      assert.equal(placement.users,1,label);assert.ok(placement.inside&&placement.sameRun&&placement.before&&placement.after,label+': '+JSON.stringify(placement));assert.equal(placement.text,editedSteering);
+    };
     release(steerNext);
     await completed(1);
+    await assertSteeringPlacement('live steering belongs between completed progress and final response');
+    await js(`loadSession(${JSON.stringify(steerSessionId)})`);await until('steering history restored',async()=>(await state()).sessionId===steerSessionId&&await js(`sessionId===${JSON.stringify(steerSessionId)}`));
+    await assertSteeringPlacement('history keeps one steering message in the same sequence');
 
     // Both stop and provider failure pause remaining items until an explicit resume.
     const pauseChecks = [];
@@ -229,7 +257,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
       assertAbsent(await call('getCurrentSession'), prefix + '_WAIT');
       assert.equal(sourceEvents(await log()).length, 1);
       if (prefix === 'STOP') await until('stopped HTTP response aborted', () => held.aborted);
-      await call('resumePendingPrompts');
+      await nativeClick('#resume-pending');
       const resumed = await requestFor(prefix + '_WAIT');
       release(resumed);
       const after = await completed(2);
@@ -242,10 +270,12 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
     }
     assert.deepEqual(records.map(record => record.name), ['FIFO_START', 'FIFO_ONE', 'FIFO_TWO', 'STEER_START', 'STEERING', 'STOP_START', 'STOP_WAIT', 'FAIL_START', 'FAIL_WAIT']);
     assert.deepEqual(problems, []);
-    return { status: 'completed', realApi: false, requests: records.length, fifo: true, composerSubmission: true, composerQueue: true, composerQueueAndSteerControlsRemoved: true, cardSteering: true, removeViaCard: true, pendingExcludedFromContext: true, removedNotSavedOrCharged: true, composerUsableWhileRunning: true, steeringSameRun: true, steeringDidNotAbort: true, pausedOn: pauseChecks, explicitResume: true, independentWindow: true, screenshots: ['queue.png', 'steering.png'] };
+    return { status: 'completed', realApi: false, requests: records.length, fifo: true, composerSubmission: true, composerQueue: true, composerQueueAndSteerControlsRemoved: true, cardSteering: true, nativeRemoveViaCard: true, pendingEditCancelAndSave:true,editedTextReachesSteeringModel:true,consumedEditRejected:true,steeringProgressOrderLiveAndHistory:true,pendingExcludedFromContext: true, removedNotSavedOrCharged: true, composerUsableWhileRunning: true, steeringSameRun: true, steeringDidNotAbort: true, pausedOn: pauseChecks, nativeExplicitResume: true, independentWindow: true, screenshots: ['queue.png', 'steering.png'] };
   } catch (error) {
     const observed = readState ? await readState().catch(() => null) : !win.isDestroyed() ? await state().catch(() => null) : null;
-    console.error('QUEUE_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, requests: records.map(record => ({ name: record.name, released: record.released, aborted: record.aborted })), queue: observed?.promptQueue, activeTask: observed?.activeTask, events: installed && !win.isDestroyed() ? (await log().catch(() => [])).map(event => ({ type: event.type, status: event.status, error: event.error })) : [] }));
+    const renderer=!win.isDestroyed()?await js(`({dialog:$('pending-edit-dialog').open,input:$('pending-edit-input').value,editing:pendingPromptEdit,saving:pendingPromptEditSaving,saveDisabled:$('pending-edit-save').disabled,error:$('pending-edit-error').textContent,active:document.activeElement?.id})`).catch(()=>null):null;
+    if(!win.isDestroyed())await capture('queue-failure.png').catch(()=>{});
+    console.error('QUEUE_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, renderer,requests: records.map(record => ({ name: record.name, released: record.released, aborted: record.aborted })), queue: observed?.promptQueue, activeTask: observed?.activeTask, events: installed && !win.isDestroyed() ? (await log().catch(() => [])).map(event => ({ type: event.type, status: event.status, error: event.error })) : [] }));
     throw error;
   } finally {
     dialog.showOpenDialog = originalOpen;
@@ -264,6 +294,7 @@ module.exports = async function smokeQueue({ win, output, dataDir, readState }) 
         if (configured) await call('saveSettings', { provider: 'openai', authMode: 'apiKey', model: '', baseUrl: 'https://api.openai.com/v1', clearKey: true, reasoningEffort: 'default' });
       } catch {}
       if (installed) await js('window.__aiCodeQueueSmoke.off(); delete window.__aiCodeQueueSmoke').catch(() => {});
+      win.setBounds(originalWindow.bounds);win.setOpacity(originalWindow.opacity);if(!originalWindow.visible)win.hide();
     }
   }
 };

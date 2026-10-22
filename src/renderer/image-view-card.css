@@ -1,0 +1,24 @@
+.image-view-card { min-width: 0; margin: 10px 0 15px; color: #b9cbe5; font-size: 12px; }
+.image-view-header { display: flex; align-items: center; gap: 9px; width: fit-content; max-width: 100%; min-height: 28px; padding: 3px 4px; border-radius: 5px; cursor: pointer; list-style: none; }
+.image-view-header::-webkit-details-marker { display: none; }
+.image-view-header:hover { background: rgb(190 212 245 / 7%); color: #e3edfc; }
+.image-view-header:focus-visible, .image-view-thumbnail-button:focus-visible { outline: 2px solid #b3d2ff; outline-offset: 3px; }
+.image-view-icon { position: relative; width: 16px; height: 13px; flex: none; overflow: hidden; border: 1px solid currentColor; border-radius: 2px; }
+.image-view-icon::before { content: ''; position: absolute; width: 3px; height: 3px; top: 2px; right: 3px; border-radius: 50%; background: currentColor; }
+.image-view-icon::after { content: ''; position: absolute; width: 9px; height: 9px; left: 0; top: 7px; transform: rotate(45deg); border-top: 1px solid currentColor; border-left: 1px solid currentColor; }
+.image-view-chevron { width: 5px; height: 5px; margin-left: 2px; flex: none; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); transition: transform 230ms ease; opacity: .7; }
+.image-view-card[open] > .image-view-header .image-view-chevron { transform: rotate(45deg); }
+.image-view-card::details-content { block-size: 0; overflow: clip; opacity: 0; transition: block-size 230ms ease, content-visibility 230ms allow-discrete, opacity 180ms ease; interpolate-size: allow-keywords; }
+.image-view-card[open]::details-content { block-size: auto; opacity: 1; }
+.image-view-body { padding: 7px 0 2px 29px; }
+.image-view-gallery { display: flex; flex-wrap: wrap; gap: 12px; max-height: var(--image-view-gallery-height, 320px); overflow: auto; overscroll-behavior: contain; }
+.image-view-entry { display: flex; flex-direction: column; gap: 5px; width: 108px; min-width: 0; }
+.image-view-thumbnail-button, .image-view-entry > .image-view-unavailable { display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 108px; height: 78px; padding: 0; overflow: hidden; border: 1px solid rgb(190 212 245 / 23%); border-radius: 8px; background: rgb(12 21 37 / 36%); color: inherit; }
+.image-view-thumbnail-button { cursor: zoom-in; }
+.image-view-thumbnail-button:hover { border-color: #a7c4ef; }
+.image-view-thumbnail-button:disabled { cursor: default; }
+.image-view-thumbnail { display: block; width: 100%; height: 100%; object-fit: contain; }
+.image-view-thumbnail[hidden], .image-view-unavailable[hidden] { display: none; }
+.image-view-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: #9fb2cf; }
+.image-view-unavailable { padding: 6px; font-size: 11px; color: #9fb2cf; text-align: center; }
+@media (prefers-reduced-motion: reduce) { .image-view-card::details-content, .image-view-chevron { transition: none; } }

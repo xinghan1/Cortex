@@ -38,7 +38,7 @@ module.exports = async function smokeBrowser({ win, output, dataDir }) {
       onState: value => states.push(value), approve: async value => { approvals.push(value); return approval; },
       captureDir: path.join(fixture, 'captures'), onCapture: value => captures.push(value) });
     panel.setLayout({ bounds: { x: 360, y: 80, width: 620, height: 600 }, visible: true });
-    assert.deepEqual(BROWSER_TOOL_DEFINITIONS.map(tool => tool.name), ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_screenshot']);
+    assert.deepEqual(BROWSER_TOOL_DEFINITIONS.map(tool => tool.name), ['browser_navigate', 'read_url', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_screenshot']);
     const navigation = JSON.parse(await panel.execute('browser_navigate', { url: origin + '/' }));
     assert.equal(navigation.title, 'Browser fixture'); assert.equal(approvals[0].kind, 'browser'); assert.equal(approvals[0].action, 'navigate');
     const contents = panel.view.webContents;

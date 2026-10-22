@@ -1,0 +1,130 @@
+/* A narrow overlay is bounded by the message viewport, never the composer.
+   Position values are updated through this bundled rule's CSSOM, not inline. */
+#round-navigator {
+  --round-rail-top: 0px;
+  --round-rail-left: 0px;
+  --round-rail-height: 0px;
+  --round-tooltip-top: 0px;
+  --round-tooltip-width: 240px;
+  position: absolute;
+  top: var(--round-rail-top);
+  left: var(--round-rail-left);
+  width: 26px;
+  height: var(--round-rail-height);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+#round-navigator[hidden],
+.round-navigator-tooltip[hidden] {
+  display: none !important;
+}
+
+.conversation.has-round-navigator > #message-scroll > #messages {
+  padding-left: 30px;
+}
+
+.round-navigator-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 26px;
+  width: 26px;
+  max-height: 100%;
+  padding: 6px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  pointer-events: auto;
+}
+
+.round-navigator-list::-webkit-scrollbar {
+  display: none;
+}
+
+#round-navigator .round-navigator-tick {
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  width: 26px;
+  min-width: 0;
+  height: 20px;
+  min-height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted, #aab8cf);
+  box-shadow: none;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.round-navigator-tick > span {
+  width: 11px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: .55;
+  transition: width 160ms ease, opacity 160ms ease, color 160ms ease;
+}
+
+#round-navigator .round-navigator-tick:is(:hover, :focus-visible, [aria-current='step']) {
+  color: var(--accent, #c1d8ff);
+}
+
+.round-navigator-tick:is(:hover, :focus-visible, [aria-current='step']) > span {
+  width: 18px;
+  opacity: 1;
+}
+
+#round-navigator .round-navigator-tick:focus-visible {
+  outline: 1px solid var(--accent, #c1d8ff);
+  outline-offset: -2px;
+}
+
+.round-navigator-tooltip {
+  position: absolute;
+  left: 32px;
+  top: var(--round-tooltip-top);
+  width: var(--round-tooltip-width);
+  max-height: 100%;
+  padding: 10px 12px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border, var(--line, #506079));
+  border-radius: var(--ui-radius, 9px);
+  background: var(--ui-raised, #17243b);
+  color: var(--text, #e4ebf7);
+  box-shadow: 0 5px 18px rgb(0 0 0 / 16%);
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.round-navigator-tooltip strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text, #e4ebf7);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.round-navigator-tooltip > span {
+  display: -webkit-box;
+  color: var(--muted, #aab8cf);
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .round-navigator-tick > span {
+    transition: none;
+  }
+}

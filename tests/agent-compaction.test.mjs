@@ -101,10 +101,17 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   assert.equal(new Set(records.map(record => record.id)).size, 3);
   assert.equal(records.filter(record => record.purpose === 'context-compaction').length, 1);
   assert.deepEqual(records.map(record => record.inputTokens), [10, 20, 30]);
-  assert.deepEqual(contextSamples.filter(sample => sample.status === 'reported').map(sample => sample.usedTokens), [10, 30]);
+  const reportedContexts = contextSamples.filter(sample => sample.status === 'reported');
+  assert.deepEqual(reportedContexts.map(sample => [sample.inputTokens, sample.outputTokens, sample.usedTokens]), [[10, 1, 11], [30, 3, 33]],
+    'A total context window includes the actual request input and output; the isolated summary has its own billing record');
+  const ordinaryRequestIds = records.filter(record => record.purpose !== 'context-compaction').map(record => record.id);
+  assert.deepEqual(reportedContexts.map(sample => sample.requestId), ordinaryRequestIds);
   assert.equal(contextSamples.at(-1).limit, 64_000);
   assert.equal(contextSamples.at(-1).limitKind, 'total');
-  assert.ok(contextSamples.filter(sample => sample.status === 'estimated').length === 2);
+  const requesting = contextSamples.filter(sample => sample.phase === 'requesting' && sample.status === 'pending');
+  assert.deepEqual([...new Set(requesting.map(sample => sample.requestId))], ordinaryRequestIds);
+  assert.ok(requesting.every(sample => sample.inputTokens === null && sample.outputTokens === null && sample.usedTokens === null),
+    'Only service-reported values can populate actual context token fields');
   assert.deepEqual(events.filter(event => event.type === 'usage').at(-1), { type: 'usage', inputTokens: 60, outputTokens: 6 });
   assert.deepEqual(order, ['saved', 'notice']);
   assert.equal(events.filter(event => event.type === 'context-compacted').length, 1);

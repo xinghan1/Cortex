@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/renderer/appearance.js', import.meta.url), 'utf8');
 const colorsSource = await readFile(new URL('../src/renderer/conversation-colors.js', import.meta.url), 'utf8');
-const defaults = { backgroundImage:null, backgroundName:'', backgroundTransparency:28, panelFrost:70, panelTransparency:30, conversationTextColor:'white', backgroundPreset:'aurora' };
+const defaults = { backgroundImage:null, backgroundName:'', backgroundTransparency:28, panelFrost:70, panelTransparency:30, conversationTextColor:'white', backgroundPreset:'aurora', uiStyle:'glass', selectionColor:null };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 async function fixture() {
@@ -51,8 +51,16 @@ async function fixture() {
   const presetButtons = presetIds.map(preset => {
     const button = node('preset-' + preset); button.dataset.backgroundPreset = preset; return button;
   });
+  const styleButtons = ['glass', 'black', 'white', 'industrial'].map(style => {
+    const button = node('style-' + style); button.dataset.uiStyle = style; return button;
+  });
+  const selectionButtons = ['#6b9eff','#4cbfc3','#63b77b','#dbb254','#e69a5c','#de737d','#a28ae7','#d382bd'].map(color => {
+    const button = node('selection-' + color); button.dataset.selectionColor = color; return button;
+  });
   vm.runInNewContext(source, { window,
-    document:{ getElementById:node, querySelectorAll:selector => selector.startsWith('#conversation-text-colors') ? buttons : presetButtons, documentElement:node('html'), styleSheets:[{cssRules}] },
+    document:{ getElementById:node, querySelectorAll:selector => selector.startsWith('#conversation-text-colors') ? buttons
+      : selector.startsWith('#background-preset-options') ? presetButtons : selector.startsWith('#ui-style-options') ? styleButtons
+      : selector.startsWith('#selection-color-options') ? selectionButtons : [], documentElement:node('html'), styleSheets:[{cssRules}] },
     setTimeout:callback => { const id = ++timer; timers.set(id, callback); return id; }, clearTimeout:id => timers.delete(id) });
   await window.synoraAppearance.ready;
   const broadcast = patch => { state = { ...state, ...patch }; listener({type:'appearance',appearance:{...state}}); };
@@ -188,6 +196,70 @@ test('color changes preview immediately and preserve newer intent across stale r
   assert.equal(f.node('background-transparency').value, '28');
   assert.equal(f.node('panel-transparency').value, '55');
   assert.equal(f.rules.get(':root--panel-opacity'), '0.45');
+});
+
+test('selection palette previews instantly, survives stale commits and follows cross-window changes in every material', async () => {
+  const f = await fixture();
+  assert.equal(f.node('html').dataset.selectionColor, 'default');
+  await f.node('selection-#dbb254').emit('click'); await turn();
+  assert.equal(f.node('html').dataset.selectionColor, 'custom');
+  assert.equal(f.rules.get(':root--custom-selection-color'), '#dbb254');
+  assert.equal(f.rules.get(':root--custom-selection-ink'), '#000000');
+  assert.equal(f.node('selection-#dbb254')['aria-pressed'], 'true');
+  assert.deepEqual(f.requests[0].patch, { selectionColor: '#dbb254' });
+  await f.edit('selection-color-input', '#010203');
+  f.broadcast({ selectionColor: '#dbb254', uiStyle: 'white' });
+  assert.equal(f.rules.get(':root--custom-selection-color'), '#010203');
+  assert.equal(f.rules.get(':root--custom-selection-ink'), '#ffffff');
+  assert.equal(f.node('html').dataset.uiStyle, 'white');
+  f.requests[0].resolve({ ...defaults, selectionColor: '#dbb254' }); await turn();
+  assert.deepEqual(f.requests[1].patch, { selectionColor: '#010203' });
+  f.complete(f.requests[1]); await f.window.synoraAppearance.settled();
+  for (const uiStyle of ['glass', 'black', 'white', 'industrial']) {
+    f.broadcast({ uiStyle });
+    assert.equal(f.node('selection-color-input').value, '#010203');
+    assert.equal(f.rules.get(':root--custom-selection-color'), '#010203');
+  }
+  f.broadcast({ selectionColor: '#4cbfc3' });
+  assert.equal(f.node('selection-#4cbfc3')['aria-pressed'], 'true');
+  assert.equal(f.node('selection-color-value').value, '#4CBFC3');
+});
+
+test('selection color restores default independently and failed saves roll back to the latest persisted palette', async () => {
+  const f = await fixture();
+  f.broadcast({ selectionColor: '#de737d', uiStyle: 'industrial', panelFrost: 23 });
+  await f.edit('selection-color-input', '#000000');
+  f.broadcast({ selectionColor: '#63b77b' });
+  f.requests[0].reject(new Error('磁盘不可写')); await turn();
+  assert.equal(f.node('selection-color-input').value, '#63b77b');
+  assert.equal(f.rules.get(':root--custom-selection-ink'), '#000000');
+  assert.equal(f.node('appearance-status').textContent, '磁盘不可写');
+  await f.node('selection-color-reset').emit('click'); await turn();
+  assert.deepEqual(f.requests[1].patch, { selectionColor: null });
+  f.complete(f.requests[1]); await f.window.synoraAppearance.settled();
+  assert.equal(f.node('html').dataset.selectionColor, 'default');
+  assert.equal(f.node('selection-color-value').value, '默认');
+  assert.equal(f.node('html').dataset.uiStyle, 'industrial');
+  assert.equal(f.node('panel-frost').value, '23');
+});
+
+test('custom accent labels remain readable after material changes without changing the selected color', async () => {
+  const f = await fixture();
+  const luminance = hex => {
+    const channels = hex.slice(1).match(/../g).map(value => Number.parseInt(value, 16) / 255)
+      .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  };
+  for (const selectionColor of ['#010203', '#fefefe', '#de737d']) {
+    for (const [uiStyle, background] of Object.entries({ glass: '#28334b', black: '#171717', white: '#e8eaed', industrial: '#2b3138' })) {
+      f.broadcast({ selectionColor, uiStyle });
+      assert.equal(f.rules.get(':root--custom-selection-color'), selectionColor);
+      const foreground = f.rules.get(':root--custom-accent-text');
+      assert.match(foreground, /^#[0-9a-f]{6}$/);
+      const values = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
+      assert.ok((values[1] + 0.05) / (values[0] + 0.05) >= 4.5, `${selectionColor} on ${uiStyle} needs readable accent text`);
+    }
+  }
 });
 
 test('built-in backgrounds replace imported images immediately without changing other edits', async () => {

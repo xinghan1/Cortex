@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-style="glass">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,8 +12,13 @@
   <link rel="stylesheet" href="./glass.css">
   <link rel="stylesheet" href="./file-icons.css">
   <link rel="stylesheet" href="./task-history.css">
+  <link rel="stylesheet" href="./tool-operation-groups.css">
   <link rel="stylesheet" href="./subagents.css">
   <link rel="stylesheet" href="./code-diff.css">
+  <link rel="stylesheet" href="./task-change-summary.css">
+  <link rel="stylesheet" href="./image-view-card.css">
+  <link rel="stylesheet" href="./pending-prompts.css">
+  <link rel="stylesheet" href="./dropdown-motion.css">
   <link rel="stylesheet" href="./composer-approval.css">
   <link rel="stylesheet" href="./syntax-highlight.css">
   <link rel="stylesheet" href="./editor-highlight.css">
@@ -22,6 +27,10 @@
   <link rel="stylesheet" href="./background-presets.css">
   <link rel="stylesheet" href="./usage-dashboard.css">
   <link rel="stylesheet" href="./context-settings.css">
+  <link rel="stylesheet" href="./deepseek-account.css">
+  <link rel="stylesheet" href="./ui-styles.css">
+  <link rel="stylesheet" href="./round-navigator.css">
+  <link rel="stylesheet" href="./explorer-selection.css">
   <script src="./syntax-highlight.js" defer></script>
   <script src="./editor-highlight.js" defer></script>
   <script src="./code-completion.js" defer></script>
@@ -34,14 +43,21 @@
   <script src="./sessions.js" defer></script>
   <script src="./file-icons.js" defer></script>
   <script src="./task-history.js" defer></script>
+  <script src="./tool-operation-groups.js" defer></script>
   <script src="./subagents.js" defer></script>
   <script src="./code-diff.js" defer></script>
+  <script src="./task-change-summary.js" defer></script>
+  <script src="./image-view-card.js" defer></script>
   <script src="./command-result.js" defer></script>
+  <script src="./explorer-selection.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
+  <script src="./deepseek-account.js" defer></script>
   <script src="./appearance.js" defer></script>
   <script src="./menu.js" defer></script>
+  <script src="./dropdown-motion.js" defer></script>
+  <script src="./round-navigator.js" defer></script>
 </head>
 <body>
   <div id="app-background" class="app-background" aria-hidden="true"></div>
@@ -78,6 +94,7 @@
       <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin="160" aria-valuemax="420" aria-valuenow="208" tabindex="0" title="拖动调整宽度；左右键微调；双击恢复默认"></div>
 
       <main class="conversation">
+        <nav id="round-navigator" aria-label="对话轮次导航" hidden></nav>
         <div class="conversation-header"><div class="conversation-heading"><h1 id="conversation-title">新的对话</h1><span id="temporary-indicator" class="temporary-indicator" title="仅保留当前窗口会话，不写入历史" hidden>临时聊天</span></div><div class="conversation-controls"><span id="run-status" class="run-status">准备就绪</span><button id="toggle-preview" class="button subtle" title="打开文件与变更抽屉" aria-label="打开文件与变更抽屉" aria-expanded="false">文件 / 变更</button></div></div>
         <form id="find-bar" class="find-bar" hidden><label for="find-input" class="sr-only">查找当前窗口文字</label><input id="find-input" type="search" placeholder="在当前窗口查找…" autocomplete="off"><span id="find-result" role="status"></span><button id="find-previous" class="icon-button small" type="button" title="上一个匹配" aria-label="上一个匹配">↑</button><button id="find-next" class="icon-button small" type="submit" title="下一个匹配" aria-label="下一个匹配">↓</button><button id="find-close" class="icon-button small" type="button" title="关闭查找" aria-label="关闭查找">×</button></form>
         <div id="message-scroll" class="message-scroll">
@@ -92,7 +109,7 @@
         </div>
         <div class="composer-area">
           <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="dismiss-notice" class="icon-button small" aria-label="关闭提示">×</button></div>
-          <section id="pending-prompts" class="pending-prompts" aria-label="待发送内容" hidden><div class="pending-heading"><div><strong id="pending-count">待发送</strong><span id="pending-status"></span></div><button id="resume-pending" class="button" type="button" hidden>继续发送</button></div><div id="pending-items" class="pending-items"></div></section>
+          <section id="pending-prompts" class="pending-prompts" aria-label="待发送内容" hidden><div id="pending-pause-controls" class="pending-heading" hidden><span id="pending-paused" role="status">已暂停</span><button id="resume-pending" class="button" type="button" hidden>继续发送</button></div><div id="pending-items" class="pending-items"></div></section>
           <section id="composer-approval" class="composer-approval" aria-label="待批准的操作" aria-live="polite" hidden></section>
           <div id="approval-live-controls" class="approval-live-controls" aria-label="运行中的模型和权限" hidden></div>
           <form id="task-form" class="composer">
@@ -106,8 +123,7 @@
                 <div id="reasoning-popup-main">
                   <div class="reasoning-popup-heading"><output id="reasoning-value" class="reasoning-value popup-reasoning-value" for="reasoning-effort">默认</output><button id="reasoning-default" class="reasoning-default popup-reasoning-reset active" type="button" aria-label="恢复模型默认推理强度" title="恢复默认" aria-pressed="true">↺</button></div>
                   <button id="popup-model-button" class="popup-model-button" type="button" aria-haspopup="listbox"><span id="popup-model-name">选择模型</span><span>⌄</span></button>
-                  <div class="popup-range-wrap"><label for="reasoning-effort" class="sr-only">推理强度</label><div class="reasoning-slider-visual popup-slider-visual" data-fill="50"><input id="reasoning-effort" class="reasoning-range popup-reasoning-range" type="range" min="0" max="6" step="1" value="3" data-support="unknown" data-effort="default" aria-label="推理强度" aria-valuetext="默认，遵从模型默认设置"><span class="reasoning-visual-track" aria-hidden="true"><span class="reasoning-visual-fill"></span><span id="reasoning-thumb" class="reasoning-visual-thumb"></span></span></div><div class="popup-range-labels"><span id="reasoning-low-label">关闭</span><span id="reasoning-high-label">最高</span></div></div>
-                  <p id="reasoning-hint" class="popup-hint">通用档位，获取模型能力后自动校正。</p>
+                  <div class="popup-range-wrap"><label for="reasoning-effort" class="sr-only">推理强度</label><div class="reasoning-slider-visual popup-slider-visual" data-fill="50"><input id="reasoning-effort" class="reasoning-range popup-reasoning-range" type="range" min="0" max="6" step="1" value="3" data-support="unknown" data-effort="default" aria-label="推理强度" aria-valuetext="默认，遵从模型默认设置"><span class="reasoning-visual-track" aria-hidden="true"><span class="reasoning-visual-fill"></span><span id="reasoning-thumb" class="reasoning-visual-thumb"></span></span></div></div>
                 </div>
                 <div id="model-list-panel" class="model-list-panel" hidden><div class="model-list-heading"><button id="model-list-back" class="icon-button small" type="button" aria-label="返回推理设置">‹</button><strong>选择模型</strong><button id="model-list-refresh" class="icon-button small" type="button" title="刷新模型目录" aria-label="刷新模型目录">↻</button></div><input id="model-search" class="model-search" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型"><p id="model-list-status" class="model-list-status" role="status"></p><div id="model-list" class="model-list" role="listbox" aria-label="可选模型"></div><div class="model-list-footer"><button id="model-list-retry" class="text-button" type="button" hidden>重试</button><button id="model-open-settings" class="text-button" type="button">模型设置</button></div></div>
                 <div class="reasoning-popup-footer"><button id="reasoning-open-settings" class="reasoning-settings-button" type="button"><span>模型设置</span><span aria-hidden="true">⚙</span></button></div>
@@ -136,16 +152,16 @@
             <div id="session-metrics" class="session-metrics" role="group" aria-label="当前会话统计">
               <div class="session-metrics-details">
                 <span id="session-rounds" class="session-metric" title="只统计已实际发送的用户消息，待发送内容不计入">— 轮对话</span>
-                <span id="session-speed" class="session-metric session-speed unknown" title="模型输出速度；尚无可用输出速率时显示 —。"><strong id="generation-speed">— tok/s</strong></span>
-                <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">—</strong></span>
+                <span id="session-speed" class="session-metric session-speed unknown" title="模型输出速度；尚无可用输出速率时显示 0。"><strong id="generation-speed">0 tok/s</strong></span>
+                <span id="session-cache" class="session-metric">缓存命中 <strong id="session-cache-value">0</strong></span>
                 <span id="session-total" class="session-metric">本会话 <strong id="session-total-value">—</strong><span>Token</span></span>
               </div>
               <div id="session-context-control" class="session-context-control">
                 <button id="session-context-trigger" class="session-context-trigger" type="button" aria-label="上下文与自动压缩设置" aria-haspopup="dialog" aria-expanded="false" aria-controls="context-settings-popup">
                   <span id="session-context" class="session-context unknown" role="progressbar" aria-label="上下文使用率" aria-valuemin="0" aria-valuemax="100" aria-valuetext="上下文容量未知">
                     <svg class="session-context-ring" viewBox="0 0 28 28" aria-hidden="true"><circle class="session-context-track" cx="14" cy="14" r="11"/><circle id="session-context-progress" class="session-context-progress" cx="14" cy="14" r="11" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 14 14)"/></svg>
-                    <span>上下文 <strong id="session-context-value">—</strong></span>
-                  </span><span class="context-settings-chevron" aria-hidden="true">⌄</span>
+                    <strong id="session-context-value">0%</strong>
+                  </span>
                 </button>
                 <section id="context-settings-popup" class="context-settings-popup" role="dialog" aria-labelledby="context-settings-title" hidden>
                   <div class="context-settings-heading"><strong id="context-settings-title">自动压缩上下文</strong><button id="context-settings-close" class="icon-button small" type="button" aria-label="关闭上下文设置">×</button></div>
@@ -176,6 +192,33 @@
   <dialog id="appearance-dialog" class="appearance-dialog" aria-labelledby="appearance-title">
     <div class="dialog-header"><div><p class="appearance-kicker">PERSONALIZE YOUR SPACE</p><h2 id="appearance-title">外观与背景</h2></div><button id="appearance-close" class="icon-button" type="button" aria-label="关闭外观设置">×</button></div>
     <p class="dialog-intro">为你的工作空间，换一种氛围。</p>
+    <section class="ui-styles-settings" aria-labelledby="ui-styles-title">
+      <h3 id="ui-styles-title">界面风格</h3>
+      <div id="ui-style-options" class="ui-style-options" role="group" aria-labelledby="ui-styles-title">
+        <button class="ui-style-option" data-ui-style="glass" type="button" aria-pressed="true"><span class="ui-style-swatch style-swatch-glass" aria-hidden="true"><span></span><span></span><span></span></span><strong>玻璃风</strong><small>通透磨砂</small></button>
+        <button class="ui-style-option" data-ui-style="black" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-black" aria-hidden="true"><span></span><span></span><span></span></span><strong>纯黑</strong><small>简洁深色</small></button>
+        <button class="ui-style-option" data-ui-style="white" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-white" aria-hidden="true"><span></span><span></span><span></span></span><strong>纯白</strong><small>明亮清晰</small></button>
+        <button class="ui-style-option" data-ui-style="industrial" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-industrial" aria-hidden="true"><span></span><span></span><span></span></span><strong>工业风</strong><small>石墨硬边</small></button>
+      </div>
+    </section>
+    <section class="selection-color-settings" aria-labelledby="selection-color-title">
+      <div class="selection-color-heading"><h3 id="selection-color-title">选中颜色</h3><button id="selection-color-reset" class="text-button" type="button">恢复默认</button></div>
+      <div class="selection-color-controls">
+        <div id="selection-color-options" class="selection-color-options" role="group" aria-labelledby="selection-color-title">
+          <button class="selection-color-swatch" data-selection-color="#6b9eff" type="button" aria-label="蓝色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#4cbfc3" type="button" aria-label="青色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#63b77b" type="button" aria-label="绿色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#dbb254" type="button" aria-label="金色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#e69a5c" type="button" aria-label="橙色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#de737d" type="button" aria-label="红色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#a28ae7" type="button" aria-label="紫色" aria-pressed="false"></button>
+          <button class="selection-color-swatch" data-selection-color="#d382bd" type="button" aria-label="粉色" aria-pressed="false"></button>
+        </div>
+        <label class="selection-color-custom">自定义<input id="selection-color-input" type="color" value="#7aa7ff" aria-label="自定义选中颜色"></label>
+        <output id="selection-color-value" class="selection-color-value" for="selection-color-input">默认</output>
+      </div>
+    </section>
+    <div id="glass-appearance-settings">
     <div class="appearance-hero">
       <div class="appearance-preview" aria-hidden="true"><div class="appearance-preview-glass"><span></span><span></span><span></span></div></div>
       <div class="appearance-meta"><strong id="background-name">极光 · 默认背景</strong><p id="background-description">柔和蓝紫渐变，专注于眼前的创作。</p></div>
@@ -229,13 +272,13 @@
     </section>
     <div class="appearance-actions"><button id="background-import" class="button solid" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>导入背景图…</button><button id="background-reset" class="button subtle" type="button">恢复默认背景</button></div>
     <p class="appearance-file-hint">支持 PNG、JPEG、WebP · 最大 12 MB · 仅用于本机界面</p>
+    </div>
     <p id="appearance-status" class="appearance-status" role="status" hidden></p>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog">
     <form id="settings-form">
       <div class="dialog-header"><h2>模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
-      <p class="dialog-intro">填写连接配置，获取模型目录并选择模型后保存。</p>
-      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option></select></label>
+      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
       <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">ChatGPT 账号 · 个人本机预览</option></select></label>
       <label id="api-protocol-field" class="form-field" hidden><span>接口协议</span><select id="api-protocol-select" name="apiProtocol"><option value="chat-completions">Chat Completions · 兼容接口</option><option value="responses">Responses</option></select><small id="api-protocol-help">按服务商文档选择调用协议。</small></label>
       <section id="chatgpt-panel" class="chatgpt-panel" aria-label="ChatGPT 账号授权" hidden>
@@ -253,11 +296,10 @@
         <p class="chatgpt-help">在官方页面登录并授权套餐，无需 API Key。需要符合条件的 Plus / Pro 账号；此模式供个人本机预览。</p>
         <p id="chatgpt-message" class="chatgpt-message" role="status" hidden></p>
       </section>
-      <label id="base-url-field" class="form-field"><span>Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"><small>自定义地址会接收你的 API Key、任务及发送给模型的代码。</small></label>
-      <label id="api-key-field" class="form-field"><span>API Key <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"><small id="key-help">密钥只用于你配置的模型 API 请求。</small></label>
-      <div class="settings-inline"><label id="api-key-clear-field" class="checkbox-field"><input id="clear-key-input" type="checkbox"> 清除当前服务商密钥</label></div>
-      <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message">填写连接配置，获取模型目录并选择模型后保存。</small></div>
-      <div class="privacy-note"><p id="settings-privacy">API Key 在本机加密保存。任务和相关项目内容会发送至所配置的 API 地址。命令以当前 Windows 用户权限运行，执行前需由你确认。</p></div>
+      <label id="base-url-field" class="form-field"><span id="base-url-label">Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"></label>
+      <label id="ollama-context-window-field" class="form-field" hidden><span>模型上下文（Token）</span><input id="ollama-context-window-input" name="contextWindowTokens" type="number" min="4096" max="2097152" step="1" value="32768" inputmode="numeric" disabled><small>影响本地模型内存占用。</small></label>
+      <label id="api-key-field" class="form-field"><span><span id="api-key-label">API Key</span> <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"></label>
+      <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message" role="status" hidden></small></div>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-footer"><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>
     </form>
@@ -269,5 +311,6 @@
   <dialog id="file-name-dialog" class="file-name-dialog"><form id="file-name-form"><div class="dialog-header"><h2 id="file-name-title">新建文件</h2><button id="file-name-close" class="icon-button" type="button" aria-label="关闭">×</button></div><label class="form-field"><span>名称</span><input id="file-name-input" type="text" autocomplete="off" required maxlength="255"></label><p id="file-name-parent" class="file-name-parent"></p><p id="file-name-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="file-name-cancel" class="button" type="button">取消</button><button id="file-name-confirm" class="button solid" type="submit">确定</button></div></form></dialog>
   <dialog id="editor-unsaved-dialog" class="editor-unsaved-dialog"><div class="dialog-header"><h2>保存文件更改？</h2></div><p id="editor-unsaved-message"></p><p class="unsaved-hint">放弃后，尚未保存的编辑将丢失。</p><div class="unsaved-actions"><button id="editor-unsaved-cancel" class="button" type="button">取消</button><button id="editor-unsaved-discard" class="button" type="button">放弃更改</button><button id="editor-unsaved-save" class="button solid" type="button">保存</button></div></dialog>
   <dialog id="image-preview-dialog" class="image-preview-dialog"><div class="dialog-header"><h2 id="image-preview-title">图片预览</h2><button id="image-preview-close" class="icon-button" type="button" aria-label="关闭图片预览">×</button></div><div class="image-preview-body"><img id="image-preview-content" alt="图片预览"></div></dialog>
+  <dialog id="pending-edit-dialog" class="pending-edit-dialog" aria-labelledby="pending-edit-title"><form id="pending-edit-form"><div class="dialog-header"><h2 id="pending-edit-title">编辑提示词</h2><button id="pending-edit-close" class="icon-button" type="button" aria-label="关闭编辑">×</button></div><label for="pending-edit-input" class="sr-only">提示词内容</label><textarea id="pending-edit-input" rows="8" maxlength="40000"></textarea><p id="pending-edit-error" class="form-error" role="alert"></p><div class="dialog-footer"><button id="pending-edit-cancel" class="button" type="button">取消</button><button id="pending-edit-save" class="button solid" type="submit">保存</button></div></form></dialog>
 </body>
 </html>

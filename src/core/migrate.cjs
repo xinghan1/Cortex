@@ -3,7 +3,7 @@ const syncFs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
-const MARKERS = ['settings.json', 'usage.json', 'projects.json', 'migration.json', path.join('chatgpt', 'chatgpt-auth.json')];
+const MARKERS = ['settings.json', 'usage.json', 'projects.json', 'migration.json', 'task-undo', path.join('chatgpt', 'chatgpt-auth.json')];
 const exists = filename => {
   try { syncFs.lstatSync(filename); return true; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -37,6 +37,9 @@ function readLocalState(filename) {
 
 function hasProtectedCredentials(source) {
   if (exists(path.join(source, 'chatgpt', 'chatgpt-auth.json'))) return true;
+  const undoDirectory = path.join(source, 'task-undo');
+  if (directory(undoDirectory) && syncFs.readdirSync(undoDirectory, { withFileTypes: true })
+    .some(entry => entry.isFile() && /^[a-f\d-]{36}\.json$/iu.test(entry.name))) return true;
   const filename = path.join(source, 'settings.json');
   if (!exists(filename)) return false;
   const info = syncFs.lstatSync(filename);
@@ -57,7 +60,7 @@ function prepareLegacyEncryptionState(destination, legacy) {
   if (source.toLowerCase() === target.toLowerCase() || !directory(source) || !freshDestination(target)) return false;
   const needsKey = hasProtectedCredentials(source);
   const missingState = () => {
-    if (needsKey) throw new Error('旧版登录文件或 API 密钥缺少配套的本机加密状态，已停止迁移并保留原数据。请先在旧版恢复连接，或使用包含完整 data 目录的备份。');
+    if (needsKey) throw new Error('旧版登录文件、API 密钥或撤销记录缺少配套的本机加密状态，已停止迁移并保留原数据。请使用包含完整 data 目录的备份。');
     return false;
   };
   const sourceProfile = path.join(source, 'chromium');
@@ -112,6 +115,13 @@ async function migrateLegacyData(destination, legacy, { encryptionPrepared = fal
   if (sessionStat?.isDirectory() && !sessionStat.isSymbolicLink()) {
     for (const entry of await fs.readdir(sessions, { withFileTypes: true })) {
       if (entry.isFile() && /^[a-f0-9-]{36}\.json$/.test(entry.name)) await copy(path.join('sessions', entry.name));
+    }
+  }
+  const undoDirectory = path.join(source, 'task-undo');
+  const undoStat = await fs.lstat(undoDirectory).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (undoStat?.isDirectory() && !undoStat.isSymbolicLink()) {
+    for (const entry of await fs.readdir(undoDirectory, { withFileTypes: true })) {
+      if (entry.isFile() && /^[a-f\d-]{36}\.json$/iu.test(entry.name)) await copy(path.join('task-undo', entry.name));
     }
   }
   await copy('usage.json');

@@ -4,9 +4,9 @@
   'use strict';
 
   const messageFields = ['role', 'content', 'id', 'source', 'createdAt', 'attachments', 'toolCalls', 'localOnly'];
-  const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry'];
-  const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'status', 'reason', 'reviewReason', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'requestedTriggerTokens', 'effectiveTriggerTokens', 'triggerClamped', 'triggerClampReason', 'triggerFloorApplied', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'triggerChars', 'targetChars'];
-  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review']);
+  const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry', 'fileChangeCount'];
+  const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'status', 'reason', 'reviewReason', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'requestedTriggerTokens', 'effectiveTriggerTokens', 'triggerClamped', 'triggerClampReason', 'triggerFloorApplied', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'compressionTriggerBasis', 'reportedContextTokens', 'estimatedGrowthTokens', 'triggerChars', 'targetChars'];
+  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review', 'images-viewed']);
   const pick = (value, fields) => {
     const result = {};
     if (value && typeof value === 'object') for (const field of fields) if (Object.prototype.hasOwnProperty.call(value, field)) result[field] = value[field];
@@ -58,6 +58,12 @@
   }
   const displayEvent = event => {
     const clean = pick(event, eventFields), change = fileChange(clean.fileChange);
+    if (event.type === 'images-viewed') {
+      clean.version = event.version;
+      if (typeof event.requestId === 'string') clean.requestId = event.requestId;
+      clean.images = (Array.isArray(event.images) ? event.images : []).slice(0, 64)
+        .map(image => pick(image, ['messageId', 'attachmentIndex', 'attachmentId']));
+    }
     if (change) clean.fileChange = change;
     else delete clean.fileChange;
     if (event.type === 'subagent-update') {
@@ -76,7 +82,9 @@
     ];
     const seen = new Set();
     return records.filter(record => {
-      if (!record || typeof record !== 'object') return false;
+      // Manual undo/redo updates its original change card; it is not another
+      // model task and should not reconstruct an empty timed task in history.
+      if (!record || typeof record !== 'object' || record.kind === 'undo') return false;
       const key = record.runId || record.id || `${record.startedAt || ''}:${record.messageStartIndex}:${record.messageIndex}:${record.elapsedMs ?? record.durationMs}`;
       if (seen.has(key)) return false;
       seen.add(key);
@@ -86,7 +94,7 @@
 
   function runItems(session, record, messages, finalIndex) {
     const start = record.messageStartIndex, end = record.messageIndex;
-    const nodes = [], calls = [], pending = [];
+    const nodes = [], calls = [], pending = [], steeringIndices = new Map();
     const changes = new Map((Array.isArray(session.fileEdits) ? session.fileEdits : [])
       .filter(value => value?.runId === (record.runId || record.id) && typeof value.toolCallId === 'string' && fileChange(value))
       .map(value => [value.toolCallId, fileChange(value)]));
@@ -112,6 +120,11 @@
           const value = { id: call.id, name: call.name || '工具调用', args: call.arguments, assistantIndex: index, resultIndex: null, start: null, matched: false };
           calls.push(value); pending.push(value);
         }
+      } else if (index !== start && message?.role === 'user' && message.source === 'steering') {
+        // Only consumed steering belongs inside its existing task. Its stored
+        // message index is the boundary between earlier work and the next turn.
+        add(index * 10, displayMessage(message, index));
+        if (typeof message.id === 'string' && message.id) steeringIndices.set(message.id, steeringIndices.has(message.id) ? null : index);
       } else if (message?.role === 'tool') {
         const call = pending.find(value => value.resultIndex === null && value.id !== undefined && value.id === message.toolCallId);
         if (call) {
@@ -137,6 +150,13 @@
     // details supplement them, without duplicating real calls.
     const events = [...(Array.isArray(record.activityEvents) ? record.activityEvents
       : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []))];
+    const imageRequests = new Set(events.filter(value => value?.type === 'images-viewed').map(value => value.requestId));
+    for (const view of Array.isArray(session.imageViews) ? session.imageViews : []) {
+      if (view?.type !== 'images-viewed' || view.runId !== (record.runId || record.id)
+          || typeof view.requestId !== 'string' || imageRequests.has(view.requestId)) continue;
+      imageRequests.add(view.requestId);
+      events.push(view);
+    }
     // Keep a child's latest public snapshot at its original position, while
     // retaining surrounding parent messages and tool events in their order.
     const agents = new Map();
@@ -159,6 +179,16 @@
     for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
       let value = events[eventIndex];
       if (!value || typeof value !== 'object') continue;
+      if (value.type === 'user-message') {
+        const index = value.source === 'steering' && (!value.runId || value.runId === (record.runId || record.id))
+          ? steeringIndices.get(value.id) : null;
+        if (Number.isInteger(index)) {
+          // A lightweight consumed-steering receipt anchors event-only progress
+          // without storing or displaying another copy of the user's message.
+          anchor = index; assistantCursor = Math.max(assistantCursor, index + 1); currentCall = null;
+        }
+        continue;
+      }
       if (value.type === 'subagent-update') {
         const agent = agents.get(value.agent?.id);
         if (!agent || agent.first !== eventIndex) continue;
@@ -210,7 +240,8 @@
     const candidates = records.map((record, order) => ({ record, order,
       valid: validIndex(record.messageStartIndex, messages.length) && validIndex(record.messageIndex, messages.length)
         && record.messageStartIndex <= record.messageIndex && messages[record.messageStartIndex]?.role === 'user'
-        && !messages.slice(record.messageStartIndex + 1, record.messageIndex + 1).some(message => message?.role === 'user') }));
+        && !messages.slice(record.messageStartIndex + 1, record.messageIndex + 1)
+          .some(message => message?.role === 'user' && message.source !== 'steering') }));
     // Guessing which run owns overlapping anchors can hide or reorder user
     // messages. Keep both histories flat when old metadata is ambiguous.
     for (let left = 0; left < candidates.length; left++) for (let right = left + 1; right < candidates.length; right++) {
@@ -226,36 +257,25 @@
       }
     }
     const blocks = [];
-    const standaloneUndo = record => {
-      if (record.kind !== 'undo') return [];
-      const runId = record.runId || record.id;
-      const edits = (Array.isArray(session.fileEdits) ? session.fileEdits : []).filter(value => value?.runId === runId && fileChange(value));
-      const events = (Array.isArray(session.events) ? session.events : []).filter(value => value?.runId === runId && ['tool-start', 'tool-result'].includes(value.type));
-      const items = events.map(value => {
-        const change = edits.find(edit => edit.toolCallId === value.toolCallId);
-        return displayEvent({ ...value, ...(value.type === 'tool-result' && change ? { fileChange: fileChange(change) } : {}) });
-      });
-      for (const edit of edits) if (!events.some(value => value.type === 'tool-result' && value.toolCallId === edit.toolCallId)) {
-        items.push(displayEvent({ type: 'tool-start', runId, name: 'undo_last_change', args: { path: edit.path }, toolCallId: edit.toolCallId }));
-        items.push(displayEvent({ type: 'tool-result', runId, name: 'undo_last_change', toolCallId: edit.toolCallId,
-          result: JSON.stringify({ path: edit.path, message: '最近一次文件修改已撤销。' }), fileChange: fileChange(edit) }));
-      }
-      return items;
-    };
     const standaloneSubagents = record => {
       const runId = record.runId || record.id;
       if (typeof runId !== 'string' || !runId) return [];
       const snapshots = new Map();
       const saved = Array.isArray(record.activityEvents) ? record.activityEvents
         : (Array.isArray(session.events) ? session.events.filter(value => value?.runId === runId) : []);
+      const images = new Map();
+      for (const value of [...saved, ...(Array.isArray(session.imageViews) ? session.imageViews : [])]) {
+        if (value?.type === 'images-viewed' && value.runId === runId && typeof value.requestId === 'string')
+          images.set(value.requestId, { ...value, runId });
+      }
       for (const value of saved) if (value?.type === 'subagent-update' && publicAgent(value.agent)) snapshots.set(value.agent.id, { ...value, runId });
       for (const agent of Array.isArray(session.subagents) ? session.subagents : []) {
         if (agent?.parentRunId === runId && publicAgent(agent) && !snapshots.has(agent.id)) snapshots.set(agent.id, { type: 'subagent-update', runId, agent });
       }
-      return [...snapshots.values()].map(displayEvent);
+      return [...images.values(), ...snapshots.values()].map(displayEvent);
     };
     const appendLegacy = index => {
-      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: [...standaloneUndo(record), ...standaloneSubagents(record)], finalIndex: null, unanchored: true });
+      for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: pick(record, recordFields), items: standaloneSubagents(record), finalIndex: null, unanchored: true });
     };
     for (let index = 0; index < messages.length; index++) {
       const record = starts.get(index);

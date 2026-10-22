@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { estimateContextTokens } from './session-metrics.cjs';
+import { getContextMeasurementTokens } from './context-usage.mjs';
 
 // This is a transport projection. The transcript remains the source of truth:
 // never splice it, shorten its messages, or rewrite signed provider state.
@@ -42,7 +42,7 @@ export function contextCompressionPolicy({ modelCapabilities, contextCompression
     ...(known ? {} : { fallbackGuardTokens: FALLBACK_TRIGGER_TOKENS }) };
 }
 
-function contextBudget({ modelCapabilities, systemMessages, tools, contextCompressionTriggerTokens, triggerFloorTokens = 0 }) {
+function contextBudget({ modelCapabilities, systemMessages, tools, contextCompressionTriggerTokens, contextMeasurement, triggerFloorTokens = 0 }) {
   const policy = contextCompressionPolicy({ modelCapabilities, contextCompressionTriggerTokens });
   const limit = modelCapabilities?.contextWindow;
   const known = Number.isSafeInteger(limit) && limit > 0;
@@ -50,23 +50,16 @@ function contextBudget({ modelCapabilities, systemMessages, tools, contextCompre
   const trigger = Math.min(safe, Math.max(policy.effectiveTriggerTokens, triggerFloorTokens));
   const target = Math.max(1, Math.min(known ? Math.floor(limit * 0.6) : Math.floor(FALLBACK_TRIGGER_TOKENS * 0.75), Math.floor(trigger * 0.75)));
   const floorApplied = trigger > policy.effectiveTriggerTokens;
-  const native = new WeakMap();
-  const used = messages => {
-    const state = [];
-    for (const message of messages) if (message.providerState) {
-      if (!native.has(message)) native.set(message, { role: 'assistant', content: JSON.stringify(message.providerState) });
-      state.push(native.get(message));
-    }
-    // The ordinary footer estimate excludes opaque native state. Keep a
-    // conservative allowance here as the provider may replay signed thinking
-    // and encrypted items on tool continuations; never edit or expose it.
-    return estimateContextTokens([...systemMessages, ...messages, ...state], tools);
-  };
+  // Only a matching, service-measured prefix can calibrate a future input.
+  // Newly added content still needs an estimate until the service measures it.
+  // A compacted/changed prefix automatically falls back to local budgeting.
+  const measure = messages => getContextMeasurementTokens([...systemMessages, ...messages], tools, contextMeasurement);
+  const used = messages => measure(messages).tokens;
   const chars = values => contextChars([...systemMessages, ...values]) + JSON.stringify(tools).length;
   const withinTrigger = (values, units = used(values)) => units < trigger && (known || chars(values) < TRIGGER_CHARS);
   const withinTarget = (values, units = used(values)) => units <= target && (known || chars(values) <= TARGET_CHARS);
   return {
-    trigger, target, used, withinTrigger, withinTarget,
+    trigger, target, used, measure, withinTrigger, withinTarget,
     sourceChars: Math.max(256, Math.min(known ? MAX_CATALOG_SOURCE_CHARS : SOURCE_CHARS, trigger)),
     summaryChars: Math.max(1, Math.min(SUMMARY_CHARS, Math.floor(target * 0.5))),
     metadata: { ...policy, effectiveTriggerTokens: trigger, triggerClamped: trigger !== policy.requestedTriggerTokens,
@@ -265,7 +258,7 @@ function makeSource(messages, previous, throughIndex, redact, sourceChars) {
  * The owner accounts for that request and persists the checkpoint after success.
  */
 export async function prepareContext({ messages, checkpoint = {}, signal, redact = value => value, summarize,
-  modelCapabilities, systemMessages = [], tools = [], rebuildCheckpoint = false, contextCompressionTriggerTokens } = {}) {
+  modelCapabilities, systemMessages = [], tools = [], rebuildCheckpoint = false, contextCompressionTriggerTokens, contextMeasurement } = {}) {
   checkSignal(signal);
   if (!Array.isArray(messages) || messages.some(message => !message || !['user', 'assistant', 'tool'].includes(message.role)
       || typeof message.content !== 'string')) fail('会话上下文格式无效，未进行压缩。', 'CONTEXT_INVALID_MESSAGES');
@@ -276,7 +269,7 @@ export async function prepareContext({ messages, checkpoint = {}, signal, redact
   // large. Rebuild from the intact transcript without discarding the previous
   // checkpoint until a new summary has been validated and committed.
   let previous = rebuildCheckpoint ? null : existing;
-  const budgetOptions = { modelCapabilities, systemMessages, tools, contextCompressionTriggerTokens };
+  const budgetOptions = { modelCapabilities, systemMessages, tools, contextCompressionTriggerTokens, contextMeasurement };
   let budget = contextBudget(budgetOptions);
   // The preference cannot make mandatory system/tool instructions and retained
   // user requirements disappear. Raise an unrealistically low trigger enough
@@ -298,8 +291,12 @@ export async function prepareContext({ messages, checkpoint = {}, signal, redact
   const underTarget = values => budget.withinTarget(values);
   const current = previous ? projection(messages, previous.throughIndex, previous.summary, underTrigger).messages : visibleMessages(messages);
   const beforeChars = contextChars(current);
-  const beforeUnits = budget.used(current);
-  const measurements = { ...budget.metadata, estimatedBeforeTokens: beforeUnits };
+  const beforeMeasurement = budget.measure(current);
+  const beforeUnits = beforeMeasurement.tokens;
+  const measurements = { ...budget.metadata, estimatedBeforeTokens: beforeUnits,
+    compressionTriggerBasis: beforeMeasurement.basis,
+    ...(Number.isSafeInteger(beforeMeasurement.reportedTokens) ? { reportedContextTokens: beforeMeasurement.reportedTokens,
+      estimatedGrowthTokens: beforeMeasurement.estimatedDeltaTokens } : {}) };
   if (budget.withinTrigger(current, beforeUnits)) return { messages: current, compacted: false, metadata: measurements };
 
   let fromIndex = previous ? previous.throughIndex + 1 : 0;
@@ -348,5 +345,5 @@ export async function prepareContext({ messages, checkpoint = {}, signal, redact
   Object.assign(checkpoint, next);
   return { messages: projected.messages, compacted: true, metadata: { count, fromIndex, throughIndex: selected,
     beforeChars, afterChars, summaryChars: summary.length, updatedAt, archivedImageTextCount: projected.archivedImageTextCount,
-    ...budget.metadata, estimatedBeforeTokens: beforeUnits, estimatedAfterTokens: afterUnits } };
+    ...measurements, estimatedAfterTokens: afterUnits } };
 }

@@ -41,16 +41,18 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
     status:$('composer-approval').querySelector('.composer-approval-status')?.textContent||'',
     approvalButtons:document.querySelectorAll('#composer-approval .approval-accept:not(:disabled)').length,
     messageApprovals:document.querySelectorAll('#messages .approval-card').length,
+    reviewCards:document.querySelectorAll('#messages .approval-review-card').length,
+    reviewCardsObserved:window.__liveControls.reviewCardsObserved,
     controlsInApproval:$('approval-live-controls')?.contains(document.querySelector('.composer-context'))||false,
     sameControls:document.querySelector('.composer-context')===window.__liveControls.originalControls,
     uniqueControls:document.querySelectorAll('.composer-context').length,
     acceptedClicks:window.__liveControls.acceptedClicks,notice:$('notice-text')?.textContent||''
   }))()`);
   const click = async selector => {
-    const point = await js(`(() => {const node=document.querySelector(${JSON.stringify(selector)});if(!node)throw new Error('Missing native live control '+${JSON.stringify(selector)});
-      node.scrollIntoView({block:'center',behavior:'instant'});if(!node.checkVisibility({contentVisibilityAuto:true,visibilityProperty:true,opacityProperty:true}))throw new Error('Hidden native live control '+${JSON.stringify(selector)});
+    const point = await until('revealed native control '+selector,()=>js(`(() => {const node=document.querySelector(${JSON.stringify(selector)});if(!node||node.disabled)return null;
+      node.scrollIntoView({block:'center',behavior:'instant'});if(!node.checkVisibility({contentVisibilityAuto:true,visibilityProperty:true,opacityProperty:true}))return null;
       const r=node.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};
-      if(!node.contains(document.elementFromPoint(p.x,p.y)))throw new Error('Covered native live control '+${JSON.stringify(selector)});return p;})()`);
+      return node.contains(document.elementFromPoint(p.x,p.y))?p:null;})()`));
     child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', ...point });
     child.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
     child.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point }); await wait(50);
@@ -78,12 +80,17 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
   const chooseReviewer = async model => {
     if (await js(`$('permission-popup').hidden`)) await click('#permission-trigger');
     await until('review model catalog', () => js(`Boolean($('approval-review-model')&&!$('approval-review-model').disabled&&[...$('approval-review-model').options].some(option=>option.value===${JSON.stringify(model || '')}&&!option.disabled))`));
-    await js(`$('approval-review-model').focus();window.__liveControls.reviewChanges=[];$('approval-review-model').addEventListener('change',event=>window.__liveControls.reviewChanges.push(event.isTrusted),{once:true});true`);
+    await js(`$('approval-review-model').focus();window.__liveControls.reviewChanges=[];window.__liveControls.reviewOptionClicks=[];$('approval-review-model').addEventListener('change',event=>window.__liveControls.reviewChanges.push({value:event.target.value,trusted:event.isTrusted}),{once:true});true`);
     // The catalog uses A, B, then a text-only reviewer; the current-model
     // choice precedes them. Native Home/End therefore select stable endpoints.
-    await key(model ? 'End' : 'Home'); await key('Enter');
+    const enhanced=await js(`$('approval-review-model').dataset.dropdownEnhanced==='true'`);
+    if(enhanced){
+      await click('#approval-review-model');
+      await click('.dropdown-select-popup[data-select-id="approval-review-model"] .dropdown-select-option[data-value='+JSON.stringify(model||'')+']:not([aria-disabled="true"])');
+    }else{await key(model ? 'End' : 'Home');await key('Enter');}
     await until('review model selected', async () => (await state()).approvalReviewer?.model === model);
-    assert.ok(await js('window.__liveControls.reviewChanges.includes(true)'), 'Review-model selection must use trusted native input');
+    assert.ok(await js(`window.__liveControls.reviewChanges.some(event=>event.value===${JSON.stringify(model||'')})`),'Review-model selection must dispatch the original select change');
+    assert.ok(await js(enhanced?'window.__liveControls.reviewOptionClicks.includes(true)':'window.__liveControls.reviewChanges.some(event=>event.trusted)'), 'Review-model selection must begin with trusted native input');
     if (!await js(`$('permission-popup').hidden`)) await click('#permission-trigger');
   };
   const outputText = item => typeof item?.content === 'string' ? item.content : (item?.content || []).map(part => part.text || '').join('\n');
@@ -141,7 +148,7 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
       if (name === 'hot' || name === 'other') assert.equal(result.content, name === 'hot' ? sourceA : sourceB);
       else if (name === 'pending') assert.equal(result.path, 'pending.txt');
       else if (name === 'allow') { assert.equal(result.exitCode, 0); assert.ok(result.stdout.includes(markers.allow)); }
-      else assert.equal(result.denied, true, 'A denied/manual-rejected/stale approval must not execute');
+      else assert.equal(result.denied, true, 'A denied/invalid-review/stale approval must not execute');
       finish(record, [message('LIVE_CONTROL_COMPLETED_' + name)]);
     } catch (error) {
       problems.push(error.message);
@@ -161,7 +168,7 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
   const completed = async (name, target = child) => { const end = await ended(name, target); assert.equal(end.status, 'completed', end.error || name); return end; };
   const configureWindow = async (target, directory) => {
     await until('child controls initialized', () => js('Boolean(appState&&window.forge.setApprovalReviewer&&!projectSwitching)', target));
-    await js(`window.__liveControls={events:[],acceptedClicks:0,originalControls:document.querySelector('.composer-context')};window.__liveControls.off=window.forge.onEvent(event=>window.__liveControls.events.push(event));document.addEventListener('click',event=>{if(event.target.closest('.approval-accept'))window.__liveControls.acceptedClicks++;},true);true`, target);
+    await js(`window.__liveControls={events:[],acceptedClicks:0,reviewCardsObserved:0,reviewOptionClicks:[],originalControls:document.querySelector('.composer-context')};window.__liveControls.off=window.forge.onEvent(event=>window.__liveControls.events.push(event));document.addEventListener('click',event=>{if(event.target.closest('.approval-accept'))window.__liveControls.acceptedClicks++;if(event.target.closest('.dropdown-select-popup[data-select-id="approval-review-model"] .dropdown-select-option'))window.__liveControls.reviewOptionClicks.push(event.isTrusted);},true);window.__liveControls.observer=new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1)window.__liveControls.reviewCardsObserved+=(node.matches('.approval-review-card')?1:0)+node.querySelectorAll('.approval-review-card').length;});window.__liveControls.observer.observe($('messages'),{childList:true,subtree:true});true`, target);
     await js(`openRecentProject({path:${JSON.stringify(directory)}})`, target);
     await until('project active ' + path.basename(directory), async () => (await state(target)).workspace?.root === directory && await js('!projectSwitching', target));
   };
@@ -221,11 +228,16 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
     assert.equal(await fileExists('deny-sentinel.txt'), false);
     assert.ok((await events()).some(event => event.type === 'approval-review' && event.status === 'denied' && event.reason === reasons.deny));
 
-    stage = 'ask returns a Chinese manual fallback in the composer';
-    await run('ask');
-    await until('Chinese review fallback', async () => { const value = await inspect(); return !value.approvalHidden && value.status.includes(reasons.ask) && value.approvalButtons === 1 && value.messageApprovals === 0; });
-    assert.equal(await fileExists('ask-sentinel.txt'), false); await capture('live-controls-ai-review-fallback.png');
-    await click('#composer-approval .approval-reject'); await completed('ask'); assert.equal(await fileExists('ask-sentinel.txt'), false);
+    stage = 'legacy ask response is denied without a manual fallback';
+    const manualClicksBeforeAsk=(await inspect()).acceptedClicks;
+    await run('ask');await completed('ask');
+    assert.equal(await fileExists('ask-sentinel.txt'),false);
+    const askEvents=(await events()).filter(event=>event.runId===runIds.get('ask'));
+    const askDenied=askEvents.find(event=>event.type==='approval-review'&&event.status==='denied');
+    assert.ok(askDenied&&/[\u4e00-\u9fff]/u.test(askDenied.reason),'Invalid legacy ask must report a Chinese denial reason');
+    assert.equal(askEvents.some(event=>event.type==='approval-request'||event.type==='approval-review'&&event.status==='manual'),false,'Assist review cannot fall back to manual approval');
+    const askUi=await inspect();assert.equal(askUi.approvalHidden,true);assert.equal(askUi.approvalButtons,0);assert.equal(askUi.messageApprovals,0);assert.equal(askUi.acceptedClicks,manualClicksBeforeAsk);
+    assert.equal((await state()).pendingApprovals.length,0);await capture('live-controls-invalid-review-denied.png');
 
     stage = 'permission changes cancel an old review and cannot grant stale approval';
     await run('stale'); const staleReview = await requestFor('stale', 'review');
@@ -252,15 +264,16 @@ module.exports = async function smokeLiveControls({ win, output, dataDir, store 
     assert.equal(ledger.filter(record => record.purpose === 'approval-review').length, records.filter(record => record.actor === 'review').length);
     assert.equal(ledger.filter(record => record.status === 'stopped').length, records.filter(record => record.aborted).length);
     assert.deepEqual(problems, []);
+    for(const target of [child,other])assert.deepEqual(await js(`({current:$('messages').querySelectorAll('.approval-review-card').length,ever:window.__liveControls.reviewCardsObserved})`,target),{current:0,ever:0},'Approval review must remain out of the conversation for the entire run');
     await capture('live-controls-completed.png');
     const result = { status: 'completed', realExternalApi: false, actualLoopbackProviderRequests: records.length,
       nativeModelSwitchDuringRequest: true, inFlightOldModelNextRequestNewModel: true, projectSelectionsAndPermissionsIsolated: true,
       nativePermissionSwitchWhilePending: true, controlsRemainOneOriginalNode: true, fullModeReleasesPendingWithoutSecondApproval: true,
       independentReviewContextAndNoTools: true, defaultCurrentReviewModel: true, nativeTextOnlyReviewerSelection: true,
-      reviewAllowExecutesOnlyFixtureCommand: true, reviewDenyDoesNotExecute: true, askChineseManualFallback: true,
+      reviewAllowExecutesOnlyFixtureCommand: true, reviewDenyDoesNotExecute: true, invalidAskDeniedWithoutManualFallback: true, noApprovalReviewConversationCards:true,
       oldReviewCancelledAfterPermissionChange: true, nativeStopCancelsReviewBeforeCommand: true,
       exactOnceUsageWithActualModelAndPurpose: true,
-      screenshots: ['live-controls-model-switched.png', 'live-controls-ai-review-fallback.png', 'live-controls-completed.png'] };
+      screenshots: ['live-controls-model-switched.png', 'live-controls-invalid-review-denied.png', 'live-controls-completed.png'] };
     await fs.writeFile(path.join(output, 'live-controls-smoke-result.json'), JSON.stringify(result, null, 2) + '\n'); return result;
   } catch (error) {
     const failure = { status: 'failed', stage, error: error.message, stack: error.stack, problems,

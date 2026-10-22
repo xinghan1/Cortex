@@ -10,7 +10,7 @@ const testRoot = path.resolve('tests', '.tmp');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC', 'base64');
 const JPEG = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==', 'base64');
 const WEBP = Buffer.from('UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/vz0AAA=', 'base64');
-const initial = { backgroundImage: null, backgroundName: '', backgroundTransparency: 28, panelFrost: 70, panelTransparency: 30, conversationTextColor: 'white', backgroundPreset: 'aurora' };
+const initial = { backgroundImage: null, backgroundName: '', backgroundTransparency: 28, panelFrost: 70, panelTransparency: 30, conversationTextColor: 'white', backgroundPreset: 'aurora', uiStyle: 'glass', selectionColor: null };
 const decoder = () => ({ width: 1, height: 1 });
 
 async function fixture(t) {
@@ -67,7 +67,7 @@ test('native-validated image and metadata commit together and survive source rem
   const value = await store.importFile(filename);
   assert.deepEqual(value, { ...initial, backgroundImage: `data:image/png;base64,${PNG.toString('base64')}`, backgroundName: 'background.png', backgroundTransparency: 58 });
   await fs.unlink(filename);
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...value });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...value });
   assert.equal((await fs.readFile(file, 'utf8')).includes(dir), false, 'Do not retain the external absolute path');
   let decodes = 0;
   const reopened = await new AppearanceStore({ dataDir, decodeImage: bytes => { decodes++; assert.deepEqual(bytes, PNG); return decoder(); } }).init();
@@ -99,7 +99,7 @@ test('global frost and panel transparency update independently, accept endpoints
   await store.setAppearance({ panelTransparency: 83 });
   const saved = await store.setAppearance({ panelFrost: 70 });
   assert.deepEqual(saved, { ...original, backgroundTransparency: 43, panelFrost: 70, panelTransparency: 83 });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...saved });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
   assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
 });
 
@@ -142,7 +142,7 @@ test('version 1 backgrounds load with default panel settings without rewriting a
     assert.equal((await fs.stat(file)).mtimeMs, modified);
     const changed = await store.setAppearance({ panelFrost: 24 });
     assert.deepEqual(changed, { ...initial, ...background, backgroundTransparency: 49, panelFrost: 24 });
-    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...changed });
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...changed });
     assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), changed);
   }
 });
@@ -163,7 +163,7 @@ test('version 2 backgrounds average legacy frost and default new settings withou
   assert.equal(await fs.readFile(file, 'utf8'), contents);
   const changed = await store.setAppearance({ conversationTextColor: 'blue' });
   assert.deepEqual(changed, { ...expected, conversationTextColor: 'blue' });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...changed });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...changed });
   assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), changed);
 });
 
@@ -183,7 +183,7 @@ test('version 3 backgrounds preserve image and text color while averaging frost 
   assert.equal(await fs.readFile(file, 'utf8'), contents);
   const changed = await store.setAppearance({ panelTransparency: 55 });
   assert.deepEqual(changed, { ...expected, panelTransparency: 55 });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...changed });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...changed });
 });
 
 test('version 4 migration rounds mixed frost to one setting and preserves the image, colors and preset without rewriting', async t => {
@@ -206,13 +206,142 @@ test('version 4 migration rounds mixed frost to one setting and preserves the im
   assert.equal((await fs.stat(file)).mtimeMs, modified);
   const saved = await store.setAppearance({ panelTransparency: 77 });
   assert.deepEqual(saved, { ...expected, panelTransparency: 77 });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...saved });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
   assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
   const roundsUp = JSON.stringify({ ...legacy, previewFrost: 100 });
   await fs.writeFile(file, roundsUp);
   const rounded = await new AppearanceStore({ dataDir, decodeImage: decoder }).init();
   assert.equal(rounded.snapshot().panelFrost, 67, 'Legacy averages round to the closest integer in either direction');
   assert.equal(await fs.readFile(file, 'utf8'), roundsUp);
+});
+
+test('version 5 defaults to glass without rewriting and upgrades only the independent style on save', async t => {
+  const { dataDir, file } = await fixture(t);
+  await fs.mkdir(dataDir);
+  const legacy = {
+    version: 5, backgroundImage: 'data:image/png;base64,' + PNG.toString('base64'),
+    backgroundName: 'retained.png', backgroundTransparency: 65,
+    panelFrost: 17, panelTransparency: 82, conversationTextColor: 'yellow', backgroundPreset: 'olive',
+  };
+  const contents = JSON.stringify(legacy) + '\n';
+  await fs.writeFile(file, contents);
+  await fs.utimes(file, new Date('2000-01-01T00:00:00Z'), new Date('2000-01-01T00:00:00Z'));
+  const modified = (await fs.stat(file)).mtimeMs;
+  const store = await new AppearanceStore({ dataDir, decodeImage: decoder }).init();
+  const { version, ...preferences } = legacy;
+  assert.deepEqual(store.snapshot(), { ...preferences, uiStyle: 'glass', selectionColor: null });
+  assert.equal(await fs.readFile(file, 'utf8'), contents);
+  assert.equal((await fs.stat(file)).mtimeMs, modified);
+  const saved = await store.setAppearance({ uiStyle: 'industrial' });
+  assert.deepEqual(saved, { ...preferences, uiStyle: 'industrial', selectionColor: null });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
+  assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
+});
+
+test('all interface styles persist independently from imported backgrounds, text colors and panel preferences', async t => {
+  const { dataDir, file, store, image } = await fixture(t);
+  await store.setAppearance({ backgroundPreset: 'ocean', backgroundTransparency: 41, panelFrost: 22, panelTransparency: 63, conversationTextColor: 'green' });
+  const imported = await store.importFile(await image());
+  for (const uiStyle of ['black', 'white', 'industrial', 'glass']) {
+    const saved = await store.setAppearance({ uiStyle });
+    assert.deepEqual(saved, { ...imported, uiStyle });
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
+    assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
+  }
+  await store.setAppearance({ uiStyle: 'white' });
+  await store.setAppearance({ backgroundPreset: 'amber' });
+  assert.equal(store.snapshot().uiStyle, 'white');
+  assert.equal((await store.importFile(await image())).uiStyle, 'white');
+  assert.deepEqual(await store.resetBackground(), { ...initial, uiStyle: 'white', panelFrost: 22, panelTransparency: 63, conversationTextColor: 'green' });
+});
+
+test('version 6 appearance retains its palette defaults without rewriting and adds selection color only on save', async t => {
+  const { dataDir, file } = await fixture(t);
+  await fs.mkdir(dataDir);
+  const { selectionColor, ...preferences } = { ...initial, uiStyle: 'white', panelFrost: 19, backgroundPreset: 'rose' };
+  const serialized = JSON.stringify({ version: 6, ...preferences }) + '\n';
+  await fs.writeFile(file, serialized);
+  const store = await new AppearanceStore({ dataDir, decodeImage: decoder }).init();
+  assert.deepEqual(store.snapshot(), { ...preferences, selectionColor: null });
+  assert.equal(await fs.readFile(file, 'utf8'), serialized);
+  const saved = await store.setAppearance({ selectionColor: '#DBB254' });
+  assert.deepEqual(saved, { ...preferences, selectionColor: '#dbb254' });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
+  assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
+});
+
+test('custom selection color accepts the full color range, survives resets and styles, and can restore theme defaults', async t => {
+  const { dataDir, file, store, image } = await fixture(t);
+  for (const selectionColor of ['#000000', '#FFFFFF', '#123aBc', '#de737d']) {
+    const saved = await store.setAppearance({ selectionColor });
+    assert.equal(saved.selectionColor, selectionColor.toLowerCase());
+    assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
+  }
+  await store.importFile(await image());
+  for (const uiStyle of ['glass', 'black', 'white', 'industrial']) {
+    assert.equal((await store.setAppearance({ uiStyle })).selectionColor, '#de737d');
+  }
+  assert.equal((await store.resetBackground()).selectionColor, '#de737d');
+  const saved = await store.setAppearance({ selectionColor: null });
+  assert.equal(saved.selectionColor, null);
+  assert.equal(saved.uiStyle, 'industrial');
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
+});
+
+test('invalid selection colors cannot inject CSS or commit companion changes', async t => {
+  const { file, store } = await fixture(t);
+  const saved = await store.setAppearance({ uiStyle: 'white', selectionColor: '#63b77b' });
+  const serialized = await fs.readFile(file, 'utf8');
+  for (const selectionColor of [undefined, '', '#fff', 'red', ' #123456', '#123456 ', '#12345678', 'rgb(1,2,3)', '#123456;display:none', {}, [], 0, true]) {
+    await assert.rejects(store.setAppearance({ uiStyle: 'black', selectionColor }), safeFailure('APPEARANCE_INVALID_SELECTION_COLOR'));
+  }
+  await assert.rejects(store.setAppearance({ selectionColor: '#000000', css: 'color:red' }), safeFailure('APPEARANCE_INVALID_SELECTION_COLOR'));
+  assert.deepEqual(store.snapshot(), saved);
+  assert.equal(await fs.readFile(file, 'utf8'), serialized);
+});
+
+test('invalid styles and extra fields reject atomically without clearing images or committing other preferences', async t => {
+  const { file, store, image } = await fixture(t);
+  await store.setAppearance({ uiStyle: 'industrial', backgroundPreset: 'forest', conversationTextColor: 'blue' });
+  const saved = await store.importFile(await image());
+  const serialized = await fs.readFile(file, 'utf8');
+  for (const uiStyle of [undefined, null, true, 0, 'Glass', ' black', 'black ', 'dark', 'custom', 'url(file:///private.css)', '', {}, []]) {
+    await assert.rejects(store.setAppearance({ uiStyle, backgroundPreset: 'snow', panelFrost: 99, conversationTextColor: 'red' }), safeFailure('APPEARANCE_INVALID_UI_STYLE'));
+  }
+  for (const unexpected of [{ backgroundImage: null }, { css: 'background: red' }, { version: 6 }, { [Symbol('unexpected')]: true }]) {
+    await assert.rejects(store.setAppearance({ uiStyle: 'white', ...unexpected }), safeFailure('APPEARANCE_INVALID_UI_STYLE'));
+  }
+  await assert.rejects(store.setAppearance({ uiStyle: 'black', backgroundPreset: 'custom' }), safeFailure('APPEARANCE_INVALID_BACKGROUND_PRESET'));
+  assert.deepEqual(store.snapshot(), saved);
+  assert.equal(await fs.readFile(file, 'utf8'), serialized);
+});
+
+test('queued style changes capture values, retain call order and survive image or background resets', async t => {
+  const { dataDir, store, image } = await fixture(t);
+  const filename = await image();
+  const patch = { uiStyle: 'black', conversationTextColor: 'red' };
+  const operations = [
+    store.setAppearance(patch),
+    store.importFile(filename),
+    store.setAppearance({ panelFrost: 11, panelTransparency: 72 }),
+    store.setAppearance({ uiStyle: 'white' }),
+    store.setAppearance({ backgroundPreset: 'cyan' }),
+    store.setAppearance({ uiStyle: 'industrial' }),
+    store.resetBackground(),
+  ];
+  patch.uiStyle = 'glass';
+  patch.conversationTextColor = 'black';
+  const values = await Promise.all(operations);
+  assert.equal(values[0].uiStyle, 'black');
+  assert.equal(values[1].uiStyle, 'black');
+  assert.equal(values[1].backgroundName, 'background.png');
+  assert.equal(values[3].uiStyle, 'white');
+  assert.equal(values[3].backgroundName, 'background.png');
+  assert.equal(values[4].uiStyle, 'white');
+  assert.equal(values[4].backgroundName, '');
+  const expected = { ...initial, uiStyle: 'industrial', conversationTextColor: 'red', panelFrost: 11, panelTransparency: 72 };
+  assert.deepEqual(values[6], expected);
+  assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), expected);
 });
 
 test('each built-in background replaces an imported image and retains global panel settings across restart', async t => {
@@ -286,7 +415,7 @@ test('all six text colors persist independently and image import or reset preser
   assert.equal(imported.conversationTextColor, 'black');
   const reset = await store.resetBackground();
   assert.deepEqual(reset, { ...initial, panelFrost: 12, panelTransparency: 34, conversationTextColor: 'black' });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...reset });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...reset });
   assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), reset);
 });
 
@@ -314,7 +443,7 @@ test('invalid text colors reject the whole patch and valid color changes preserv
   assert.equal(values[0].conversationTextColor, 'red');
   assert.equal(values[1].conversationTextColor, 'red');
   assert.deepEqual(values[3], { ...initial, conversationTextColor: 'green', panelFrost: 83, panelTransparency: 29, backgroundTransparency: 42 });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...values[3] });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...values[3] });
 });
 
 test('queued partial panel updates and background reset preserve captured values and independent panel transparency', async t => {
@@ -358,7 +487,7 @@ test('rapid import, transparency and reset operations keep call order and failed
   await fs.rmdir(file);
   assert.equal((await store.importFile(filename)).backgroundName, 'background.png');
   assert.deepEqual((await store.resetBackground()), initial);
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 5, ...initial });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...initial });
 });
 
 test('invalid formats, mismatched extension and missing files preserve the last committed appearance', async t => {
@@ -423,9 +552,17 @@ test('corrupt, noncanonical, unexpected or path-bearing metadata defaults safely
   const current = { ...good, version: 2, sidebarFrost: 70, conversationFrost: 70, previewFrost: 70 };
   const colored = { ...current, version: 3, conversationTextColor: 'blue' };
   const preset = { ...colored, version: 4, backgroundPreset: 'ocean' };
-  const global = { version: 5, ...initial, backgroundImage: good.backgroundImage, backgroundName: 'saved.png' };
+  const { uiStyle, selectionColor, ...legacyInitial } = initial;
+  const global = { version: 5, ...legacyInitial, backgroundImage: good.backgroundImage, backgroundName: 'saved.png' };
+  const styled = { ...global, version: 6, uiStyle };
   const documents = ['{', 'null', '[]', '{}',
+    JSON.stringify({ ...styled, version: 7 }),
     JSON.stringify({ ...global, version: 6 }),
+    JSON.stringify({ ...styled, uiStyle: undefined }),
+    JSON.stringify({ ...styled, uiStyle: null }),
+    JSON.stringify({ ...styled, uiStyle: 'Glass' }),
+    JSON.stringify({ ...styled, uiStyle: 'custom' }),
+    JSON.stringify({ ...global, uiStyle: 'glass' }),
     JSON.stringify({ ...global, panelFrost: undefined }),
     JSON.stringify({ ...global, panelTransparency: undefined }),
     JSON.stringify({ ...global, panelFrost: '70' }),

@@ -10,6 +10,10 @@ const DEFAULT_CONVERSATION_TEXT_COLOR = 'white';
 const CONVERSATION_TEXT_COLORS = Object.freeze(['red', 'yellow', 'green', 'blue', 'white', 'black']);
 const DEFAULT_BACKGROUND_PRESET = 'aurora';
 const BACKGROUND_PRESETS = Object.freeze(['aurora', 'rose', 'amber', 'forest', 'ocean', 'snow', 'midnight', 'orange', 'purple', 'olive', 'pink', 'magenta', 'cyan']);
+const DEFAULT_UI_STYLE = 'glass';
+const UI_STYLES = Object.freeze(['glass', 'black', 'white', 'industrial']);
+const DEFAULT_SELECTION_COLOR = null;
+const validSelectionColor = value => value === null || typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value);
 const LEGACY_FROST_FIELDS = Object.freeze(['sidebarFrost', 'conversationFrost', 'previewFrost']);
 const MAX_DOCUMENT_BYTES = 4 * Math.ceil(APPEARANCE_LIMITS.maxImageBytes / 3) + 4096;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -28,6 +32,8 @@ const defaultState = () => ({
   panelTransparency: DEFAULT_PANEL_TRANSPARENCY,
   conversationTextColor: DEFAULT_CONVERSATION_TEXT_COLOR,
   backgroundPreset: DEFAULT_BACKGROUND_PRESET,
+  uiStyle: DEFAULT_UI_STYLE,
+  selectionColor: DEFAULT_SELECTION_COLOR,
 });
 
 function displayName(value) {
@@ -146,16 +152,20 @@ class AppearanceStore {
           const value = JSON.parse((await readBounded(this.#file, MAX_DOCUMENT_BYTES, invalidImage)).toString('utf8'));
           const fields = ['backgroundImage', 'backgroundName', 'backgroundTransparency', 'version'];
           if (value?.version >= 2 && value.version <= 4) fields.push(...LEGACY_FROST_FIELDS);
-          if (value?.version === 5) fields.push('panelFrost', 'panelTransparency');
+          if (value?.version >= 5) fields.push('panelFrost', 'panelTransparency');
           if (value?.version >= 3) fields.push('conversationTextColor');
           if (value?.version >= 4) fields.push('backgroundPreset');
-          if (!value || Array.isArray(value) || ![1, 2, 3, 4, 5].includes(value.version) || Object.keys(value).sort().join(',') !== fields.sort().join(',')
+          if (value?.version >= 6) fields.push('uiStyle');
+          if (value?.version >= 7) fields.push('selectionColor');
+          if (!value || Array.isArray(value) || ![1, 2, 3, 4, 5, 6, 7].includes(value.version) || Object.keys(value).sort().join(',') !== fields.sort().join(',')
               || !validTransparency(value.backgroundTransparency) || typeof value.backgroundName !== 'string'
               || value.backgroundName !== displayName(value.backgroundName)) throw invalidImage();
           if (value.version >= 2 && value.version <= 4 && LEGACY_FROST_FIELDS.some(field => !validTransparency(value[field]))) throw invalidImage();
-          if (value.version === 5 && (!validTransparency(value.panelFrost) || !validTransparency(value.panelTransparency))) throw invalidImage();
+          if (value.version >= 5 && (!validTransparency(value.panelFrost) || !validTransparency(value.panelTransparency))) throw invalidImage();
           if (value.version >= 3 && !CONVERSATION_TEXT_COLORS.includes(value.conversationTextColor)) throw invalidImage();
           if (value.version >= 4 && !BACKGROUND_PRESETS.includes(value.backgroundPreset)) throw invalidImage();
+          if (value.version >= 6 && !UI_STYLES.includes(value.uiStyle)) throw invalidImage();
+          if (value.version >= 7 && !validSelectionColor(value.selectionColor)) throw invalidImage();
           if (value.backgroundImage === null) {
             if (value.backgroundName !== '') throw invalidImage();
           } else {
@@ -176,12 +186,14 @@ class AppearanceStore {
           if (value.version >= 2 && value.version <= 4) {
             this.#state.panelFrost = Math.round(LEGACY_FROST_FIELDS.reduce((sum, field) => sum + value[field], 0) / LEGACY_FROST_FIELDS.length);
           }
-          if (value.version === 5) {
+          if (value.version >= 5) {
             this.#state.panelFrost = value.panelFrost;
             this.#state.panelTransparency = value.panelTransparency;
           }
           if (value.version >= 3) this.#state.conversationTextColor = value.conversationTextColor;
           if (value.version >= 4) this.#state.backgroundPreset = value.backgroundPreset;
+          if (value.version >= 6) this.#state.uiStyle = value.uiStyle;
+          if (value.version >= 7) this.#state.selectionColor = value.selectionColor?.toLowerCase() ?? null;
         } catch {
           // A damaged background must not prevent startup or overwrite the
           // original file. The user can import another image or reset it.
@@ -206,7 +218,7 @@ class AppearanceStore {
       handle = await fs.open(temporary, 'wx', 0o600);
       // A single versioned document commits both image bytes and metadata.
       // There is no two-file state in which metadata refers to a missing image.
-      await handle.writeFile(JSON.stringify({ version: 5, ...next }) + '\n', 'utf8');
+      await handle.writeFile(JSON.stringify({ version: 7, ...next }) + '\n', 'utf8');
       await handle.sync();
       await handle.close(); handle = null;
       await fs.rename(temporary, this.#file);
@@ -242,7 +254,11 @@ class AppearanceStore {
     const hasPanelTransparency = fields.includes('panelTransparency');
     const hasTextColor = fields.includes('conversationTextColor');
     const hasPreset = fields.includes('backgroundPreset');
-    if (!fields.length || fields.some(field => !['backgroundTransparency', 'conversationTextColor', 'backgroundPreset', 'panelFrost', 'panelTransparency'].includes(field))) {
+    const hasUiStyle = fields.includes('uiStyle');
+    const hasSelectionColor = fields.includes('selectionColor');
+    if (!fields.length || fields.some(field => !['backgroundTransparency', 'conversationTextColor', 'backgroundPreset', 'panelFrost', 'panelTransparency', 'uiStyle', 'selectionColor'].includes(field))) {
+      if (hasSelectionColor) return Promise.reject(appearanceError('选中颜色设置包含无效字段。', 'APPEARANCE_INVALID_SELECTION_COLOR'));
+      if (hasUiStyle) return Promise.reject(appearanceError('界面风格设置包含无效字段。', 'APPEARANCE_INVALID_UI_STYLE'));
       if (hasPreset) return Promise.reject(appearanceError('背景样式设置包含无效字段。', 'APPEARANCE_INVALID_BACKGROUND_PRESET'));
       if (hasTextColor) return Promise.reject(appearanceError('会话文字颜色设置包含无效字段。', 'APPEARANCE_INVALID_TEXT_COLOR'));
       if (hasFrost) return Promise.reject(appearanceError('磨砂设置包含无效字段。', 'APPEARANCE_INVALID_FROST'));
@@ -265,6 +281,13 @@ class AppearanceStore {
     if (hasPreset && !BACKGROUND_PRESETS.includes(patch.backgroundPreset)) {
       return Promise.reject(appearanceError('请选择有效的内置背景样式。', 'APPEARANCE_INVALID_BACKGROUND_PRESET'));
     }
+    if (hasUiStyle && !UI_STYLES.includes(patch.uiStyle)) {
+      return Promise.reject(appearanceError('请选择有效的界面风格。', 'APPEARANCE_INVALID_UI_STYLE'));
+    }
+    if (hasSelectionColor && !validSelectionColor(patch.selectionColor)) {
+      return Promise.reject(appearanceError('请选择有效的六位十六进制颜色。', 'APPEARANCE_INVALID_SELECTION_COLOR'));
+    }
+    if (hasSelectionColor && patch.selectionColor !== null) patch.selectionColor = patch.selectionColor.toLowerCase();
     if (hasPreset) {
       patch.backgroundImage = null;
       patch.backgroundName = '';
@@ -281,4 +304,6 @@ module.exports = {
   AppearanceStore, APPEARANCE_LIMITS, DEFAULT_TRANSPARENCY, DEFAULT_FROST, DEFAULT_PANEL_TRANSPARENCY,
   DEFAULT_CONVERSATION_TEXT_COLOR, CONVERSATION_TEXT_COLORS,
   DEFAULT_BACKGROUND_PRESET, BACKGROUND_PRESETS,
+  DEFAULT_UI_STYLE, UI_STYLES,
+  DEFAULT_SELECTION_COLOR,
 };
