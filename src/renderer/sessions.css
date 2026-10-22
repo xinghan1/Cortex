@@ -148,3 +148,91 @@
 .session-rename-dialog .dialog-footer { justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .session-rename-hint { margin: 8px 0; color: #b4c4dd; font-size: 12px; }
 .session-rename-button { font-size: 12px; }
+
+#session-dropdown .session-history-row,
+#project-dropdown .recent-project-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--ui-radius, 6px);
+}
+
+#session-dropdown .session-history-row > .session-history-item,
+#project-dropdown .recent-project-row > .recent-project {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+#session-dropdown .history-delete-button,
+#project-dropdown .history-delete-button {
+  flex: 0 0 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 32px;
+  min-height: 0;
+  padding: 6px;
+  margin: 0 4px 0 0;
+  color: var(--ui-muted, #a8b7ce);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.history-delete-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#session-dropdown .history-delete-button:is(:hover, :focus-visible),
+#project-dropdown .history-delete-button:is(:hover, :focus-visible) {
+  color: var(--ui-text, #edf3ff);
+  background: var(--ui-hover, rgb(205 225 255 / 15%));
+  outline: 1px solid var(--ui-accent, var(--accent, #a9caff));
+  outline-offset: -1px;
+}
+
+#session-dropdown .history-delete-button:disabled,
+#project-dropdown .history-delete-button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+#session-dropdown .session-history-row:has(> .session-history-item[aria-checked='true']) {
+  background: var(--ui-selected, rgb(109 158 255 / 18%));
+}
+
+html[data-selection-color='custom'] #session-dropdown .session-history-row:has(> .session-history-item[aria-checked='true']) {
+  background: var(--custom-selection-color);
+}
+
+html[data-selection-color='custom'] #session-dropdown .session-history-row:has(> .session-history-item[aria-checked='true']) > .history-delete-button {
+  color: var(--custom-selection-ink);
+}
+
+html[data-selection-color='custom'] #session-dropdown .session-history-row:has(> .session-history-item[aria-checked='true']) > .history-delete-button:is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--custom-selection-ink) 15%, transparent);
+  outline-color: var(--custom-selection-ink);
+}
+
+.session-delete-dialog .session-delete-message {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.8;
+  color: inherit;
+}
+
+.session-delete-dialog .session-delete-confirm {
+  border-color: var(--ui-accent, var(--accent, #a9caff));
+  background: var(--ui-accent, var(--accent, #a9caff));
+  color: var(--ui-accent-ink, #102039);
+}

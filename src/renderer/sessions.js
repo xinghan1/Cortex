@@ -12,7 +12,7 @@
     return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Hong_Kong', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
   };
   window.ForgeSessions = Object.freeze({
-    create({ bridge, onSelect, onNew, notice }) {
+    create({ bridge, onSelect, onNew, onDelete, notice }) {
       const heading = document.getElementById('conversation-title');
       const title = el('span', 'session-current-title', heading.textContent);
       heading.removeAttribute('id'); title.id = 'conversation-title';
@@ -26,6 +26,7 @@
       popup.setAttribute('role', 'menu'); popup.setAttribute('aria-label', '当前项目会话');
       document.body.append(popup);
       let state = {}, request = 0, submitting = false, busy = false, rows = [];
+      const deletedIds = new Set();
       const renameDialog = el('dialog', 'file-name-dialog session-rename-dialog'); renameDialog.id = 'session-rename-dialog';
       renameDialog.setAttribute('aria-labelledby', 'session-rename-title');
       const renameForm = el('form'); renameForm.id = 'session-rename-form';
@@ -40,6 +41,16 @@
       renameCancel.id = 'session-rename-cancel'; renameCancel.type = 'button'; renameSave.id = 'session-rename-save'; renameSave.type = 'submit';
       renameFooter.append(renameCancel, renameSave); renameForm.append(renameHeader, renameLabel, renameHint, renameError, renameFooter); renameDialog.append(renameForm); document.body.append(renameDialog);
       let renameId = null, renameRoot = '', renameSaving = false;
+      const deleteDialog = el('dialog', 'file-name-dialog session-rename-dialog session-delete-dialog'); deleteDialog.id = 'session-delete-dialog';
+      deleteDialog.setAttribute('aria-labelledby', 'session-delete-title');
+      deleteDialog.setAttribute('aria-describedby', 'session-delete-message');
+      const deleteHeader = el('div', 'dialog-header'), deleteTitle = el('h2', '', '删除会话'); deleteTitle.id = 'session-delete-title'; deleteHeader.append(deleteTitle);
+      const deleteMessage = el('p', 'session-delete-message'); deleteMessage.id = 'session-delete-message';
+      const deleteError = el('p', 'form-error'); deleteError.id = 'session-delete-error'; deleteError.setAttribute('role', 'alert'); deleteError.hidden = true;
+      const deleteFooter = el('div', 'dialog-footer'), deleteCancel = el('button', 'button subtle', '取消'), deleteConfirm = el('button', 'button solid session-delete-confirm', '删除');
+      deleteCancel.id = 'session-delete-cancel'; deleteCancel.type = deleteConfirm.type = 'button'; deleteConfirm.id = 'session-delete-confirm';
+      deleteFooter.append(deleteCancel, deleteConfirm); deleteDialog.append(deleteHeader, deleteMessage, deleteError, deleteFooter); document.body.append(deleteDialog);
+      let deleteId = null, deleteRoot = '', deleteSaving = false;
       const workspace = value => typeof value === 'string' ? value : value?.root || '';
       const enabled = () => [...popup.querySelectorAll('button:not(:disabled)')];
       const close = (restore = false) => {
@@ -51,8 +62,41 @@
         if (renameDialog.open) renameDialog.close();
         if (restore && !trigger.disabled) trigger.focus({ preventScroll: true });
       };
+      const closeDelete = (restore = false) => {
+        deleteId = null;
+        if (deleteDialog.open) deleteDialog.close();
+        if (restore && !trigger.disabled) trigger.focus({ preventScroll: true });
+      };
+      const openDelete = record => {
+        if (busy || submitting || renameSaving || deleteSaving) return;
+        close(); deleteId = record.id; deleteRoot = workspace(state.workspace);
+        deleteMessage.textContent = `删除“${record.title || record.preview || '新会话'}”的会话记录？删除后无法恢复。`;
+        deleteError.hidden = true; deleteCancel.disabled = deleteConfirm.disabled = false;
+        deleteDialog.showModal(); deleteCancel.focus();
+      };
+      deleteCancel.addEventListener('click', () => closeDelete(true));
+      deleteDialog.addEventListener('cancel', event => { event.preventDefault(); if (!deleteSaving) closeDelete(true); });
+      deleteConfirm.addEventListener('click', async () => {
+        if (busy || deleteSaving || !deleteId || typeof onDelete !== 'function') return;
+        const id = deleteId, root = deleteRoot;
+        if (root !== workspace(state.workspace)) { closeDelete(); return; }
+        deleteSaving = true; trigger.disabled = true; deleteCancel.disabled = deleteConfirm.disabled = true; deleteError.hidden = true;
+        try {
+          const result = await onDelete(id);
+          if (result === false) return;
+          deletedIds.add(id);
+          rows = rows.filter(row => row.id !== id);
+          if (deleteId === id) closeDelete();
+        } catch (error) {
+          if (deleteId === id && deleteDialog.open) { deleteError.textContent = error?.message || '会话删除失败。'; deleteError.hidden = false; }
+          else notice(error?.message || '会话删除失败。', true);
+        } finally {
+          deleteSaving = false; trigger.disabled = busy || submitting; deleteCancel.disabled = deleteConfirm.disabled = false;
+          if (deleteDialog.open) deleteCancel.focus(); else if (!trigger.disabled) trigger.focus({ preventScroll: true });
+        }
+      });
       const openRename = () => {
-        if (busy || submitting || renameSaving || !state.sessionId) return;
+        if (busy || submitting || renameSaving || deleteSaving || !state.sessionId) return;
         close(); renameId = state.sessionId; renameRoot = workspace(state.workspace);
         renameInput.value = state.sessionTitle || title.textContent || '新会话'; renameError.hidden = true;
         renameInput.disabled = renameCancel.disabled = renameSave.disabled = false;
@@ -108,6 +152,7 @@
         finally { submitting = false; trigger.disabled = busy; }
       };
       const sessionButton = (record, current = false) => {
+        const row = el('div', 'session-history-row'); row.setAttribute('role', 'none');
         const button = el('button', 'session-history-item'); button.type = 'button'; button.dataset.sessionId = record.id;
         button.setAttribute('role', 'menuitemradio'); button.setAttribute('aria-checked', String(current));
         const copy = el('span', 'session-history-copy');
@@ -117,7 +162,13 @@
         button.append(copy, el('span', 'session-history-check', current ? '✓' : ''));
         button.title = record.title || record.preview || '当前会话';
         button.addEventListener('click', () => current ? close(true) : action(() => onSelect(record.id)));
-        return button;
+        const remove = el('button', 'history-delete-button session-delete-button'); remove.type = 'button'; remove.dataset.deleteSessionId = record.id;
+        remove.setAttribute('role', 'menuitem'); remove.setAttribute('aria-label', `删除会话：${record.title || record.preview || '新会话'}`); remove.title = '删除会话';
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6'); icon.append(path); remove.append(icon);
+        remove.disabled = busy || submitting || deleteSaving || typeof onDelete !== 'function';
+        remove.addEventListener('click', event => { event.stopPropagation(); openDelete(record); });
+        row.append(button, remove); return row;
       };
       const render = ({ loading = false, failed = false } = {}) => {
         popup.replaceChildren();
@@ -126,7 +177,7 @@
         const rename = el('button', 'session-rename-button', '重命名会话…'); rename.type = 'button'; rename.dataset.action = 'rename-session'; rename.setAttribute('role', 'menuitem');
         rename.disabled = !state.sessionId; rename.addEventListener('click', openRename); popup.append(rename);
         popup.append(el('h2', 'session-list-heading', '当前项目的历史会话'));
-        if (state.sessionId && !rows.some(row => row.id === state.sessionId)) {
+        if (state.sessionId && !deletedIds.has(state.sessionId) && !rows.some(row => row.id === state.sessionId)) {
           popup.append(sessionButton({ id: state.sessionId, title: state.sessionTitle || '新会话' }, true));
         }
         if (loading) popup.append(el('p', 'session-list-status', '正在加载…'));
@@ -145,7 +196,7 @@
         try {
           const result = await bridge.listProjectSessions();
           if (token !== request || popup.hidden || root !== workspace(state.workspace) || busy) return;
-          rows = (Array.isArray(result) ? result : []).filter(row => row && typeof row.id === 'string' && typeof row.preview === 'string').slice(0, 100);
+          rows = (Array.isArray(result) ? result : []).filter(row => row && typeof row.id === 'string' && typeof row.preview === 'string' && !deletedIds.has(row.id)).slice(0, 100);
           const focusedId = document.activeElement?.dataset.sessionId;
           const focusNew = document.activeElement?.dataset.action === 'new-session';
           render();
@@ -174,6 +225,14 @@
       window.addEventListener('resize', position);
       return {
         close,
+        remove(id) {
+          if (typeof id !== 'string' || !id) return;
+          deletedIds.add(id);
+          rows = rows.filter(row => row.id !== id);
+          if (!popup.hidden) render();
+          if (renameId === id) closeRename();
+          if (deleteId === id && !deleteSaving) closeDelete();
+        },
         update(next) {
           const rootChanged = workspace(state.workspace) !== workspace(next?.workspace);
           const sessionChanged = state.sessionId !== next?.sessionId;
@@ -183,8 +242,8 @@
           const queue = state.promptQueue || state.queue;
           busy = state.busy === true || state.authBusy === true || state.activeTask?.running === true
             || (Array.isArray(queue) ? queue.length > 0 : (queue?.items?.length || queue?.pending?.length || 0) > 0);
-          trigger.disabled = busy || submitting;
-          if (busy || rootChanged || sessionChanged) { close(); closeRename(); }
+          trigger.disabled = busy || submitting || deleteSaving;
+          if (busy || rootChanged || sessionChanged) { close(); closeRename(); if (!deleteSaving) closeDelete(); }
         }
       };
     }

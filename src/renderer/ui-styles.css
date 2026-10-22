@@ -165,7 +165,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   dialog.permission-danger-dialog, dialog.appearance-dialog, .session-rename-dialog,
   .pending-edit-dialog, .project-dropdown, .session-dropdown, .app-menu-popup,
   .file-context-menu, .permission-popup, .reasoning-popup, .context-settings-popup,
-  :where(#chatgpt-usage-popover), .dropdown-select-popup, .editor-completion-list,
+  .dropdown-select-popup, .editor-completion-list,
   .usage-activity-tooltip
 ) {
   color: var(--ui-text);
@@ -188,7 +188,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   .project-switcher, .popup-model-button,
   .model-search, .form-field input, .form-field select, .approval-reviewer-field select,
   .browser-address, :where(#find-input, #terminal-input, #context-trigger-input),
-  .pending-edit-dialog textarea, .chatgpt-usage-button
+  .pending-edit-dialog textarea
 ) {
   border-color: var(--ui-border);
   border-radius: var(--ui-radius);
@@ -278,8 +278,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   .permission-heading, .permission-option small, .permission-check, .popup-hint,
   .model-list-status, .model-option-copy small, .model-option-check,
   .dialog-intro, .form-field small, .privacy-note p, .dialog-footer > span,
-  .chatgpt-help, .chatgpt-message, .chatgpt-usage-status, .chatgpt-usage-message,
-  .chatgpt-usage-meta, .context-settings-description, .session-rename-hint,
+  .chatgpt-help, .chatgpt-message, .context-settings-description, .session-rename-hint,
   .task-activity, .task-activity-meta, .task-activity-phase, .task-activity-speed,
   .tool-mark, .tool-badge, .tool-label, .technical-details-summary,
   .tool-operation-group, .tool-operation-group-count, .tool-operation-group-status,
@@ -303,9 +302,6 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   background: var(--ui-control); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); box-shadow: none;
 }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(#find-input, #terminal-input, #context-trigger-input):focus { outline-color: var(--ui-accent); }
-html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #chatgpt-usage-popover {
-  background: var(--ui-raised); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); -webkit-backdrop-filter: none; backdrop-filter: none;
-}
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .conversation-heading #conversation-title { color: var(--ui-text); }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(#provider-hint, #token-usage, #terminal-status) { color: var(--ui-muted) !important; }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) #usage-stats-button:hover { background: var(--ui-hover); box-shadow: none; }

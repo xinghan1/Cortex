@@ -92,6 +92,15 @@ const DEFAULTS = {
 };
 
 class Store {
+  #sessionQueues = new Map();
+  #deletedSessions = new Set();
+  #queueSession(id, operation) {
+    const previous = this.#sessionQueues.get(id) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(operation);
+    this.#sessionQueues.set(id, pending);
+    pending.finally(() => { if (this.#sessionQueues.get(id) === pending) this.#sessionQueues.delete(id); }).catch(() => {});
+    return pending;
+  }
   constructor(dir, safeStorage) {
     this.dir = dir; this.crypto = safeStorage; this.settings = structuredClone(DEFAULTS);
     this.usage = null; this.usageError = null; this.usageQueue = Promise.resolve(); this.usageIds = new Set();
@@ -250,7 +259,9 @@ class Store {
   }
   async getSession(id) {
     if (!/^[a-f0-9-]{36}$/.test(String(id))) throw new Error('会话 ID 无效。');
+    if (this.#deletedSessions.has(id)) throw Object.assign(new Error('会话记录已删除。'), { code: 'ENOENT' });
     const data = JSON.parse(await fs.readFile(path.join(this.dir, 'sessions', `${id}.json`), 'utf8'));
+    if (this.#deletedSessions.has(id)) throw Object.assign(new Error('会话记录已删除。'), { code: 'ENOENT' });
     if (data.id !== id || typeof data.title !== 'string' || !Array.isArray(data.messages) || !Array.isArray(data.events) || (data.workspace !== null && typeof data.workspace !== 'string')) throw new Error('会话文件格式损坏，未加载。');
     for (const message of data.messages) {
       if (!message || !['user', 'assistant', 'tool'].includes(message.role) || typeof message.content !== 'string') throw new Error('会话消息格式损坏，未加载。');
@@ -282,9 +293,41 @@ class Store {
   }
   async saveSession(session) {
     if (!/^[a-f0-9-]{36}$/.test(String(session?.id))) throw new Error('会话 ID 无效，未保存。');
-    session.title = this.sessionTitle(session);
-    session.updatedAt = new Date().toISOString();
-    await this.write(path.join('sessions', `${session.id}.json`), JSON.parse(this.redact(JSON.stringify(session))));
+    return this.#queueSession(session.id, async () => {
+      if (this.#deletedSessions.has(session.id)) throw new Error('会话记录已删除，不能重新保存。');
+      session.title = this.sessionTitle(session);
+      session.updatedAt = new Date().toISOString();
+      await this.write(path.join('sessions', `${session.id}.json`), JSON.parse(this.redact(JSON.stringify(session))));
+    });
+  }
+  async validateSessionDeletion(id, workspace, { temporary = false } = {}) {
+    if (!UUID.test(id)) throw new Error('会话 ID 无效，未删除。');
+    if (!temporary) {
+      const stored = await this.getSession(id);
+      const identity = value => projectIdentity(value)?.key ?? value;
+      if (identity(stored.workspace) !== identity(workspace)) throw new Error('只能删除当前项目的会话。');
+    }
+    const directory = path.join(this.dir, 'sessions'), filename = path.join(directory, `${id}.json`);
+    const parent = await fs.lstat(directory);
+    if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error('会话存储目录无效，未删除。');
+    const stat = await fs.lstat(filename).catch(error => { if (error.code === 'ENOENT' && temporary) return null; throw error; });
+    if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)) throw new Error('会话记录路径无效，未删除。');
+    return { filename, exists: Boolean(stat) };
+  }
+  async deleteSession(id, workspace, { temporary = false } = {}) {
+    await this.validateSessionDeletion(id, workspace, { temporary });
+    this.#deletedSessions.add(id);
+    try {
+      return await this.#queueSession(id, async () => {
+        const directory = path.join(this.dir, 'sessions'), filename = path.join(directory, `${id}.json`);
+        const parent = await fs.lstat(directory);
+        if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error('会话存储目录无效，未删除。');
+        const stat = await fs.lstat(filename).catch(error => { if (error.code === 'ENOENT' && temporary) return null; throw error; });
+        if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)) throw new Error('会话记录路径无效，未删除。');
+        if (stat) await fs.unlink(filename);
+        return { id, deleted: true };
+      });
+    } catch (error) { this.#deletedSessions.delete(id); throw error; }
   }
 
   async initUsage() {

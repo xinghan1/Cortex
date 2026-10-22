@@ -51,6 +51,7 @@ const catalogSnapshots = new Map();
 const windows = new Map();
 let sessionRestore, activeWindowHost = null;
 const sessionRenameLocks = new Set();
+const sessionDeleteLocks = new Set();
 let sessionRenameRevision = 0;
 const rendererErrors = [];
 let sharedQueue = Promise.resolve(), sharedMutations = 0, quitting = false;
@@ -70,9 +71,9 @@ async function broadcastAllStates() { await Promise.allSettled([...windows.value
 async function readSessionForContext(id) {
   for (;;) {
     const revision = sessionRenameRevision;
-    if (sessionRenameLocks.has(id)) throw new Error('此会话正在重命名，请稍后重试。');
+    if (sessionRenameLocks.has(id) || sessionDeleteLocks.has(id)) throw new Error('此会话正在更新，请稍后重试。');
     const loaded = await store.getSession(id);
-    if (sessionRenameLocks.has(id)) throw new Error('此会话正在重命名，请稍后重试。');
+    if (sessionRenameLocks.has(id) || sessionDeleteLocks.has(id)) throw new Error('此会话正在更新，请稍后重试。');
     // A read begun before the atomic title update may complete afterwards.
     if (revision === sessionRenameRevision) return loaded;
   }
@@ -396,6 +397,7 @@ function sessionMetricsSnapshot(session) {
 }
 function requireIdle() {
   if (activeRun) throw new Error('请先停止正在执行的任务。');
+  if (sessionDeleteLocks.has(currentSession?.id)) throw new Error('此会话正在删除，请稍后重试。');
   if (sessionRenameLocks.has(currentSession?.id)) throw new Error('此会话正在重命名，请稍后重试。');
 }
 function requireTools({ allowDuringUndo = false } = {}) { if (!tools) throw new Error('请先打开本地项目。'); if (!allowDuringUndo && persistentTaskUndo.isProjectBusy(tools.root)) throw new Error('此项目正在撤销或恢复修改，请稍后再操作文件。'); return tools; }
@@ -583,7 +585,7 @@ async function state() {
   const context = await catalogContext({}, account);
   metricsConnectionKey = context.key;
   reconcileReasoningSelection(context);
-  const sessions = await store.listSessions();
+  const sessions = (await store.listSessions()).filter(session => !recentProjects?.isHidden(session.workspace));
   const history = new Map(sessions.map(session => [projectIdentity(session.workspace), session]));
   const projects = (recentProjects?.list() || []).map(project => ({ ...project, ...(history.get(projectIdentity(project.path)) ? { sessionId: history.get(projectIdentity(project.path)).id } : {}) }));
   const sessionMetrics = sessionMetricsSnapshot(currentSession);
@@ -593,7 +595,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -1205,6 +1207,58 @@ function buildHandlers() {
       await createSession({ temporary: arg?.temporary === true }); await broadcastAllStates();
       return { id: currentSession.id, title: store.sessionTitle(currentSession), temporary: currentSession.temporary === true };
     },
+    deleteSession: async arg => {
+      requireIdle(); requireEditorSettled();
+      if (sessionDeleteLocks.size) throw new Error('正在删除会话记录，请稍后重试。');
+      if (!arg || typeof arg !== 'object' || Array.isArray(arg) || Object.keys(arg).some(key => key !== 'id')
+        || typeof arg.id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(arg.id)) throw new Error('会话删除参数无效。');
+      if (sessionDeleteLocks.has(arg.id) || sessionRenameLocks.has(arg.id)) throw new Error('此会话正在更新，请稍后重试。');
+      sessionDeleteLocks.add(arg.id);
+      try {
+        const target = currentSession?.id === arg.id && currentSession.temporary === true ? currentSession : await store.getSession(arg.id);
+        const identity = root => root ? projectIdentity(root) : null;
+        if (identity(target.workspace) !== identity(tools?.root || null)) throw new Error('只能删除当前项目的会话。');
+        const peers = [...windows.values()].flatMap(value => [...value.contexts]).filter(value => value.currentSession?.id === arg.id);
+        if (peers.some(value => value.editorDirty || value.hasFileOperation || value.hasPendingPrompts || value !== context && value.busy))
+          throw new Error('此会话正在另一个窗口处理任务或保存文件，请等待结束后再删除。');
+        await store.validateSessionDeletion(arg.id, target.workspace, { temporary: target.temporary === true });
+        let replacement;
+        if (peers.length) {
+          for (const row of await store.listProjectSessions(target.workspace)) {
+            if (row.id === arg.id) continue;
+            try { replacement = await readSessionForContext(row.id); break; } catch { /* Skip unavailable histories. */ }
+          }
+          if (!replacement) {
+            replacement = store.createSession(target.workspace); replacement.usageLedgerVersion = 1;
+            await persistentTaskUndo.loadSession(replacement); await store.saveSession(replacement);
+          }
+        }
+        const undoDeletion = await persistentTaskUndo.deleteSession(arg.id);
+        try { await store.deleteSession(arg.id, target.workspace, { temporary: target.temporary === true }); }
+        catch (error) {
+          try { await undoDeletion.rollback(); }
+          catch { throw new Error('会话删除失败，撤销记录恢复也未成功，请保留本机数据后重试。'); }
+          throw error;
+        }
+        ++sessionRenameRevision;
+        try { await sessionRestore.forgetSession(arg.id); } catch (error) { emit({ type: 'storage-error', error: error.message }); }
+        for (const peer of peers) await peer.replaceDeletedSession(arg.id, replacement);
+        const observers = [...windows.values()].flatMap(value => [...value.contexts])
+          .filter(value => identity(value.tools?.root || value.currentSession?.workspace || null) === identity(target.workspace));
+        for (const observer of observers) observer.emit({ type: 'session-deleted', deletedId: arg.id,
+          state: await observer.state(), session: observer.publicCurrentSession() });
+        await broadcastAllStates();
+        return { deletedId: arg.id, state: await state(), session: publicSession(currentSession) };
+      } finally { sessionDeleteLocks.delete(arg.id); }
+    },
+    removeRecentProject: async arg => {
+      if (!arg || typeof arg !== 'object' || Array.isArray(arg) || Object.keys(arg).some(key => key !== 'path') || typeof arg.path !== 'string') throw new Error('最近项目参数无效。');
+      const visible = await state(), identity = projectIdentity(arg.path);
+      if (recentProjects.isHidden(arg.path) || ![...visible.recentProjects.map(item => item.path), ...visible.sessions.map(item => item.workspace),
+        ...visible.openWorkspaces.map(item => item.root)].filter(Boolean).some(root => projectIdentity(root) === identity)) throw new Error('最近项目记录已变化，请刷新后重试。');
+      await recentProjects.remove(arg.path); await broadcastAllStates();
+      return state();
+    },
     renameSession: async arg => {
       requireIdle();
       if (!arg || typeof arg !== 'object' || Array.isArray(arg) || typeof arg.id !== 'string' || arg.id !== currentSession?.id) throw new Error('当前会话已切换，请重新打开重命名。');
@@ -1300,7 +1354,7 @@ function buildHandlers() {
       });
     };
   }
-  for (const name of ['getSession', 'newSession', 'renameSession', 'runTask', 'undoLastChange', 'undoRunChanges', 'redoRunChanges', 'runTerminal']) {
+  for (const name of ['getSession', 'newSession', 'renameSession', 'deleteSession', 'runTask', 'undoLastChange', 'undoRunChanges', 'redoRunChanges', 'runTerminal']) {
     const handler = handlers[name];
     handlers[name] = async arg => {
       if (shuttingDown) throw new Error('窗口正在关闭，请在新窗口继续操作。');
@@ -1418,6 +1472,12 @@ const context = {
     if (localOperation || promptPreflights || fileOperationDone) throw new Error('正在保存文件或准备消息，请稍后切换项目。');
   },
   publicCurrentSession: () => publicSession(currentSession),
+  async replaceDeletedSession(id, replacement) {
+    if (currentSession?.id !== id) return;
+    currentSession = structuredClone(replacement); loadedSnapshot = true;
+    await persistentTaskUndo.loadSession(currentSession);
+    await rememberSessionSelection();
+  },
   rememberSelection: rememberSessionSelection,
   activateProjectLocal,
   refreshBrowserVisibility: () => browser?.applyLayout(),
@@ -1564,7 +1624,7 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
-  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1840,6 +1900,7 @@ async function smokeTest() {
   result.permissions = await require('./core/smoke-permissions.cjs')({ win, output, dataDir });
   result.scroll = await require('./core/smoke-scroll.cjs')({ win, output, dataDir });
   result.projectSessions = await require('./core/smoke-sessions.cjs')({ win, output, dataDir });
+  result.historyDelete = await require('./core/smoke-history-delete.cjs')({ win, output, dataDir, store });
   result.usageAnalytics = await require('./core/smoke-usage-analytics.cjs')({ win, output, dataDir, store });
   result.compaction = await require('./core/smoke-compaction.cjs')({ win, output, dataDir });
   result.apiProtocol = await require('./core/smoke-api-protocol.cjs')({ win, output, dataDir });

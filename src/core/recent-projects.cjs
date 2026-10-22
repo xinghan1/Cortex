@@ -54,6 +54,7 @@ class RecentProjects {
   #file;
   #now;
   #projects = [];
+  #hidden = [];
   #initializing;
   #queue = Promise.resolve();
   #writable = true;
@@ -72,6 +73,8 @@ class RecentProjects {
   // False means loading was unsafe; this instance will never replace that file.
   get writable() { return this.#writable; }
   list() { return this.#projects.map(project => ({ ...project })); }
+  hidden() { return [...this.#hidden]; }
+  isHidden(value) { try { return this.#hidden.some(item => projectPath(item).key === projectPath(value).key); } catch { return false; } }
 
   init() {
     if (!this.#initializing) this.#initializing = (async () => {
@@ -81,6 +84,11 @@ class RecentProjects {
         const value = JSON.parse(await fs.readFile(this.#file, 'utf8'));
         if (!value || value.version !== 1 || Array.isArray(value)) throw new Error('Invalid recent-project version');
         this.#projects = normalizeRecords(value.projects);
+        if (value.hidden !== undefined) {
+          if (!Array.isArray(value.hidden) || value.hidden.length > 1000) throw new Error('Invalid hidden project list');
+          this.#hidden = [...new Map(value.hidden.map(item => { const project = projectPath(item); return [project.key, project.path]; })).values()];
+          this.#projects = this.#projects.filter(item => !this.isHidden(item.path));
+        }
       } catch (error) {
         if (error.code !== 'ENOENT') {
           this.#writable = false;
@@ -102,15 +110,37 @@ class RecentProjects {
       catch { throw recentError('最近项目打开时间无效。', 'RECENT_PROJECTS_INVALID_TIME'); }
       const next = [{ path: project.path, name: project.name, lastOpenedAt: opened }, ...this.#projects.filter(item => projectPath(item.path).key !== project.key)]
         .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt)).slice(0, MAX_PROJECTS);
+      const hidden = this.#hidden.filter(item => projectPath(item).key !== project.key);
+      return this.#save(next, hidden);
+    });
+    this.#queue = operation.catch(() => {});
+    return operation;
+  }
+
+  async remove(absoluteRoot) {
+    const project = projectPath(absoluteRoot);
+    const operation = this.#queue.then(async () => {
+      await this.init();
+      if (!this.#writable) throw recentError(this.#error, 'RECENT_PROJECTS_READ_ONLY');
+      const next = this.#projects.filter(item => projectPath(item.path).key !== project.key);
+      const hidden = [project.path, ...this.#hidden.filter(item => projectPath(item).key !== project.key)].slice(0, 1000);
+      return this.#save(next, hidden);
+    });
+    this.#queue = operation.catch(() => {});
+    return operation;
+  }
+
+  async #save(next, hidden) {
       const temporary = path.join(this.#dir, '.projects-' + randomUUID() + '.tmp');
       try {
         await fs.mkdir(this.#dir, { recursive: true });
         if ((await fs.lstat(this.#dir)).isSymbolicLink()) throw new Error('Invalid data directory');
         const current = await fs.lstat(this.#file).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
         if (current && (!current.isFile() || current.isSymbolicLink())) throw new Error('Invalid recent-project destination');
-        await fs.writeFile(temporary, JSON.stringify({ version: 1, projects: next }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        await fs.writeFile(temporary, JSON.stringify({ version: 1, projects: next, ...(hidden.length ? { hidden } : {}) }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
         await fs.rename(temporary, this.#file);
         this.#projects = next;
+        this.#hidden = hidden;
         this.#error = null;
         return this.list();
       } catch {
@@ -119,9 +149,6 @@ class RecentProjects {
       } finally {
         try { await fs.unlink(temporary); } catch { /* Renamed successfully or never created. */ }
       }
-    });
-    this.#queue = operation.catch(() => {});
-    return operation;
   }
 }
 

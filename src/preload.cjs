@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   getSession: (arg) => call('getSession', arg),
   newSession: arg => call('newSession', arg),
   renameSession: arg => call('renameSession', arg),
+  deleteSession: arg => call('deleteSession', arg),
+  removeRecentProject: arg => call('removeRecentProject', arg),
   undoLastChange: () => call('undoLastChange'),
   openPath: (arg) => call('openPath', arg),
   onEvent: (callback) => {

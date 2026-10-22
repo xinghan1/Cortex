@@ -25,7 +25,7 @@ function selection(value) {
 // Store; restoring a selection never resumes a task, tool or pending approval.
 class SessionRestore {
   #dir; #file; #fs; #value = { version: 1, current: null, projects: [] };
-  #initializing; #queue = Promise.resolve(); #pending = 0; #writable = true; #error = null; #missing = false;
+  #initializing; #queue = Promise.resolve(); #pending = 0; #writable = true; #error = null; #missing = false; #forgotten = new Set();
   constructor(dataDir, { filesystem = fs } = {}) {
     this.#dir = path.resolve(dataDir); this.#file = path.join(this.#dir, 'startup-session.json'); this.#fs = filesystem;
   }
@@ -55,7 +55,7 @@ class SessionRestore {
     })();
   }
   record(session, { active = true } = {}) {
-    if (!session || session.temporary === true) return Promise.resolve(false);
+    if (!session || session.temporary === true || this.#forgotten.has(session.id)) return Promise.resolve(false);
     let next;
     try { next = selection({ workspace: session.workspace, sessionId: session.id }); }
     catch { return Promise.resolve(false); }
@@ -67,6 +67,26 @@ class SessionRestore {
         ...this.#value.projects.filter(item => identity(item.workspace) !== identity(next.workspace))].slice(0, MAX_PROJECTS);
       const value = { version: 1, current: active ? next : this.#value.current, projects };
       if (JSON.stringify(value) === JSON.stringify(this.#value)) return true;
+      return this.#save(value);
+    }).finally(() => { this.#pending--; });
+    this.#queue = operation.catch(() => {});
+    return operation;
+  }
+  forgetSession(id) {
+    if (!UUID.test(id)) return Promise.reject(new Error('恢复会话 ID 无效。'));
+    this.#forgotten.add(id); this.#pending++;
+    const operation = this.#queue.then(async () => {
+      await this.init();
+      if (!this.#writable) throw new Error(this.#error);
+      const value = { version: 1, current: this.#value.current?.sessionId === id ? null : this.#value.current,
+        projects: this.#value.projects.filter(item => item.sessionId !== id) };
+      if (JSON.stringify(value) === JSON.stringify(this.#value)) return true;
+      return this.#save(value);
+    }).finally(() => { this.#pending--; });
+    this.#queue = operation.catch(() => {});
+    return operation;
+  }
+  async #save(value) {
       const temporary = path.join(this.#dir, '.startup-session-' + randomUUID() + '.tmp');
       try {
         await this.#fs.mkdir(this.#dir, { recursive: true });
@@ -81,9 +101,6 @@ class SessionRestore {
         this.#error = '上次会话选择保存失败，已保留上次成功记录。';
         throw new Error(this.#error);
       } finally { await this.#fs.unlink(temporary).catch(() => {}); }
-    }).finally(() => { this.#pending--; });
-    this.#queue = operation.catch(() => {});
-    return operation;
   }
   async flush() {
     // A late focus event may enqueue another selection while an earlier

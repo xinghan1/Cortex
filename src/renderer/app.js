@@ -48,10 +48,6 @@ let chatgptBusy = false;
 let chatgptAction = null;
 let chatgptCancelling = false;
 let chatgptLocalError = '';
-let chatgptUsageProfileId = null;
-let chatgptUsagePositionRule = null;
-let chatgptUsageTimer = null;
-let chatgptUsageOpening = false;
 let currentCatalog = null;
 let currentCatalogKey = '';
 let catalogRequest = 0;
@@ -112,6 +108,7 @@ let explorerMovePending = false;
 let explorerSelection = null;
 const EXPLORER_DRAG_TYPE = 'application/x-synora-file';
 let projectSwitching = false;
+let recentProjectRemoving = false;
 let fileClipboard = null;
 let fileNameRequest = null;
 let unsavedDecision = null;
@@ -366,7 +363,6 @@ function restoreWorkspaceDraft() {
 
 function activateWorkspace(state, session) {
   if (!state) return;
-  closeChatGPTUsage();
   if (fileNameRequest) answerFileName(null);
   saveWorkspaceDraft();
   ++filesRequest;
@@ -1360,123 +1356,6 @@ function chatgptDisplayMessages(values) {
   return messages;
 }
 
-function closeChatGPTUsage(restoreFocus = false) {
-  clearInterval(chatgptUsageTimer);
-  chatgptUsageTimer = null;
-  if ($('chatgpt-usage-popover').open) $('chatgpt-usage-popover').close();
-  $('chatgpt-usage-button').setAttribute('aria-expanded', 'false');
-  if (restoreFocus && !$('chatgpt-usage-control').hidden) $('chatgpt-usage-button').focus({ preventScroll: true });
-}
-
-function positionChatGPTUsage() {
-  const popup = $('chatgpt-usage-popover');
-  if (!popup.open) return;
-  if (!chatgptUsagePositionRule) {
-    for (const sheet of document.styleSheets) {
-      try {
-        const rule = [...sheet.cssRules].find(candidate => candidate.selectorText === '#chatgpt-usage-popover');
-        if (rule) { chatgptUsagePositionRule = rule; break; }
-      } catch { /* Only the local application stylesheets are inspected. */ }
-    }
-  }
-  if (!chatgptUsagePositionRule) return;
-  const anchor = $('chatgpt-usage-button').getBoundingClientRect();
-  const bounds = popup.getBoundingClientRect();
-  chatgptUsagePositionRule.style.setProperty('left', `${Math.max(12, Math.min(anchor.left, innerWidth - bounds.width - 12))}px`);
-  chatgptUsagePositionRule.style.setProperty('top', `${Math.max(12, Math.min(anchor.top - bounds.height - 8, innerHeight - bounds.height - 12))}px`);
-}
-
-function renderChatGPTUsage() {
-  const session = appState?.chatgpt?.session || {};
-  const visible = appState?.settings?.provider === 'openai' && currentAuthMode() === 'chatgpt' && session.status === 'connected';
-  const profileId = visible ? session.profileId || '' : null;
-  if (profileId !== chatgptUsageProfileId || !visible) closeChatGPTUsage();
-  chatgptUsageProfileId = profileId;
-  $('chatgpt-usage-control').hidden = !visible;
-  $('chatgpt-usage-button').disabled = isChatGPTBusy();
-  $('chatgpt-usage-official').disabled = chatgptUsageOpening || isChatGPTBusy();
-  if (!visible) {
-    $('chatgpt-usage-label').textContent = '查看额度';
-    $('chatgpt-usage-status').textContent = '';
-    $('chatgpt-usage-checked').textContent = '';
-    $('chatgpt-usage-checked').hidden = true;
-    $('chatgpt-usage-source').textContent = '';
-    $('chatgpt-usage-button').title = 'ChatGPT 使用情况';
-    delete $('chatgpt-usage-button').dataset.status;
-    delete $('chatgpt-usage-popover').dataset.status;
-    delete $('chatgpt-usage-popover').dataset.stale;
-    return;
-  }
-  const usage = appState?.chatgpt?.usage || {};
-  const statuses = {
-    not_authorized: ['未授权', '尚未授权使用 ChatGPT 套餐用量'],
-    unknown: ['查看额度', '暂未获取请求状态'],
-    request_succeeded: ['最近请求可用', '最近请求可用'],
-    limit_reached: ['用量达到限制', '用量达到限制'],
-    unavailable: ['暂不可用', '暂不可用'],
-    not_eligible: ['套餐不可用', '套餐不可用']
-  };
-  const status = session.sharing !== true ? 'not_authorized' : Object.hasOwn(statuses, usage.status) ? usage.status : 'unknown';
-  const official = usage.source === 'official_response';
-  const checked = official && typeof usage.checkedAt === 'string' ? new Date(usage.checkedAt) : null;
-  const validDate = checked && Number.isFinite(checked.getTime());
-  const stale = usage.stale === true || Boolean(validDate && Date.now() - checked.getTime() >= 5 * 60 * 1000);
-  const oldLabels = { request_succeeded: '上次请求可用', limit_reached: '上次达到限制', unavailable: '上次不可用', not_eligible: '上次套餐不可用', unknown: '上次状态未知' };
-  const label = stale ? oldLabels[status] || statuses[status][0] : statuses[status][0];
-  const detail = `${stale ? '上次状态：' : ''}${statuses[status][1]}`;
-  $('chatgpt-usage-label').textContent = label;
-  $('chatgpt-usage-status').textContent = detail;
-  $('chatgpt-usage-message').textContent = '当前账号接口未提供剩余额度，可在官方页面查看。';
-  $('chatgpt-usage-checked').hidden = !validDate;
-  $('chatgpt-usage-checked').textContent = validDate ? `状态时间：${new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Hong_Kong', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(checked)}` : '';
-  $('chatgpt-usage-source').textContent = official ? '来自官方模型请求，不代表剩余额度。' : '当前连接未返回官方用量信息。';
-  $('chatgpt-usage-button').title = `${detail}。当前账号接口未提供剩余额度。`;
-  $('chatgpt-usage-button').dataset.status = status;
-  $('chatgpt-usage-popover').dataset.status = status;
-  $('chatgpt-usage-popover').dataset.stale = String(stale);
-  positionChatGPTUsage();
-}
-
-function bindChatGPTUsage() {
-  const popup = $('chatgpt-usage-popover');
-  $('chatgpt-usage-button').addEventListener('click', () => {
-    if (popup.open) { closeChatGPTUsage(true); return; }
-    renderChatGPTUsage();
-    if ($('chatgpt-usage-control').hidden) return;
-    closeReasoningPopup();
-    closeProjectDropdown();
-    closeFileContextMenu();
-    sessionControls?.close();
-    popup.show();
-    $('chatgpt-usage-button').setAttribute('aria-expanded', 'true');
-    positionChatGPTUsage();
-    chatgptUsageTimer = setInterval(renderChatGPTUsage, 30000);
-    $('chatgpt-usage-official').focus({ preventScroll: true });
-  });
-  $('chatgpt-usage-close').addEventListener('click', () => closeChatGPTUsage(true));
-  popup.addEventListener('cancel', event => { event.preventDefault(); closeChatGPTUsage(true); });
-  document.addEventListener('pointerdown', event => {
-    if (popup.open && !$('chatgpt-usage-control').contains(event.target)) closeChatGPTUsage();
-  });
-  document.addEventListener('keydown', event => {
-    if (popup.open && event.key === 'Escape') {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      closeChatGPTUsage(true);
-    }
-  }, true);
-  window.addEventListener('resize', positionChatGPTUsage);
-  $('chatgpt-usage-official').addEventListener('click', async () => {
-    if (chatgptUsageOpening) return;
-    const profileId = chatgptUsageProfileId;
-    chatgptUsageOpening = true;
-    renderChatGPTUsage();
-    try { await bridge.chatgptOpenUsage(); }
-    catch (error) { if (profileId === chatgptUsageProfileId) notice(errorText(error), true); }
-    finally { chatgptUsageOpening = false; renderChatGPTUsage(); }
-  });
-}
-
 function renderChatGPTState() {
   restoreChatGPTControls();
   const chatgpt = appState?.chatgpt || {};
@@ -1521,7 +1400,6 @@ function renderChatGPTState() {
   $('chatgpt-message').hidden = !messages.length;
   syncAuthModeVisibility();
   renderChatGPTModels();
-  renderChatGPTUsage();
   refreshControlLocks();
 }
 
@@ -2642,6 +2520,7 @@ function renderProjectDropdown(sessions = []) {
   current.replaceChildren();
   recent.replaceChildren();
   const projects = new Map();
+  const hiddenProjects = new Set((appState?.hiddenRecentProjects || []).map(workspaceIdentity));
   for (const project of appState?.recentProjects || []) if (project.path) projects.set(workspaceIdentity(project.path), { ...project });
   for (const session of sessions) {
     const path = workspacePath(session.workspace);
@@ -2665,6 +2544,7 @@ function renderProjectDropdown(sessions = []) {
     projects.set(rootKey, project);
   }
   const projectButton = (project) => {
+    const row = element('div', 'recent-project-row'); row.setAttribute('role', 'none');
     const button = element('button', `recent-project${project.current ? ' active' : ''}`);
     button.type = 'button';
     button.setAttribute('role', 'menuitem');
@@ -2688,14 +2568,41 @@ function renderProjectDropdown(sessions = []) {
     button.append(icon, copy);
     if (project.current) button.append(element('span', 'project-current-check', '✓'));
     button.addEventListener('click', () => openRecentProject(project));
-    return button;
+    row.append(button);
+    if (!project.current) {
+      const remove = element('button', 'history-delete-button recent-project-delete'); remove.type = 'button';
+      remove.dataset.removeProjectPath = project.path; remove.setAttribute('role', 'menuitem');
+      remove.setAttribute('aria-label', `从最近项目中移除：${project.name || baseName(project.path)}`); remove.title = '从最近项目中移除';
+      const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6'); icon.append(path); remove.append(icon);
+      remove.disabled = recentProjectRemoving || projectTransitionBusy() || isChatGPTBusy() || typeof bridge?.removeRecentProject !== 'function';
+      remove.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void removeRecentProject(project.path); });
+      row.append(remove);
+    }
+    return row;
   };
-  const values = [...projects.values()];
+  const values = [...projects.values()].filter(project => project.current || !hiddenProjects.has(workspaceIdentity(project.path)));
   for (const project of values) (project.current ? current : recent).append(projectButton(project));
   $('project-current-section').hidden = !root;
   if (!values.some((project) => !project.current)) recent.append(element('p', 'recent-project-empty', '打开过的项目和历史会话会显示在这里。'));
   $('project-open').disabled = projectTransitionBusy() || isChatGPTBusy();
   $('project-create').disabled = projectTransitionBusy() || isChatGPTBusy();
+}
+
+async function removeRecentProject(path) {
+  if (recentProjectRemoving || projectTransitionBusy() || isChatGPTBusy()) return;
+  recentProjectRemoving = true;
+  const workspaceId = currentWorkspaceId();
+  renderProjectDropdown(appState?.sessions || []);
+  try {
+    const state = await bridge.removeRecentProject({ path });
+    if (workspaceId === currentWorkspaceId() && state && belongsToCurrentWorkspace(state)) updateState(state);
+  } catch (error) { if (workspaceId === currentWorkspaceId()) notice(errorText(error), true); }
+  finally {
+    recentProjectRemoving = false;
+    renderProjectDropdown(appState?.sessions || []);
+    if (!$('project-dropdown').hidden) ($('session-list').querySelector('button.recent-project:not(:disabled)') || $('project-open')).focus({ preventScroll: true });
+  }
 }
 
 async function openRecentProject(project) {
@@ -3317,6 +3224,30 @@ async function loadSession(id) {
   } catch (error) { notice(errorText(error), true); }
 }
 
+function applySessionDeletion(result) {
+  const deletedId = result?.deletedId;
+  if (!deletedId || !result.state || !belongsToCurrentWorkspace(result.state)) return;
+  const selectedWasDeleted = sessionId === deletedId;
+  if (selectedWasDeleted) ++sessionRequest;
+  navigationEntries = navigationEntries.filter(entry => entry.id !== deletedId && entry.sessionId !== deletedId);
+  navigationIndex = Math.min(navigationIndex, navigationEntries.length - 1);
+  if (selectedWasDeleted && result.session?.id) sessionId = result.session.id;
+  updateState(result.state);
+  if (selectedWasDeleted && result.session?.id) renderSessionSnapshot(result.session);
+  sessionControls?.remove(deletedId);
+  notifyMenuState();
+}
+
+async function deleteSessionRecord(id) {
+  if (contextBusy() || isChatGPTBusy()) return false;
+  if ((editorDirty || editorSavePromise) && !(await confirmEditorTransition())) return false;
+  if (contextBusy() || isChatGPTBusy()) return false;
+  const workspaceId = currentWorkspaceId();
+  const result = await bridge.deleteSession({ id });
+  if (workspaceId === currentWorkspaceId()) applySessionDeletion(result);
+  return result;
+}
+
 function appendContextCompactionNotice(event, target = taskProcessTarget()) {
   const key = `${event.runId || ''}:${event.count || 0}:${event.throughIndex || 0}:${event.messageIndex || 0}`;
   if (contextCompactionNotices.has(key)) return;
@@ -3883,6 +3814,7 @@ function handleEvent(event) {
       setTaskActivityPhase('tool', `已按权限自动批准：${event.title || event.action || '操作'}`);
       break;
     case 'state': updateState(event.state); break;
+    case 'session-deleted': applySessionDeletion(event); break;
     case 'session-metrics':
       if (!event.sessionId || event.sessionId === appState?.sessionId) {
         appState = { ...appState, sessionMetrics: event.metrics };
@@ -4177,7 +4109,6 @@ function bindUI() {
   initializeTextScaling();
   initializeSidebarSizing();
   bindImageAttachments();
-  bindChatGPTUsage();
   bindRangeAnimation($('reasoning-effort'));
   $('open-workspace-sidebar').addEventListener('click', openWorkspace);
   $('refresh-files').addEventListener('click', loadFiles);
@@ -4320,7 +4251,7 @@ async function initialize() {
   }
   browserController = window.ForgeBrowser.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, showPanel: () => { if (!previewPinned) setPreviewPinned(true); setPreviewOpen(true); showPreviewTab('browser'); }, notice });
   permissionControls = window.ForgePermissions.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, notice, onOpen: () => fetchCurrentCatalog() });
-  sessionControls = window.ForgeSessions.create({ bridge, onSelect: loadSession, onNew: () => newSession(), notice });
+  sessionControls = window.ForgeSessions.create({ bridge, onSelect: loadSession, onNew: () => newSession(), onDelete: deleteSessionRecord, notice });
   bridge.onEvent(handleEvent);
   try {
     const version = taskStateVersion;

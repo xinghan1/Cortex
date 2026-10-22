@@ -1,7 +1,7 @@
 /* Keep native select values/forms and enhance only their option presentation. */
 (() => {
   'use strict';
-  const surfaces = '.project-dropdown,.session-dropdown,.permission-popup,.reasoning-popup,.model-list-panel,.app-menu-popup,.file-context-menu,.context-settings-popup,.chatgpt-usage-popover';
+  const surfaces = '.project-dropdown,.session-dropdown,.permission-popup,.reasoning-popup,.model-list-panel,.app-menu-popup,.file-context-menu,.context-settings-popup';
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const tracked = new Map(), enhanced = new WeakSet(), ghosts = new Set();
   let active = null, serial = 0, typeBuffer = '', typedAt = 0;
@@ -19,7 +19,7 @@
     'project-dropdown': '#project-switcher', 'session-dropdown': '#session-menu-button',
     'permission-popup': '#permission-trigger', 'reasoning-popup': '#model-reasoning-trigger',
     'model-list-panel': '#model-reasoning-trigger', 'context-settings-popup': '#session-context-trigger',
-    'chatgpt-usage-popover': '#chatgpt-usage-button', 'app-menu-popup': '#app-menu-bar [aria-expanded="true"]',
+    'app-menu-popup': '#app-menu-bar [aria-expanded="true"]',
     'app-menu-submenu': '#app-menu-popup [aria-haspopup="menu"][aria-expanded="true"]',
     'file-context-menu': '#file-tree .file-row.selected',
   };

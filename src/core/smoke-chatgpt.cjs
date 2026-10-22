@@ -30,19 +30,11 @@ module.exports = async function smokeChatGPT({ win, store, getConnection, setCon
   const js = code => win.webContents.executeJavaScript(code);
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => { const end=Date.now()+10000;while(Date.now()<end){const value=await predicate();if(value)return value;await wait(25);}throw new Error('Account usage smoke timed out: '+label); };
-  const usageVisible = () => js("!document.getElementById('chatgpt-usage-control').hidden");
-  const label = () => js("document.getElementById('chatgpt-usage-label').textContent");
+  const usageVisible = () => js("Boolean(document.querySelector('#chatgpt-usage-control,#chatgpt-usage-button,#chatgpt-usage-popover'))");
+  const accountUsage = async () => (await js('window.forge.getState()')).chatgpt.usage;
   const setUsage = async (next, stale=false) => { usage={status:next,source:['request_succeeded','limit_reached','unavailable','not_eligible'].includes(next)?'official_response':'unavailable',checkedAt:next==='unknown'?null:new Date().toISOString(),stale};await broadcastState(); };
-  const openUsage = async () => {
-    await js("(()=>{const button=document.getElementById('chatgpt-usage-button');if(button.disabled||document.getElementById('chatgpt-usage-control').hidden)throw new Error('Account usage button unavailable');button.click();return true;})()");
-    await until('usage popover opened', () => js("document.getElementById('chatgpt-usage-popover').open"));
-    const text = await js("document.getElementById('chatgpt-usage-popover').textContent");
-    if(!text.includes('未提供剩余额度'))throw new Error('Account usage incorrectly implied a known remaining allowance');
-    if(/\d(?:\.\d+)?\s*[%％]|(?:剩余|已用)\s*\d|(?:重置|恢复)\s*\d/u.test(text))throw new Error('Account usage fabricated a percentage or reset value');
-    return text;
-  };
-  const closeUsage = () => js("document.getElementById('chatgpt-usage-close').click()");
-  const captureUsage = async () => { win.webContents.invalidate();await wait(100);await fs.writeFile(path.join(output,'chatgpt-account-usage.png'),(await win.webContents.capturePage()).toPNG()); };
+  const assertUsageRemoved = async () => { if(await usageVisible())throw new Error('Removed composer account usage control or popup remains'); };
+  const captureUsage = async () => { win.webContents.invalidate();await wait(100);await fs.writeFile(path.join(output,'chatgpt-account-composer.png'),(await win.webContents.capturePage()).toPNG()); };
   const server = http.createServer(async (request, response) => {
     try {
       let data = ''; for await (const chunk of request) data += chunk;
@@ -127,9 +119,10 @@ module.exports = async function smokeChatGPT({ win, store, getConnection, setCon
     const returned=await win.webContents.executeJavaScript(`window.forge.getSession({id:${JSON.stringify(accountA.sessionId)}})`);
     if(JSON.stringify(returned).includes('providerState')||JSON.stringify(returned).includes('smoke-private-native-state')) throw new Error('Native reasoning state exposed to renderer');
     if(!bodies[1]?.input.some(item=>item.type==='reasoning'&&item.encrypted_content==='smoke-private-native-state')) throw new Error('Account reasoning state not replayed');
-    await setUsage('limit_reached');await until('account A limit label',async()=>/达到限制/u.test(await label()));await openUsage();
+    await setUsage('limit_reached');await assertUsageRemoved();
+    if((await accountUsage()).status!=='limit_reached')throw new Error('Account status was lost when removing the usage control');
     await win.webContents.executeJavaScript(`window.forge.chatgptSelectProfile({id:'smoke-profile-b'})`);
-    await until('profile switch clears previous usage',async()=>await label()==='查看额度'&&await js("!document.getElementById('chatgpt-usage-popover').open"));
+    await until('profile switch clears previous usage',async()=>(await accountUsage()).status==='unknown'&&!(await usageVisible()));
     if((await js('window.forge.getState()')).chatgpt.usage.checkedAt!==null)throw new Error('Profile switch retained the previous account check time');
     const accountB=await run('SMOKE_ACCOUNT_B_CONTEXT');
     if(accountB.sessionId===accountA.sessionId||JSON.stringify(bodies[2].input).includes('SMOKE_ACCOUNT_A_CONTEXT')) throw new Error('Account switch reused another account context');
@@ -137,26 +130,29 @@ module.exports = async function smokeChatGPT({ win, store, getConnection, setCon
     const reopened=await run('SMOKE_ACCOUNT_B_REOPENED');
     if(reopened.sessionId===accountA.sessionId||JSON.stringify(bodies[3].input).includes('SMOKE_ACCOUNT_A_CONTEXT')) throw new Error('Loaded account history bypassed account isolation');
     if(rounds!==4||failures.length) throw new Error('Account mock rounds failed: '+failures.join(', '));
-    await setUsage('unknown');await until('unknown usage label',async()=>await label()==='查看额度');await openUsage();await closeUsage();
-    await setUsage('request_succeeded');await until('success usage label',async()=>await label()==='最近请求可用');await openUsage();await closeUsage();
-    await setUsage('request_succeeded',true);await until('stale usage label',async()=>await label()==='上次请求可用');if(!(await openUsage()).includes('上次'))throw new Error('Stale response status was presented as current');await closeUsage();
-    await setUsage('limit_reached');await until('limit usage label',async()=>await label()==='用量达到限制');await openUsage();await closeUsage();
-    await setUsage('unavailable');await until('unavailable usage label',async()=>await label()==='暂不可用');await openUsage();await closeUsage();
-    await setUsage('not_eligible');await until('ineligible usage label',async()=>await label()==='套餐不可用');await openUsage();await closeUsage();
+    for(const next of ['unknown','request_succeeded','limit_reached','unavailable','not_eligible']) {
+      await setUsage(next);await assertUsageRemoved();
+      if((await accountUsage()).status!==next)throw new Error('Internal account status changed unexpectedly');
+    }
+    await setUsage('request_succeeded',true);await assertUsageRemoved();
+    if((await accountUsage()).stale!==true)throw new Error('Internal stale status was discarded');
+    await js("window.aiCodeCommands.execute('settings')");
+    await js("document.getElementById('chatgpt-open-usage').click()");await until('settings official page stub called',()=>opened.length===1);
+    await until('settings usage action completed',()=>js('!chatgptBusy'));
+    await js("document.getElementById('close-settings').click()");
+    if(!opened[0].includes('/settings/usage'))throw new Error('Official settings usage entry changed');
     await setUsage('unknown');
     const pending = run(runningPrompt);await until('account inference held',()=>heldResponse);
     if(!(await js('window.forge.getState()')).activeTask.running)throw new Error('Running account fixture did not remain active');
-    await openUsage();await captureUsage();
-    await js("document.getElementById('chatgpt-usage-official').click()");await until('official page stub called',()=>opened.length===1);
-    if(!(await js('window.forge.getState()')).activeTask.running||heldResponse.writableEnded)throw new Error('Opening account usage interrupted model inference');
-    if(!opened[0].includes('/settings/usage'))throw new Error('Official usage link did not use the supported settings entry');
+    await assertUsageRemoved();await captureUsage();
+    if(!(await js('window.forge.getState()')).activeTask.running||heldResponse.writableEnded)throw new Error('Checking the composer interrupted model inference');
     heldResponse.end('data: '+JSON.stringify({type:'response.completed',response:{status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:'Account usage interaction did not interrupt this request.'}]}],usage:{input_tokens:5,output_tokens:3}}})+'\n\n');
     await pending;heldResponse=null;
     if(rounds!==5||failures.length)throw new Error('Account usage triggered extra model/quota probes');
     const counted=store.usageStats().day.totalTokens-before;
     if(counted!==40) throw new Error('Account token ledger incorrect');
     await js("window.forge.saveSettings({provider:'openai',authMode:'apiKey',model:'smoke-api-model'})");
-    await until('API mode hides account usage',async()=>!(await usageVisible())&&await js("!document.getElementById('chatgpt-usage-popover').open"));
+    await assertUsageRemoved();
     await js("window.forge.saveSettings({provider:'openai',authMode:'chatgpt',model:'smoke-chatgpt'})");
     await js("window.aiCodeCommands.execute('settings')");
     storageErrorCode='storage_decryption_failed';await broadcastState();
@@ -177,7 +173,7 @@ module.exports = async function smokeChatGPT({ win, store, getConnection, setCon
     win.webContents.invalidate();await wait(100);await fs.writeFile(path.join(output,'chatgpt-local-storage-logout.png'),(await win.webContents.capturePage()).toPNG());
     await until('disconnect hides usage',async()=>!(await usageVisible()));
     if((await js('window.forge.getState()')).chatgpt.usage.status!=='not_connected')throw new Error('Disconnect retained an account usage status');
-    return {status:'completed',modelRounds:rounds,tokensRecorded:counted,disconnectedBlocked:true,sharingRequired:true,accountHistoryIsolated:true,nativeStatePrivate:true,realLogin:false,actualQuotaNotClaimed:true,usageStates:true,staleStatusLabeled:true,apiModeHidesUsage:true,profileUsageIsolated:true,disconnectClearsUsage:true,usagePopoverDuringRun:true,officialUsageLinkStubbed:opened.length,noQuotaProbe:true,storageErrorNotOAuth:true,localRetryWithoutOAuth:true,localLogoutBackupWarning:true,remoteRevocationNotClaimed:true,screenshots:['chatgpt-login.png','chatgpt-account-usage.png','chatgpt-storage-read-error.png','chatgpt-local-storage-logout.png']};
+    return {status:'completed',modelRounds:rounds,tokensRecorded:counted,disconnectedBlocked:true,sharingRequired:true,accountHistoryIsolated:true,nativeStatePrivate:true,realLogin:false,actualQuotaNotClaimed:true,requestStatesKeptInternal:true,staleStatusPreserved:true,composerUsageRemoved:true,profileUsageIsolated:true,disconnectClearsUsage:true,modelInferenceUnaffected:true,settingsOfficialUsageLinkStubbed:opened.length,noQuotaProbe:true,storageErrorNotOAuth:true,localRetryWithoutOAuth:true,localLogoutBackupWarning:true,remoteRevocationNotClaimed:true,screenshots:['chatgpt-login.png','chatgpt-account-composer.png','chatgpt-storage-read-error.png','chatgpt-local-storage-logout.png']};
   } catch (error) {
     console.error('SMOKE_CHATGPT_DIAGNOSTIC', JSON.stringify({ rounds, failures, error: error.message }));
     throw error;

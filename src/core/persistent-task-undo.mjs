@@ -14,7 +14,7 @@ const validChange = value => value && safePath(value.path) && ['before', 'after'
   || typeof value[key] === 'string' && !value[key].includes('\0') && Buffer.byteLength(value[key]) <= 512 * 1024);
 
 export class PersistentTaskUndo {
-  #dir; #crypto; #fs; #legacy; #sessions = new Map(); #loading = new Map(); #queues = new Map(); #busy = new Set(); #pinned = new Set();
+  #dir; #crypto; #fs; #legacy; #sessions = new Map(); #loading = new Map(); #queues = new Map(); #busy = new Set(); #pinned = new Set(); #deleting = new Set(); #deleted = new Set();
   constructor({ dataDir, safeStorage, legacyTaskUndoRuns = () => [], filesystem = fs }) {
     this.#dir = path.join(path.resolve(dataDir), 'task-undo'); this.#crypto = safeStorage; this.#fs = filesystem; this.#legacy = legacyTaskUndoRuns;
   }
@@ -52,7 +52,7 @@ export class PersistentTaskUndo {
   }
   async loadSession(session, { importLegacy = true } = {}) {
     const { id: sessionId, workspace } = session;
-    if (!UUID.test(sessionId) || workspace !== null && typeof workspace !== 'string') throw failure();
+    if (!UUID.test(sessionId) || workspace !== null && typeof workspace !== 'string' || this.#deleting.has(sessionId) || this.#deleted.has(sessionId)) throw failure();
     if (this.#loading.has(sessionId)) return this.#loading.get(sessionId);
     if (this.#sessions.has(sessionId)) {
       const entry = this.#sessions.get(sessionId); if (entry.value.workspace !== workspace) throw failure(); return;
@@ -95,8 +95,31 @@ export class PersistentTaskUndo {
   }
   #entry(sessionId, workspace) {
     const entry = this.#sessions.get(sessionId);
-    if (!entry || entry.blocked || entry.value.workspace !== workspace) throw failure();
+    if (!entry || entry.blocked || entry.value.workspace !== workspace || this.#deleting.has(sessionId) || this.#deleted.has(sessionId)) throw failure();
     return entry;
+  }
+  async deleteSession(sessionId) {
+    if (!UUID.test(sessionId) || [...this.#pinned].some(value => value.startsWith(sessionId + ':')) || this.#deleting.has(sessionId)) throw failure();
+    this.#deleting.add(sessionId);
+    try {
+      await this.#loading.get(sessionId);
+      await this.#queues.get(sessionId);
+      const target = await this.#storage(sessionId, true);
+      const backup = target.stat ? await this.#fs.readFile(target.file) : null;
+      const entry = this.#sessions.get(sessionId);
+      if (target.stat) await this.#fs.unlink(target.file);
+      this.#sessions.delete(sessionId);
+      this.#deleted.add(sessionId);
+      return { rollback: async () => {
+        if (backup) {
+          const current = await this.#storage(sessionId, true);
+          if (current.stat) throw failure();
+          await this.#fs.writeFile(current.file, backup, { flag: 'wx', mode: 0o600 });
+        }
+        if (entry) this.#sessions.set(sessionId, entry);
+        this.#deleted.delete(sessionId);
+      } };
+    } finally { this.#deleting.delete(sessionId); }
   }
   async #save(entry) {
     if (entry.temporary) return;

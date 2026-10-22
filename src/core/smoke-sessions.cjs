@@ -17,8 +17,14 @@ module.exports = async function smokeSessions({ win, output, dataDir }) {
     throw new Error('Session smoke timed out: ' + label);
   };
   const click = async selector => {
-    const point = await js(`(() => {const node=document.querySelector(${JSON.stringify(selector)});if(!node?.checkVisibility())throw new Error('Missing visible session target');node.scrollIntoView({block:'nearest',behavior:'instant'});const r=node.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()`);
-    win.webContents.focus();
+    const point = await until('uncovered session target ' + selector, () => js(`(() => {
+      const node=document.querySelector(${JSON.stringify(selector)});if(!node?.checkVisibility()||node.disabled)return null;
+      const popup=node.closest('#session-dropdown');if(popup?.getAnimations().some(animation=>animation.playState==='running'))return null;
+      node.scrollIntoView({block:'nearest',behavior:'instant'});const r=node.getBoundingClientRect();
+      const p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};
+      return r.width&&r.height&&node.contains(document.elementFromPoint(p.x,p.y))?p:null;})()`));
+    if (!win.webContents.isFocused()) win.webContents.focus();
+    win.webContents.sendInputEvent({ type: 'mouseMove', ...point });
     win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
     win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point });
   };

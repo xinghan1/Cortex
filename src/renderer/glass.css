@@ -577,18 +577,6 @@ button:disabled:hover {
   stroke: #a2c6ff;
 }
 
-.chatgpt-usage-button {
-  border-color: rgb(218 233 255 / 13%);
-  background: rgb(255 255 255 / 5%);
-  color: #c6d8ef;
-}
-
-.chatgpt-usage-button:hover,
-.chatgpt-usage-button[aria-expanded='true'] {
-  background: var(--control-hover);
-  color: #fff;
-}
-
 /* 05 · Code, tools, approvals, and the right pane */
 
 .message-code,
@@ -802,8 +790,7 @@ button:disabled:hover {
 .app-menu-popup,
 .file-context-menu,
 .permission-popup,
-.reasoning-popup,
-dialog.chatgpt-usage-popover {
+.reasoning-popup {
   border-color: rgb(221 234 255 / 24%);
   border-radius: 15px;
   background:
@@ -985,9 +972,7 @@ dialog::backdrop,
 .privacy-note,
 .dialog-footer > span,
 .chatgpt-help,
-.chatgpt-sharing,
-.chatgpt-usage-message,
-.chatgpt-usage-meta {
+.chatgpt-sharing {
   color: #afc0d9;
 }
 
@@ -1024,19 +1009,11 @@ select option {
   background: rgb(255 255 255 / 4%);
 }
 
-.text-button,
-.chatgpt-usage-official {
+.text-button {
   color: #c4dcff;
 }
 
-.chatgpt-usage-official {
-  border-color: var(--line);
-  background: rgb(255 255 255 / 7%);
-}
 
-.chatgpt-usage-official:hover {
-  background: rgb(255 255 255 / 13%);
-}
 
 .appearance-dialog {
   width: 560px;
