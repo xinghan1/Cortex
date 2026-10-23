@@ -1,0 +1,68 @@
+/* The photo layers are decorative and never participate in card sizing. */
+#reasoning-popup[data-deepseek-effort='max'] { --deepseek-photo: url('./assets/deepseek-effort/max.jpg'); }
+#reasoning-popup[data-deepseek-effort='high'] { --deepseek-photo: url('./assets/deepseek-effort/high.jpg'); }
+#reasoning-popup[data-deepseek-effort='low'] { --deepseek-photo: url('./assets/deepseek-effort/low.jpg'); }
+#reasoning-popup[data-deepseek-effort='off'] { --deepseek-photo: url('./assets/deepseek-effort/off.jpg'); }
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) {
+  --deepseek-photo-ink: #f8fafc;
+  --deepseek-photo-control: rgb(16 23 34 / 78%);
+  --deepseek-photo-hover: rgb(28 39 54 / 88%);
+  --deepseek-photo-border: rgb(255 255 255 / 40%);
+  --deepseek-photo-shadow: 0 1px 3px rgb(0 0 0 / 95%), 0 0 9px rgb(0 0 0 / 85%);
+  --deepseek-photo-veil: linear-gradient(180deg, rgb(3 8 16 / 35%), rgb(3 8 16 / 9%) 45%, rgb(3 8 16 / 60%));
+  isolation: isolate;
+  overflow: hidden;
+}
+
+html[data-ui-style='white'] #reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) {
+  --deepseek-photo-ink: #18212d;
+  --deepseek-photo-control: rgb(247 249 252 / 88%);
+  --deepseek-photo-hover: rgb(255 255 255 / 96%);
+  --deepseek-photo-border: rgb(24 33 45 / 35%);
+  --deepseek-photo-shadow: 0 1px 2px #fff, 0 0 8px rgb(255 255 255 / 95%);
+  --deepseek-photo-veil: linear-gradient(180deg, rgb(247 249 252 / 58%), rgb(247 249 252 / 12%) 45%, rgb(247 249 252 / 74%));
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden]))::before,
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden]))::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden]))::before {
+  background-image: var(--deepseek-photo);
+  background-repeat: no-repeat;
+  background-size: 100% auto;
+  background-position: center center;
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden]))::after {
+  background: var(--deepseek-photo-veil);
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) > div {
+  position: relative;
+  z-index: 1;
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) #reasoning-value {
+  background: none;
+  color: var(--deepseek-photo-ink);
+  -webkit-text-fill-color: var(--deepseek-photo-ink);
+  text-shadow: var(--deepseek-photo-shadow);
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) :is(.popup-model-button, .popup-reasoning-reset, .reasoning-settings-button) {
+  color: var(--deepseek-photo-ink);
+  background: var(--deepseek-photo-control);
+  border-color: var(--deepseek-photo-border);
+}
+
+#reasoning-popup[data-deepseek-effort]:has(#reasoning-popup-main:not([hidden])) :is(.popup-model-button, .popup-reasoning-reset, .reasoning-settings-button):hover {
+  background: var(--deepseek-photo-hover);
+}

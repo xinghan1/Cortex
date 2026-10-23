@@ -1181,6 +1181,10 @@ function updateReasoningControl(range, fromInput = false) {
   if (!available) range.dataset.effort = 'default';
   else if (fromInput) range.dataset.effort = options[index] || 'default';
   const effort = range.dataset.effort || 'default';
+  window.ForgeDeepSeekEffort?.update($('reasoning-popup'), {
+    provider: range.dataset.provider, modelId: appState?.settings?.model, effort,
+    defaultEffort: range.dataset.defaultEffort, known: range.dataset.support === 'known', available, options,
+  });
   const prefix = 'reasoning';
   const label = $(`${prefix}-value`);
   const reset = $(`${prefix}-default`);

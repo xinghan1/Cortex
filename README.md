@@ -8,8 +8,8 @@ Synora code 是本地运行的 AI 编程桌面基础版。支持 OpenAI GPT、De
 
 | 版本 | 下载文件 | 使用方式 | 本机数据位置 |
 | --- | --- | --- | --- |
-| 安装版 | `Synora-code-Setup-0.18.4-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
-| 便携版 | `Synora-code-0.18.4-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
+| 安装版 | `Synora-code-Setup-0.18.5-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
+| 便携版 | `Synora-code-0.18.5-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
 
 两种版本均无需安装 Node.js。安装版按当前 Windows 用户安装，更新后继续使用固定数据目录，卸载默认保留本机数据；便携版需保留整个解压目录，移动时一并保留 `data\`。安装版与便携版使用各自的数据目录。
 
@@ -29,9 +29,9 @@ npm.cmd run build
 npm.cmd run build:installer
 ```
 
-`npm run build` 生成便携版 `dist/Synora-code-0.18.4-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
+`npm run build` 生成便携版 `dist/Synora-code-0.18.5-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
 
-`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.18.4-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
+`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.18.5-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
 
 `npm ci` 按锁文件安装依赖，首次运行或构建会下载 Electron 运行时，因此需要联网，且不能省略开发依赖。`prepare:sdk` 从仓库内的 TypeScript 源码生成 ChatGPT 登录组件，无需另外克隆第三方仓库。运行开发界面使用 `npm.cmd start`。
 
@@ -84,6 +84,8 @@ Windows x64 安装版启动 15 秒后检查本仓库的 GitHub Releases，之后
 “模型上下文（Token）”默认 32,768，可在 4,096 至 2,097,152 之间调整，并受模型声明的训练容量限制。每次请求显式传入相同的 `num_ctx`，让自动压缩预算与实际请求一致；较大的窗口需要更多内存或显存。此设置与右下角自动压缩阈值分别保存，调整后需重新获取目录。支持流式回复、文件工具调用、用量回报、停止、当前连接内切换模型，以及独立 AI 审批。未声明编程工具能力的模型不能用作任务模型；明确支持文本的模型仍可用作审批模型，嵌入模型不能用作对话或审批模型。
 
 ## DeepSeek 账号与余额
+
+选择 DeepSeek 模型时，推理档位卡片会按“最高／高／低／关闭”切换本地照片背景彩蛋，卡片尺寸不变，照片按卡片宽度缩放并上下居中。彩蛋仅用于界面显示，不会作为附件发送给模型。
 
 DeepSeek 官方公开 API 采用 API Key 鉴权；已配置的 Key 关联对应开放平台账号。模型设置中选择 DeepSeek 后，可点击“查询余额”读取官方返回的可用状态、总余额、赠送余额与充值余额，或点击“打开官方账号”进入官方平台登录、查看和充值。该功能使用已保存的官方连接，不会自动查询，也不读取网页密码或 Cookie；它不是 ChatGPT 式的第三方账号授权登录。
 
