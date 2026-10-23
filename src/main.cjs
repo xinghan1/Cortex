@@ -51,7 +51,7 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
+let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
 const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
@@ -752,9 +752,8 @@ async function reviewOperation(request, { signal, runId }) {
   restoreApprovalReviewer(await catalogContext());
   const config = await roleRequestConfig('approval', { ...run, controller: { signal } }, approvalReviewerModel || undefined);
   signal.throwIfAborted();
-  const userIntent = currentSession.messages.filter(message => message.role === 'user' && typeof message.content === 'string').map(message => message.content);
-  if (run.command) userIntent.push('用户在终端提交的完整命令：' + run.command);
-  return reviewApproval({ request, context: { projectRoot: tools?.root, userIntent }, config,
+  const selected = selectApprovalIntent(currentSession.messages, run.command ? { terminalCommand: run.command } : undefined);
+  return reviewApproval({ request, context: { projectRoot: tools?.root, ...selected }, config,
     requestModel: dispatchModelRequest, signal, sessionId, runId, redact, onUsage: recordRunUsage });
 }
 async function state() {
@@ -1871,6 +1870,7 @@ async function boot() {
   ({ WorkspaceTools, TOOL_DEFINITIONS } = await import('./core/workspace.mjs'));
   ({ createSubagentWorkspace } = await import('./core/subagent-workspace.mjs'));
   ({ reviewApproval } = await import('./core/approval-review.mjs'));
+  ({ selectApprovalIntent } = await import('./core/approval-intent.mjs'));
   ({ createApprovalController } = await import('./core/approval-controller.mjs'));
   ({ createPromptCompletionController } = await import('./core/prompt-completion.mjs'));
   ({ createSideChatController } = await import('./core/side-chat.mjs'));

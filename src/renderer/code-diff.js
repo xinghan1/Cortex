@@ -233,8 +233,8 @@
         line.appendChild(element(document, 'span', 'code-diff-note-text', row.text));
         // A skipped hunk can contain a comment terminator. Do not carry an
         // uncertain lexical state over an unrendered section.
-        delete oldState.commentEnd; delete oldState.quote;
-        delete newState.commentEnd; delete newState.quote;
+        for (const key of Object.keys(oldState)) delete oldState[key];
+        for (const key of Object.keys(newState)) delete newState[key];
       }
       else {
         const number = row.kind === 'remove' ? row.oldLine : row.newLine;
@@ -246,8 +246,10 @@
         const code = element(document, 'code', 'code-diff-code');
         highlight(document, code, row.text, language, row.kind === 'remove' ? oldState : newState, highlightBudget);
         if (row.kind === 'context') {
-          delete oldState.commentEnd; delete oldState.quote;
-          Object.assign(oldState, newState);
+          for (const key of Object.keys(oldState)) delete oldState[key];
+          // Markdown fences include the embedded language's mutable lexer
+          // state. Removed lines must never mutate the added side's state.
+          Object.assign(oldState, JSON.parse(JSON.stringify(newState)));
         }
         line.append(lineNumber, sign, code);
         if (row.noNewline && row.kind !== 'context') {

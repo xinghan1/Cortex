@@ -5,8 +5,18 @@ import vm from 'node:vm';
 
 const source = await fs.readFile(new URL('../src/renderer/app-update.js', import.meta.url), 'utf8');
 class Element {
-  constructor() { this.hidden = false; this.disabled = false; this.attributes = {}; this.dataset = {}; this.textContent = ''; this.listeners = new Map(); }
+  constructor(tag = 'button', ownerDocument) {
+    this.tag = tag; this.ownerDocument = ownerDocument; this.children = []; this.open = false; this.showCalls = 0;
+    this.hidden = false; this.disabled = false; this.attributes = {}; this.dataset = {}; this.textContent = ''; this.listeners = new Map();
+  }
+  set id(value) { this._id = value; this.ownerDocument?.elements.set(value, this); }
+  get id() { return this._id; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; if (name === 'value') delete this.value; }
+  append(...nodes) { this.children.push(...nodes); }
+  showModal() { this.open = true; this.showCalls++; }
+  close() { this.open = false; }
+  remove() { this.removed = true; }
   addEventListener(type, callback) { this.listeners.set(type, callback); }
   removeEventListener(type, callback) { if (this.listeners.get(type) === callback) this.listeners.delete(type); }
   click() { return this.listeners.get('click')?.(); }
@@ -18,8 +28,10 @@ function deferred() {
 }
 const initial = { status: 'idle', enabled: true, currentVersion: '0.18.2', version: '', progress: 0 };
 function fixture(methods = {}, initialValue = initial) {
-  const context = vm.createContext({}); vm.runInContext(source, context);
-  const button = new Element(), label = new Element(), progress = new Element(), ring = new Element(), notices = [], calls = [];
+  const document = { elements: new Map(), createElement(tag) { return new Element(tag, document); } };
+  document.body = new Element('body', document);
+  const context = vm.createContext({ document }); vm.runInContext(source, context);
+  const button = new Element('button', document), label = new Element(), progress = new Element(), ring = new Element(), notices = [], calls = [];
   button.querySelector = selector => selector === '.app-update-ring-value' ? ring : null;
   let callback, busy = false, unsubscribed = false;
   const bridge = { onEvent: listener => { callback = listener; return () => { unsubscribed = true; }; } };
@@ -27,7 +39,7 @@ function fixture(methods = {}, initialValue = initial) {
     bridge[method] = (...args) => { calls.push({ method, args }); return methods[method]?.(...args) ?? initialValue; };
   }
   const ui = context.ForgeAppUpdate.create({ bridge, button, label, progress, notice: (...args) => notices.push(args), isBusy: () => busy });
-  return { ui, button, label, progress, ring, notices, calls,
+  return { ui, button, label, progress, ring, notices, calls, node: id => document.elements.get(id),
     emit: update => callback({ type: 'app-update', update, workspaceId: 'another-project' }),
     emitOther: event => callback(event),
     setBusy(value) { busy = value; ui.sync(); },
@@ -56,7 +68,8 @@ test('download progress and a second explicit click drive download then install 
   const f = fixture({ downloadAppUpdate: () => download.promise, installAppUpdate: () => install.promise }); await f.ui.ready;
   f.emit({ ...initial, status: 'available', version: '0.18.3' });
   const downloading = f.button.click();
-  assert.equal(f.button.disabled, true); await f.button.click();
+  assert.equal(f.button.disabled, false); await f.button.click();
+  assert.equal(f.calls.filter(call => call.method === 'downloadAppUpdate').length, 1);
   f.emit({ ...initial, status: 'downloading', version: '0.18.3', progress: 37.8 });
   assert.match(f.label.textContent, /37%/u); assert.equal(f.progress.value, 37); assert.equal(f.progress.hidden, false);
   assert.equal(f.ring.attributes['stroke-dashoffset'], '63');
@@ -157,4 +170,103 @@ test('download errors show the readable reason and retry progress replaces the o
   retry.resolve({ ...initial, status: 'downloaded', version: '0.18.3', progress: 100 }); await downloading;
   assert.equal(f.notices.at(-1)[0], '更新已下载，点击“帮助”右侧的下载图标重启更新。');
   assert.equal(f.label.textContent, '重启更新');
+});
+
+test('clicking download opens a modal whose progress stays live while hidden and can be reopened without restarting download', async () => {
+  const download = deferred(), f = fixture({ downloadAppUpdate: () => download.promise });
+  await f.ui.ready;
+  const dialog = f.node('app-update-dialog');
+  assert.equal(dialog.open, false);
+  f.emit({ ...initial, status: 'available', version: '0.19.3', totalBytes: 8 * 1024 * 1024 });
+  assert.equal(dialog.open, false, 'Automatic discovery never opens a modal');
+  const downloading = f.button.click();
+  assert.equal(dialog.open, true); assert.equal(dialog.showCalls, 1);
+  assert.equal(f.node('app-update-dialog-primary').disabled, true);
+  f.emit({ ...initial, status: 'downloading', version: '0.19.3', progress: 25, downloadedBytes: 2 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
+  assert.equal(f.node('app-update-dialog-title').textContent, '正在下载更新');
+  assert.match(f.node('app-update-dialog-status').textContent, /25%/u);
+  assert.equal(f.node('app-update-dialog-progress').attributes['aria-valuenow'], '25');
+  assert.equal(f.node('app-update-dialog-progress').attributes.role, 'progressbar');
+  assert.equal(f.node('app-update-dialog-status').attributes['aria-live'], 'polite');
+  assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 2 MB / 总大小 8 MB');
+  await f.node('app-update-dialog-background').click();
+  assert.equal(dialog.open, false);
+  f.emit({ ...initial, status: 'downloading', version: '0.19.3', progress: 50, downloadedBytes: 4 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
+  assert.equal(dialog.open, false); assert.equal(f.ring.attributes['stroke-dashoffset'], '50');
+  assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 4 MB / 总大小 8 MB');
+  await f.button.click(); assert.equal(dialog.open, true); assert.equal(dialog.showCalls, 2);
+  assert.equal(f.calls.filter(call => call.method === 'downloadAppUpdate').length, 1);
+  let prevented = false;
+  dialog.listeners.get('cancel')({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true); assert.equal(dialog.open, false);
+  f.emit({ ...initial, status: 'downloaded', version: '0.19.3', progress: 100, downloadedBytes: 8 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
+  download.resolve({ ...initial, status: 'available', version: '0.19.3' }); await downloading;
+  assert.equal(dialog.open, false, 'Finishing a background download does not reopen it');
+  assert.equal(f.node('app-update-dialog-title').textContent, '更新已准备就绪');
+  assert.match(f.node('app-update-dialog-status').textContent, /校验完成/u);
+  assert.equal(f.node('app-update-dialog-primary').textContent, '重启更新');
+  assert.equal(f.calls.filter(call => call.method === 'installAppUpdate').length, 0);
+});
+
+test('the dialog restart action respects busy protection, prevents duplicate installs and recovers after failure', async () => {
+  const install = deferred(); let attempts = 0;
+  const f = fixture({ downloadAppUpdate: () => ({ ...initial, status: 'downloaded', version: '0.19.3', progress: 100 }),
+    installAppUpdate: () => { attempts++; return attempts === 1 ? Promise.reject(new Error("Error invoking remote method 'forge:installAppUpdate': Error: 安装程序暂不可用")) : install.promise; } });
+  await f.ui.ready; f.emit({ ...initial, status: 'available', version: '0.19.3' }); await f.button.click();
+  const primary = f.node('app-update-dialog-primary');
+  f.setBusy(true); assert.equal(primary.disabled, true); await primary.click(); assert.equal(attempts, 0);
+  f.setBusy(false); await primary.click();
+  assert.equal(attempts, 1); assert.equal(primary.disabled, false); assert.equal(primary.textContent, '重启更新');
+  assert.equal(f.node('app-update-dialog-error').textContent, '安装程序暂不可用');
+  const installing = primary.click(); await primary.click();
+  assert.equal(attempts, 2); assert.equal(primary.disabled, true);
+  assert.equal(f.node('app-update-dialog-error').hidden, true);
+  install.resolve({ ...initial, status: 'installing', version: '0.19.3' }); await installing;
+  assert.equal(f.node('app-update-dialog').dataset.status, 'installing');
+});
+
+test('dialog download errors stay readable and retry through the same guarded download method', async () => {
+  let attempts = 0;
+  const retry = deferred(), f = fixture({ downloadAppUpdate: () => {
+    attempts++; if (attempts === 1) throw new Error("Error invoking remote method 'forge:downloadAppUpdate': Error: 网络连接中断");
+    return retry.promise;
+  } });
+  await f.ui.ready; f.emit({ ...initial, status: 'available', version: '0.19.3' }); await f.button.click();
+  assert.equal(f.node('app-update-dialog-error').textContent, '网络连接中断');
+  const primary = f.node('app-update-dialog-primary');
+  assert.equal(primary.textContent, '重试下载'); assert.equal(primary.disabled, false);
+  const retrying = primary.click(); await primary.click();
+  assert.equal(attempts, 2); assert.equal(f.node('app-update-dialog-error').hidden, true);
+  retry.resolve({ ...initial, status: 'downloaded', version: '0.19.3', progress: 100 }); await retrying;
+  assert.equal(primary.textContent, '重启更新');
+  const dialog = f.node('app-update-dialog'); f.ui.destroy();
+  assert.equal(dialog.open, false); assert.equal(dialog.removed, true);
+});
+
+test('dialog progress uses percentages or byte ratios and becomes indeterminate only when neither is available', async () => {
+  const f = fixture(); await f.ui.ready;
+  const progress = f.node('app-update-dialog-progress');
+  f.emit({ enabled: true, status: 'downloading', version: '0.19.3', downloadedBytes: 512 });
+  assert.equal(progress.attributes['aria-valuenow'], undefined);
+  assert.equal(progress.value, undefined);
+  assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 0.5 KB · 总大小未知');
+  f.emit({ enabled: true, status: 'downloading', version: '0.19.3', progress: 37 });
+  assert.equal(progress.attributes['aria-valuenow'], '37');
+  f.emit({ enabled: true, status: 'downloading', version: '0.19.3', downloadedBytes: 2048, totalBytes: 4096 });
+  assert.equal(progress.attributes['aria-valuenow'], '50');
+  assert.equal(f.node('app-update-dialog-percent').textContent, '50%');
+  f.emit({ enabled: true, status: 'downloading', version: '0.19.3', progress: -50, downloadedBytes: -1, totalBytes: '4096' });
+  assert.equal(progress.attributes['aria-valuenow'], '0');
+  assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 0 KB · 总大小未知');
+});
+
+test('byte sizes use 1024-based KB, MB and GB without displaying bytes or non-finite values', async () => {
+  const f = fixture(); await f.ui.ready;
+  for (const [bytes, formatted] of [[0, '0 KB'], [1, '0.001 KB'], [1023, '0.999 KB'], [1024, '1 KB'],
+    [1536, '1.5 KB'], [1024 ** 2, '1 MB'], [1.5 * 1024 ** 2, '1.5 MB'], [1024 ** 3, '1 GB']]) {
+    f.emit({ ...initial, status: 'downloading', version: '0.19.3', downloadedBytes: bytes, totalBytes: 1024 ** 3 });
+    assert.equal(f.node('app-update-dialog-bytes').textContent, `已下载 ${formatted} / 总大小 1 GB`);
+  }
+  f.emit({ ...initial, status: 'downloading', version: '0.19.3', downloadedBytes: Infinity, totalBytes: NaN });
+  assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 0 KB · 总大小未知');
 });

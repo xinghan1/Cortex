@@ -63,3 +63,34 @@
 .app-update-button[data-status='downloading'] .app-update-ring { display: block; }
 .app-update-ring-track { opacity: .2; }
 .app-update-ring-value { stroke-linecap: round; }
+
+dialog.app-update-dialog {
+  width: 440px;
+  max-width: calc(100vw - 40px);
+  margin: auto;
+  -webkit-app-region: no-drag;
+}
+
+.app-update-dialog .dialog-header { gap: 18px; }
+.app-update-dialog .dialog-header h2 { margin: 0; font-size: 20px; }
+.app-update-dialog-status { min-height: 3em; margin: 20px 0 14px; line-height: 1.65; }
+.app-update-dialog-percent { display: block; margin-bottom: 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.app-update-dialog-progress {
+  display: block;
+  width: 100%;
+  height: 10px;
+  border: 0;
+  border-radius: 5px;
+  overflow: hidden;
+  accent-color: var(--ui-accent, var(--accent));
+}
+.app-update-dialog-progress::-webkit-progress-bar { background: var(--panel2); border-radius: 5px; }
+.app-update-dialog-progress::-webkit-progress-value { background: var(--ui-accent, var(--accent)); border-radius: 5px; transition: width .15s ease; }
+.app-update-dialog-bytes { margin: 12px 0 18px; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.app-update-dialog .form-error { margin: 12px 0 18px; }
+.app-update-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.app-update-dialog .button.solid { background: var(--ui-accent, var(--accent)); border-color: var(--ui-accent, var(--accent)); color: var(--ui-accent-ink, #122138); }
+.app-update-dialog .button.solid:not(:disabled):hover { filter: brightness(.93); }
+.app-update-dialog :is(.button, .icon-button):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 3px; }
+.app-update-dialog [hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .app-update-dialog-progress::-webkit-progress-value { transition: none; } }

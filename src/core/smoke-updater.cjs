@@ -20,7 +20,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
   const pieces = currentVersion.split('.').map(Number), nextVersion = [pieces[0], pieces[1], pieces[2] + 1].join('.');
   const bytes = Buffer.alloc(1024, 0x41); bytes.write('MZ_SYNORA_TEST_BYTES_NOT_AN_EXECUTABLE');
   const digest = createHash('sha256').update(bytes).digest('hex');
-  const requests = [], launches = [], screenshots = [], paletteChecks = [];
+  const requests = [], launches = [], screenshots = [], paletteChecks = [], dialogThemes = [];
   const control = { version: currentVersion, failCheck: true, holdCheck: false, corruptDownload: true, holdDownload: false, failLaunch: true, quitCalls: 0 };
   let releaseCheck, releaseDownload, releaseLaunch, updater, originalAppearance, launchAttempts = 0;
   const fakeFetch = async (url, options) => {
@@ -77,6 +77,27 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
       menuRight:menus.right,captionRight:area?.width?area.right:innerWidth,visible:button.checkVisibility({visibilityProperty:true,opacityProperty:true}),
       hit:button.contains(document.elementFromPoint(point.x,point.y)),...point};
   })()`);
+  const inspectDialog = () => js(`(() => {
+    const get=name=>document.getElementById('app-update-dialog'+(name?'-'+name:'')),dialog=get(''),progress=get('progress'),primary=get('primary');
+    const box=dialog.getBoundingClientRect(),style=getComputedStyle(dialog),root=getComputedStyle(document.documentElement);
+    const probe=document.createElement('span');probe.style.color=(root.getPropertyValue('--ui-accent')||root.getPropertyValue('--accent')).trim();dialog.append(probe);const accent=getComputedStyle(probe).color;probe.remove();
+    return {open:dialog.open,status:dialog.dataset.status,title:get('title').textContent,description:get('status').textContent,
+      percent:get('percent').textContent,bytes:get('bytes').textContent,error:get('error').textContent,errorHidden:get('error').hidden,
+      progress:progress.value,progressHasValue:progress.hasAttribute('value'),ariaProgress:progress.getAttribute('aria-valuenow'),progressLabel:progress.getAttribute('aria-label'),
+      primary:primary.textContent,primaryDisabled:primary.disabled,background:getComputedStyle(primary).backgroundColor,
+      accent,progressAccent:getComputedStyle(progress).accentColor,region:style.getPropertyValue('-webkit-app-region'),
+      ariaLabelledby:dialog.getAttribute('aria-labelledby'),ariaDescribedby:dialog.getAttribute('aria-describedby'),
+      style:document.documentElement.dataset.uiStyle,width:innerWidth,height:innerHeight,
+      box:{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}};
+  })()`);
+  const assertDialog = rendered => {
+    assert.equal(rendered.open, true); assert.equal(rendered.region, 'no-drag');
+    assert.ok(Math.abs((rendered.box.left + rendered.box.right) / 2 - rendered.width / 2) <= 1, 'Update dialog must be horizontally centered');
+    assert.ok(Math.abs((rendered.box.top + rendered.box.bottom) / 2 - rendered.height / 2) <= 1, 'Update dialog must be vertically centered');
+    assert.ok(rendered.box.left >= 0 && rendered.box.right <= rendered.width && rendered.box.top >= 0 && rendered.box.bottom <= rendered.height);
+    assert.equal(rendered.ariaLabelledby, 'app-update-dialog-title'); assert.equal(rendered.ariaDescribedby, 'app-update-dialog-status');
+    assert.ok(rendered.progressLabel); assert.ok(!/NaN|Infinity|undefined/u.test(rendered.percent + rendered.bytes));
+  };
   const assertIcon = rendered => {
     assert.equal(rendered.hidden, false); assert.equal(rendered.visible, true); assert.equal(rendered.region, 'no-drag');
     assert.equal(rendered.labelHidden, true, 'Update button must not display status text'); assert.equal(rendered.textOutsideLabel, '');
@@ -114,6 +135,14 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     win.webContents.focus();
     for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) win.webContents.sendInputEvent({ type, x: point.x, y: point.y,
       ...(type === 'mouseMove' ? {} : { button: 'left', clickCount: 1 }) });
+  };
+  const clickDialog = async id => {
+    const point = await until('clickable update dialog action ' + id, () => js(`(() => {
+      const node=document.getElementById(${JSON.stringify('app-update-dialog-' + id)});if(!node||node.disabled||!node.checkVisibility({visibilityProperty:true,opacityProperty:true}))return null;
+      const box=node.getBoundingClientRect(),point={x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)};
+      return node.contains(document.elementFromPoint(point.x,point.y))?point:null;})()`));
+    win.webContents.focus();
+    for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) win.webContents.sendInputEvent({type,...point,...(type==='mouseMove'?{}:{button:'left',clickCount:1})});
   };
   const check = () => js('window.synoraAppUpdate.check(); true;');
   const capture = async name => {
@@ -176,27 +205,64 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     assertIcon(await inspect());
     assert.equal(launches.length, 0); assert.equal(control.quitCalls, 0);
     assert.match((await inspect()).text, /重试/u);
+    const failedDialog = await until('download failure shown in modal', async () => {const value=await inspectDialog();return value.open&&!value.errorHidden&&!value.primaryDisabled&&value;});
+    assertDialog(failedDialog); assert.match(failedDialog.primary, /重试/u);
     await capture('updater-hash-error.png');
     control.corruptDownload = false; control.holdDownload = true;
-    await click(); await expectState('downloading');
+    await clickDialog('primary'); await expectState('downloading');
     await until('half-download progress', async () => {
       const view = await inspect(); return view.progress === 50 && view.ariaProgress === '50' && view.ringOffset === '50';
     });
-    assert.equal((await inspect()).disabled, true); assert.equal((await inspect()).progressHidden, false);
+    assert.equal((await inspect()).disabled, false); assert.equal((await inspect()).progressHidden, false);
     assertIcon(await inspect());
+    const half = await until('modal live percentage and byte counts', async () => {const value=await inspectDialog();return value.open&&value.percent==='50%'&&value.bytes.includes('0.5 KB')&&value;});
+    assertDialog(half); assert.equal(half.progress, 50); assert.equal(half.ariaProgress, '50'); assert.match(half.bytes, /总大小 1 KB/u); assert.equal(half.primaryDisabled, true);
     await capture('updater-progress.png');
+    const downloadRequests = requests.length;
+    for (const dismiss of ['background','close','Escape']) {
+      if (dismiss === 'Escape') {
+        win.webContents.focus(); win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'}); win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+      } else await clickDialog(dismiss);
+      await until('modal hidden without stopping download', async () => !(await inspectDialog()).open && (await call('getAppUpdate')).status==='downloading');
+      assert.equal((await inspect()).disabled, false); await click();
+      await until('download icon reopens modal', async () => (await inspectDialog()).open);
+      assert.equal(requests.length, downloadRequests, 'Reopening a held download must not issue another request');
+      assert.equal(launches.length, 0); assert.equal(control.quitCalls, 0);
+    }
+    for (const style of ['glass','black','white','industrial']) {
+      await appearance({uiStyle:style,selectionColor:null});
+      for (const color of [null,'#6b9eff']) {
+        if (color) await appearance({selectionColor:color});
+        const value=await until('modal palette and transition settled', async()=>{const value=await inspectDialog();return value.background===value.accent&&value.progressAccent===value.accent&&value;});
+        assertDialog(value); assert.equal(value.percent,'50%'); assert.match(value.bytes,/0\.5 KB.*1 KB/u);
+        dialogThemes.push({style,color,background:value.background,progressAccent:value.progressAccent,box:value.box});
+        if (!color || style==='industrial') await capture('updater-dialog-'+style+(color?'-custom':'')+'.png');
+      }
+    }
+    // The trusted updater requires an exact asset size. Exercise absent size
+    // defensively through the public renderer snapshot, without weakening it.
+    const actualDownload = await call('getAppUpdate');
+    await js(`window.synoraAppUpdate.update({...${JSON.stringify(actualDownload)},progress:null,totalBytes:null,downloadedBytes:512});true;`);
+    const unknown=await inspectDialog(); assertDialog(unknown); assert.equal(unknown.progressHasValue,false); assert.equal(unknown.ariaProgress,null);
+    assert.match(unknown.percent,/等待/u); assert.match(unknown.bytes,/0\.5 KB.*总大小未知/u);
+    await capture('updater-dialog-unknown-total.png');
+    await js(`window.synoraAppUpdate.update(${JSON.stringify(actualDownload)});true;`);
     control.holdDownload = false; releaseDownload(); releaseDownload = null;
     await expectState('downloaded'); assert.match((await inspect()).text, /重启更新/u);
     assertIcon(await inspect());
+    const completedDialog = await until('completed modal explicitly offers restart',async()=>{const value=await inspectDialog();return value.open&&value.primary==='重启更新'&&!value.primaryDisabled&&value;});
+    assertDialog(completedDialog); assert.equal(completedDialog.percent,'100%'); assert.match(completedDialog.bytes,/1 KB.*1 KB/u);
+    await capture('updater-dialog-completed.png');
     assert.equal(launches.length, 0, 'Download triggered automatic installation');
     await call('setEditorDirty', { dirty: true }); await rejectInstall(/保存|修改/u);
     await call('setEditorDirty', { dirty: false });
     await call('runTask', { demo: true });
     await until('isolated demo run active', async () => (await call('getState')).activeTask.running);
+    await until('modal restart disabled during task',async()=>(await inspectDialog()).primaryDisabled);
     await rejectInstall(/任务|操作|运行/u);
     await call('stopTask');
     await until('isolated demo stopped', async () => !(await call('getState')).activeTask.running);
-    await click();
+    await clickDialog('primary');
     await until('held fake installer launcher', () => releaseLaunch);
     await expectState('installing');
     assertIcon(await inspect());
@@ -206,13 +272,16 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     await until('launch failure stays retryable', async () => launchAttempts === 1 && (await inspect()).status === 'downloaded' && !(await inspect()).disabled);
     assert.equal(win.isEnabled(), true, 'A failed launcher left the window locked');
     assert.equal(launches.length, 0); assert.equal(control.quitCalls, 0);
-    control.failLaunch = false; await click();
+    await until('modal installer error retryable',async()=>{const value=await inspectDialog();return !value.errorHidden&&!value.primaryDisabled;});
+    control.failLaunch = false; await clickDialog('primary');
     await until('fake installer and quit called once', () => launches.length === 1 && control.quitCalls === 1);
     assert.equal(win.isDestroyed(), false, 'Fixture must not actually close the test app');
     return { status: 'completed', actualGitHubRequests: 0, executableLaunched: false, networkCalls: requests.length,
       nativeTitlebarButton: true, circularDownloadSvg: true, nextToHelp: true, noVisibleButtonText: true,
       themes: ['glass','black','white','industrial'], customColorStyleAndReset: true, paletteChecks, currentHidden: true,
       checkFailureRetry: true, checksumFailureRetry: true, liveDownloadProgress: 50, explicitRestartOnly: true,
+      centeredDownloadDialog: true, liveByteCounts: true, backgroundCloseAndEscapeKeepDownloading: true,
+      iconReopensWithoutDuplicateRequest: true, syntheticUnknownTotalUI: true, dialogThemes,
       unsavedInstallBlocked: true, activeTaskInstallBlocked: true, launchFailureRetry: true, fakeLaunches: launches.length,
       fakeQuitCalls: control.quitCalls, installTransactionLocked: true, screenshots };
   } catch (error) {

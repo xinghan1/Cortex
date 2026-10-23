@@ -99,7 +99,7 @@ function rateLimitDelay(headers, now) {
 class AppUpdater {
   #current; #dataDir; #dir; #enabled; #fetch; #onChange; #timeout; #now; #checkCacheMs;
   #checkCachedUntil = 0; #apiRetryAt = 0; #checkRetryAt = 0; #checkError = null;
-  #state = { version: null, status: 'idle', progress: 0, error: null };
+  #state = { version: null, status: 'idle', progress: 0, downloadedBytes: 0, totalBytes: null, error: null };
   #release = null; #ready = null; #pending = null; #controller = null; #disposed = false;
   constructor({ currentVersion, dataDir, enabled = false, fetchImpl = globalThis.fetch, onChange = () => {}, timeoutMs,
     now = Date.now, checkCacheMs = CHECK_CACHE_MS } = {}) {
@@ -287,7 +287,7 @@ class AppUpdater {
     if (this.#ready && this.#state.status === 'downloaded') return Promise.resolve(this.snapshot());
     if (['current', 'available'].includes(this.#state.status) && this.#now() < this.#checkCachedUntil) return Promise.resolve(this.snapshot());
     if (this.#checkError && this.#now() < this.#checkRetryAt) return Promise.reject(this.#checkError);
-    this.#publish({ status: 'checking', error: null });
+    this.#publish({ status: 'checking', progress: 0, downloadedBytes: 0, totalBytes: null, error: null });
     return this.#operation('check', async signal => {
       let release, fallback = this.#now() < this.#apiRetryAt;
       try {
@@ -304,7 +304,8 @@ class AppUpdater {
       }
       this.#checkError = null; this.#checkRetryAt = 0; this.#checkCachedUntil = this.#now() + this.#checkCacheMs;
       this.#release = release; this.#ready = null;
-      return this.#publish({ version: release?.version ?? null, status: release ? 'available' : 'current', progress: 0, error: null });
+      return this.#publish({ version: release?.version ?? null, status: release ? 'available' : 'current', progress: 0,
+        downloadedBytes: 0, totalBytes: release?.size ?? null, error: null });
     });
   }
   async #cacheDirectory() {
@@ -351,26 +352,32 @@ class AppUpdater {
     if (!this.#release) return Promise.reject(failure('请先检查并找到可用的新版本。'));
     if (this.#ready && this.#state.status === 'downloaded') return Promise.resolve(this.snapshot());
     const release = this.#release;
-    this.#publish({ status: 'downloading', progress: 0, error: null });
+    this.#publish({ status: 'downloading', progress: 0, downloadedBytes: 0, totalBytes: release.size, error: null });
     return this.#operation('download', async signal => {
       const directory = await this.#cacheDirectory(), destination = path.join(directory, release.name);
       // Cache contents are never trusted merely because the filename exists.
       try {
         await this.#verify(destination, release, signal);
         this.#ready = { file: destination, release };
-        return this.#publish({ status: 'downloaded', progress: 100, error: null });
+        return this.#publish({ status: 'downloaded', progress: 100, downloadedBytes: release.size, totalBytes: release.size, error: null });
       } catch { signal.throwIfAborted(); }
       const temporary = path.join(directory, `.download-${randomUUID()}.part`);
       let handle;
       try {
         const response = await this.#response(release.url, signal, { asset: true });
         handle = await fs.open(temporary, 'wx', 0o600);
-        const hash = createHash('sha256'); let first = Buffer.alloc(0);
+        const hash = createHash('sha256'); let first = Buffer.alloc(0), lastBytePublish = 0;
         await this.#read(response, MAX_INSTALLER_BYTES, signal, async (chunk, bytes) => {
           if (first.length < 2) first = Buffer.concat([first, chunk]).subarray(0, 2);
           hash.update(chunk); await handle.writeFile(chunk);
+          // Keep the exact count even when this chunk is below the UI event
+          // throttle; a later error must report every successfully stored byte.
+          this.#state.downloadedBytes = bytes;
           const progress = Math.min(99, Math.floor(bytes / release.size * 100));
-          if (progress !== this.#state.progress) this.#publish({ progress });
+          const now = Date.now();
+          if (progress !== this.#state.progress || bytes === release.size || now - lastBytePublish >= 100) {
+            lastBytePublish = now; this.#publish({ progress, downloadedBytes: bytes, totalBytes: release.size });
+          }
         }, release.size);
         if (first[0] !== 77 || first[1] !== 90) throw failure('下载文件不是有效的 Windows 安装包。');
         if (hash.digest('hex') !== release.sha256) throw failure('安装包 SHA-256 校验失败，请重新下载。');
@@ -382,7 +389,7 @@ class AppUpdater {
         await fs.rename(temporary, destination);
         await this.#verify(destination, release, signal);
         this.#ready = { file: destination, release };
-        return this.#publish({ status: 'downloaded', progress: 100, error: null });
+        return this.#publish({ status: 'downloaded', progress: 100, downloadedBytes: release.size, totalBytes: release.size, error: null });
       } finally {
         await handle?.close().catch(() => {});
         await fs.unlink(temporary).catch(() => {});
@@ -397,7 +404,7 @@ class AppUpdater {
     catch {
       this.#ready = null;
       const error = failure('更新安装包已损坏或变化，请重新下载。');
-      this.#publish({ status: 'error', progress: 0, error: error.message });
+      this.#publish({ status: 'error', progress: 0, downloadedBytes: 0, totalBytes: ready.release.size, error: error.message });
       throw error;
     }
   }

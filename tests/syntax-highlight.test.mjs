@@ -57,7 +57,7 @@ test('successive diff lines retain multiline comment and string state', () => {
 });
 
 test('unknown languages stay plain and file extensions resolve to known languages', () => {
-  for (const [path, lang] of [['a.tsx', 'typescript'], ['a.py', 'python'], ['a.jsonc', 'json'], ['a.java', 'java'], ['a.css', 'css'], ['a.ps1', 'powershell'], ['a.md', '']]) assert.equal(api.languageForPath(path), lang);
+  for (const [path, lang] of [['a.tsx', 'typescript'], ['a.py', 'python'], ['a.jsonc', 'json'], ['a.java', 'java'], ['a.css', 'css'], ['a.ps1', 'powershell'], ['a.md', 'markdown'], ['a.txt', '']]) assert.equal(api.languageForPath(path), lang);
   const value = '<script>danger()</script>\r\n & "quotes"';
   assert.deepEqual(tokens(value, 'unknown'), [{ kind: 'plain', text: value }]);
 });

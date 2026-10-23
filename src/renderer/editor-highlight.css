@@ -91,6 +91,10 @@
   visibility: visible;
 }
 
+.file-code-editor[data-language='markdown'] .syntax-token {
+  font-style: normal;
+}
+
 .file-code-editor.syntax-ready > #file-content {
   color: transparent;
   -webkit-text-fill-color: transparent;

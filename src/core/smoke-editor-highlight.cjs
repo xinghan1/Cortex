@@ -12,6 +12,15 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
   const source = ['<!doctype html>', '<html><head>', '<style>', '.panel { color: #8ac6ff; padding: 12px; }', '</style>', '</head><body>', '<h1 class="panel">Synora code</h1>',
     '<script>', 'const label = "<img src=x onerror=window.__editorHighlightUnsafe=1>";', 'function greet(value) { if (value) return label + 3; }', '</script>',
     '<!-- ' + 'long-source-fragment-'.repeat(120) + ' -->', ...Array.from({ length: 140 }, (_, index) => `<p data-row="${index}">Row ${index}</p>`), '</body></html>', ''].join('\n');
+  const markdown = ['# Markdown 标题', '', '- 列表项目', '1. 有序项目', '原文 `inlineCode` 与 **强调**', '> 引用文字', '',
+    '```javascript', 'const jsValue = "hello";', '// JavaScript comment stays aligned', 'function greet(value) { if (value) return jsValue + 42; }', '```', '',
+    '```python', 'def welcome(name):', '    # Python comment stays aligned', '    return "Hello " + name', '```', '',
+    '```json', '{ "safe": true, "count": 7 }', '```', '',
+    '```mystery-language', 'UNKNOWN_FENCE_LITERAL <img src=x onerror=window.__editorHighlightUnsafe=1>', '```', '',
+    '<script>window.__editorHighlightUnsafe=1</script>', '',
+    '<!-- ' + 'markdown-long-source-'.repeat(120) + ' -->',
+    ...Array.from({ length: 140 }, (_, index) => `- 保留原文 ${index} 和 \`inline-${index}\``), ''].join('\n');
+  const markdownThemes = [];
   let child, stage = 'create isolated project';
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, predicate) => { const end = Date.now() + 15000; while (Date.now() < end) { const value = await predicate(); if (value) return value; await wait(25); } throw new Error('Editor highlight smoke timed out: ' + label); };
@@ -21,7 +30,7 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
     const e=getComputedStyle(editor),m=getComputedStyle(mirror),r=editor.getBoundingClientRect(),p=mirror.getBoundingClientRect();
     const gutter=$('file-line-numbers'),numbers=$('file-line-number-content'),g=gutter&&getComputedStyle(gutter),gr=gutter?.getBoundingClientRect(),nr=numbers?.getBoundingClientRect();
     return {tag:editor.tagName,path:selectedPath,value:editor.value,ready:host.classList.contains('syntax-ready'),language:host.dataset.language,
-      mirror:code.textContent.replace(/\u200b$/,''),ariaHidden:mirror.getAttribute('aria-hidden'),active:document.activeElement===editor,
+      mirror:code.textContent.replace(/\u200b$/,''),exactMirror:code.textContent===editor.value+'\u200b',ariaHidden:mirror.getAttribute('aria-hidden'),active:document.activeElement===editor,
       start:editor.selectionStart,end:editor.selectionEnd,foreground:e.color,fill:e.webkitTextFillColor,caret:e.caretColor,
       editorMetrics:[e.fontFamily,e.fontSize,e.fontWeight,e.lineHeight,e.letterSpacing,e.tabSize,e.paddingTop,e.paddingLeft],
       mirrorMetrics:[m.fontFamily,m.fontSize,m.fontWeight,m.lineHeight,m.letterSpacing,m.tabSize,m.paddingTop,m.paddingLeft],
@@ -33,6 +42,7 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
         fontFamily:g.fontFamily,fontSize:g.fontSize,lineHeight:g.lineHeight,paddingTop:parseFloat(e.paddingTop)},
       kinds:[...new Set([...code.querySelectorAll('.syntax-token')].map(node=>node.className))],
       colours:[...new Set([...code.querySelectorAll('.syntax-token')].map(node=>getComputedStyle(node).color))],
+      tokenFontStyles:[...new Set([...code.querySelectorAll('.syntax-token')].map(node=>getComputedStyle(node).fontStyle))],
       unsafe:mirror.querySelectorAll('img,script,style,iframe').length,executed:window.__editorHighlightUnsafe||null};
   })()`);
   const open = async relative => {
@@ -89,6 +99,8 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
     await fs.writeFile(path.join(project, 'sample.html'), source);
     await fs.writeFile(path.join(project, 'plain.txt'), 'Plain source remains readable.\n');
     await fs.writeFile(path.join(project, 'large.js'), 'a'.repeat(160001));
+    await fs.writeFile(path.join(project, 'README.md'), markdown);
+    await fs.writeFile(path.join(project, 'large.md'), '# Large Markdown\n' + 'a'.repeat(160001));
     await fs.writeFile(path.join(project, 'empty.txt'), '');
     await fs.writeFile(path.join(project, 'trailing.txt'), 'one line\n');
     await fs.writeFile(path.join(project, 'many-lines.txt'), '\n'.repeat(100000));
@@ -108,6 +120,73 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
     assert.ok(state.kinds.some(kind => kind.includes('syntax-property')), 'HTML/CSS properties must receive colours');
     assert.ok(state.colours.length >= 6, 'The editor should display several distinct syntax colours');
     assert.notEqual(state.caret, 'rgba(0, 0, 0, 0)', 'The native caret must remain visible');
+
+    stage = 'Markdown source and fenced languages remain editable literal text';
+    await open('README.md'); state = await inspect();
+    assertMirror(state); assertGutter(state); assert.equal(state.language, 'markdown');
+    assert.equal(state.exactMirror, true, 'The mirror must contain only the source plus its one layout sentinel');
+    assert.equal(state.value, markdown); assert.deepEqual(state.tokenFontStyles, ['normal']);
+    const fragments = ['# Markdown 标题', '- ', '`inlineCode`', 'const', 'def', '"safe"'];
+    const marked = await js(`(() => {const editor=$('file-content'),code=$('file-highlight-code');return ${JSON.stringify(fragments)}.map(text=>{
+      const start=editor.value.indexOf(text),end=start+text.length;let offset=0;const kinds=[];
+      for(const node of code.childNodes){const next=offset+node.textContent.length;if(offset<end&&next>start&&node.nodeType===1&&node.classList.contains('syntax-token'))kinds.push(node.className);offset=next;}
+      return {text,start,kinds};});})()`);
+    assert.ok(marked.every(item => item.start >= 0 && item.kinds.length), 'Markdown structure and each known fence language need syntax spans: ' + JSON.stringify(marked));
+    assert.ok(state.mirror.includes('UNKNOWN_FENCE_LITERAL <img src=x onerror=window.__editorHighlightUnsafe=1>'));
+    assert.equal(await fs.readFile(path.join(project, 'README.md'), 'utf8'), markdown, 'Opening/highlighting cannot rewrite Markdown');
+
+    stage = 'native Markdown editing, selection and autosave retain the exact source';
+    await js(`$('file-content').focus();$('file-content').setSelectionRange(0,0);true;`);
+    child.focus(); child.webContents.focus(); await child.webContents.insertText('> Native Markdown edit\n');
+    state = await saved('README.md'); assert.equal(state.value, '> Native Markdown edit\n' + markdown);
+    await until('Markdown edit highlighted', async () => (await inspect()).exactMirror);
+    child.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'z', modifiers: ['control'] });
+    child.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'z', modifiers: ['control'] });
+    await until('Markdown native undo', async () => (await inspect()).value === markdown); await saved('README.md');
+    child.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'a', modifiers: ['control'] });
+    child.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'a', modifiers: ['control'] });
+    const selectedMarkdown = await until('native Markdown selection', async () => { const value = await inspect(); return value.start === 0 && value.end === markdown.length && value; });
+    assert.equal(selectedMarkdown.value.slice(selectedMarkdown.start, selectedMarkdown.end), markdown, 'Native selection owns raw Markdown, never decoration spans or the mirror sentinel');
+    assert.equal(await fs.readFile(path.join(project, 'README.md'), 'utf8'), markdown);
+
+    stage = 'Markdown native scroll retains mirror and line-number alignment';
+    await js(`$('file-content').setSelectionRange(0,0);$('file-content').scrollTop=0;$('file-content').scrollLeft=0;$('file-content').dispatchEvent(new Event('scroll'));true;`);
+    await wait(300);
+    const markdownPoint = await js(`(() => {const n=$('file-content'),r=n.getBoundingClientRect(),p={x:Math.round(r.left+80),y:Math.round(r.top+80)};if(document.elementFromPoint(p.x,p.y)!==n)throw new Error('Markdown editor is covered');return p;})()`);
+    child.webContents.sendInputEvent({ type: 'mouseMove', ...markdownPoint });
+    child.webContents.sendInputEvent({ type: 'mouseWheel', ...markdownPoint, deltaX: 0, deltaY: -300, canScroll: true });
+    state = await until('Markdown vertical scroll', async () => { const value=await inspect();return value.scroll.top>50&&value.scroll.top===value.scroll.mirrorTop&&value.gutter.first>1&&value; });
+    assertMirror(state); assertGutter(state); const markdownGutterLeft = state.gutter.left;
+    await wait(300); child.webContents.sendInputEvent({ type: 'mouseWheel', ...markdownPoint, deltaX: -300, deltaY: 0, canScroll: true });
+    state = await until('Markdown horizontal scroll', async () => {const value=await inspect();return value.scroll.left>0&&value.scroll.left===value.scroll.mirrorLeft&&value;});
+    assertMirror(state); assertGutter(state); assert.equal(state.gutter.left, markdownGutterLeft);
+    // Chromium wheel scrolling can continue briefly after the first changed
+    // offset; let that native animation finish before positioning screenshots.
+    await wait(450);
+
+    stage = 'Markdown colours remain readable in white and industrial styles';
+    const luminance = colour => {const values=colour.match(/[\d.]+/g)?.slice(0,3).map(Number);assert.equal(values?.length,3);return values.map(value=>value/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);};
+    for (const style of ['white', 'industrial']) {
+      await js(`window.forge.setAppearance({uiStyle:${JSON.stringify(style)},selectionColor:null})`);
+      await until('Markdown material applied', () => js(`document.documentElement.dataset.uiStyle===${JSON.stringify(style)}`));
+      await js(`$('file-content').setSelectionRange(0,0);$('file-content').scrollTop=0;$('file-content').scrollLeft=0;$('file-content').dispatchEvent(new Event('scroll'));true;`);
+      state = await until('Markdown screenshot at source origin with settled metrics', async () => { const value=await inspect();return value.scroll.top===0&&value.scroll.left===0&&value.scroll.mirrorTop===0&&value.scroll.mirrorLeft===0&&value.geometry.mirrorWidth===value.geometry.width&&value.geometry.mirrorHeight===value.geometry.height&&JSON.stringify(value.editorMetrics)===JSON.stringify(value.mirrorMetrics)&&value; });
+      assertMirror(state); assertGutter(state); assert.deepEqual(state.tokenFontStyles, ['normal']);
+      const background = await js(`getComputedStyle($('file-content').closest('.file-code-editor')).backgroundColor`);
+      const contrasts = state.colours.map(colour=>{const values=[luminance(colour),luminance(background)].sort((a,b)=>a-b);return (values[1]+.05)/(values[0]+.05);});
+      assert.ok(contrasts.every(value=>value>=4.5), style + ' Markdown syntax contrast is too low: ' + JSON.stringify(contrasts));
+      markdownThemes.push({style,colours:state.colours,background,minimumContrast:Math.min(...contrasts)});
+      await capture('editor-markdown-' + style + '.png');
+    }
+    stage = 'large Markdown plain fallback stays editable and saves only native edits';
+    await open('large.md'); state = await inspect(); const largeMarkdown = state.value;
+    assert.equal(state.ready, false); assert.ok(state.value.length>160000); assert.notEqual(state.fill,'rgba(0, 0, 0, 0)'); assertGutter(state);
+    await js(`$('file-content').focus();$('file-content').setSelectionRange(0,0);true;`);
+    child.focus(); child.webContents.focus(); await child.webContents.insertText('EDITABLE ');
+    state = await saved('large.md'); assert.equal(state.value, 'EDITABLE ' + largeMarkdown); assert.equal(state.ready, false); assertGutter(state);
+    await js(`window.forge.setAppearance({uiStyle:'glass'})`);
+    await until('original glass style restored', () => js(`document.documentElement.dataset.uiStyle==='glass'`));
+    await open('sample.html');
 
     stage = 'native editing, selection, undo and autosave';
     await js(`(() => {const editor=$('file-content');editor.focus();editor.setSelectionRange(0,0);})()`);
@@ -181,6 +260,10 @@ module.exports = async function smokeEditorHighlight({ win, output, dataDir }) {
       reloadRebuildsHighlight: true, screenshots: ['editor-highlight-preview.png'] };
     Object.assign(result, { singleLineNumberColumn: true, virtualVisibleLineNumbers: true, lineNumbersTrackNativeEdits: true,
       fixedHorizontalGutter: true, lineNumbersInPlainAndLargeFiles: true, emptyAndTrailingBlankLines: true });
+    Object.assign(result, { markdownSourceHighlight: true, markdownFencedJavaScriptPythonJson: true, unknownFencePreservesSource: true,
+      markdownNativeEditingSelectionAndUndo: true, markdownMirrorSentinelOnly: true, markdownNativeScrollAligned: true,
+      markdownLargeFileEditableFallback: true, clipboardUntouched: true, markdownThemes });
+    result.screenshots.push('editor-markdown-white.png','editor-markdown-industrial.png');
     await fs.writeFile(path.join(output, 'editor-highlight-smoke-result.json'), JSON.stringify(result, null, 2) + '\n');
     return result;
   } catch (error) {

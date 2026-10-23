@@ -60,15 +60,16 @@ function fallbackClient(f, override = () => null) {
 
 test('checking and downloading only expose public state and never execute the verified installer', async t => {
   const { updater, dir, calls, states } = await fixture(t);
-  assert.deepEqual(updater.snapshot(), { version: null, status: 'idle', progress: 0, error: null });
+  assert.deepEqual(updater.snapshot(), { version: null, status: 'idle', progress: 0, downloadedBytes: 0, totalBytes: null, error: null });
   assert.equal((await updater.check()).status, 'available');
+  assert.equal(updater.snapshot().totalBytes, bytes.length);
   assert.equal((await updater.download()).status, 'downloaded');
   const installer = await updater.verifiedInstaller();
   assert.equal(installer, path.join(await fs.realpath(dir), 'updates', name));
   assert.deepEqual(await fs.readFile(installer), bytes);
   assert.deepEqual(calls.map(call => call.address), [api, url]);
   assert.ok(states.some(state => state.status === 'downloading' && state.progress > 0 && state.progress < 100));
-  for (const state of states) assert.deepEqual(Object.keys(state).sort(), ['error', 'progress', 'status', 'version']);
+  for (const state of states) assert.deepEqual(Object.keys(state).sort(), ['downloadedBytes', 'error', 'progress', 'status', 'totalBytes', 'version']);
   assert.equal(JSON.stringify(states).includes(dir), false);
   assert.equal(JSON.stringify(states).includes('github.com'), false);
   for (const call of calls) {
@@ -78,11 +79,64 @@ test('checking and downloading only expose public state and never execute the ve
   const external = updater.snapshot(); external.status = 'idle'; assert.equal(updater.snapshot().status, 'downloaded');
 });
 
+test('streaming reports received bytes against the verified asset size before download completion', async t => {
+  const partial = deferred(); let stream;
+  const { updater, client } = await fixture(t, { onChange: state => {
+    if (state.status === 'downloading' && state.downloadedBytes === 2048) partial.resolve(state);
+  } });
+  await updater.check();
+  client.fetch = async () => new Response(new ReadableStream({ start(controller) {
+    stream = controller; controller.enqueue(bytes.subarray(0, 2048));
+  } }), { headers: { 'content-length': String(bytes.length) } });
+  const pending = updater.download();
+  const state = await partial.promise;
+  assert.deepEqual({ status: state.status, progress: state.progress, downloaded: state.downloadedBytes, total: state.totalBytes },
+    { status: 'downloading', progress: 25, downloaded: 2048, total: 8192 });
+  assert.deepEqual(updater.snapshot(), state);
+  stream.enqueue(bytes.subarray(2048)); stream.close();
+  const finished = await pending;
+  assert.equal(finished.status, 'downloaded'); assert.equal(finished.progress, 100);
+  assert.equal(finished.downloadedBytes, bytes.length); assert.equal(finished.totalBytes, bytes.length);
+});
+
+test('failed transfers retain the received count and explicit retries restart byte and progress counters', async t => {
+  const { updater, client, states } = await fixture(t);
+  await updater.check(); client.data = bytes.subarray(0, 2048);
+  client.fetch = async () => new Response(client.data);
+  await assert.rejects(updater.download(), /不完整|大小/u);
+  assert.equal(updater.snapshot().status, 'error');
+  assert.equal(updater.snapshot().downloadedBytes, 2048); assert.equal(updater.snapshot().totalBytes, 8192);
+  const count = states.length; client.data = bytes;
+  await updater.download();
+  const retry = states.slice(count);
+  assert.equal(retry[0].status, 'downloading'); assert.equal(retry[0].progress, 0);
+  assert.equal(retry[0].downloadedBytes, 0); assert.equal(retry[0].totalBytes, bytes.length);
+  assert.ok(retry.every((state, index) => !index || state.downloadedBytes >= retry[index - 1].downloadedBytes));
+  assert.ok(retry.filter(state => state.status === 'downloading').every(state => state.progress < 100));
+  assert.equal(retry.at(-1).downloadedBytes, bytes.length);
+});
+
+test('a failure reports small final chunks that were below the progress event throttle', async t => {
+  t.mock.method(Date, 'now', () => 1000);
+  const { updater, client, states } = await fixture(t);
+  await updater.check();
+  client.fetch = async () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(bytes.subarray(0, 2048));
+    controller.enqueue(bytes.subarray(2048, 2049)); controller.close();
+  } }));
+  await assert.rejects(updater.download(), /不完整|大小/u);
+  assert.equal(states.find(state => state.status === 'downloading' && state.progress === 25).downloadedBytes, 2048);
+  assert.equal(updater.snapshot().status, 'error');
+  assert.equal(updater.snapshot().downloadedBytes, 2049);
+  assert.equal(states.at(-1).downloadedBytes, 2049);
+});
+
 test('equal and older versions never offer an installer and stable numeric versions compare correctly', async t => {
   const { updater, client, calls } = await fixture(t);
   for (const tag of ['v0.18.3', '0.18.2', 'v0.9.99']) {
     client.metadata = { ...release(), tag_name: tag, assets: [] };
     assert.equal((await updater.check()).status, 'current'); assert.equal(updater.snapshot().version, null);
+    assert.equal(updater.snapshot().downloadedBytes, 0); assert.equal(updater.snapshot().totalBytes, null);
     await assert.rejects(updater.download(), /先检查/u);
   }
   assert.equal(calls.length, 3);
@@ -206,9 +260,11 @@ test('cached files are rehashed on reuse and again before returning a trusted in
   await updater.check(); await fs.mkdir(path.join(dir, 'updates'));
   await fs.writeFile(path.join(dir, 'updates', name), bytes);
   await updater.download(); assert.equal(calls.length, 1, 'matching cache avoids network but only after verification');
+  assert.equal(updater.snapshot().downloadedBytes, bytes.length); assert.equal(updater.snapshot().totalBytes, bytes.length);
   const file = await updater.verifiedInstaller();
   const changed = Buffer.from(bytes); changed[50] ^= 1; await fs.writeFile(file, changed);
   await assert.rejects(updater.verifiedInstaller(), /已损坏或变化/u);
+  assert.equal(updater.snapshot().downloadedBytes, 0); assert.equal(updater.snapshot().totalBytes, bytes.length);
   assert.equal(updater.snapshot().status, 'error'); await assert.rejects(updater.verifiedInstaller(), /先下载/u);
   client.data = bytes; await updater.download(); assert.deepEqual(await fs.readFile(await updater.verifiedInstaller()), bytes);
 });
