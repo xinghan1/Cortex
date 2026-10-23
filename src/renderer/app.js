@@ -699,11 +699,15 @@ function handleTerminalEvent(event) {
     if (event.result?.outputTruncated === true && typeof event.result.output === 'string') terminalSnapshot({ id: event.id, text: event.result.output });
     const labels = { completed: '已完成', failed: '执行失败', stopped: '已停止', denied: '未执行' };
     const message = typeof event.result?.message === 'string' ? event.result.message : typeof event.result?.error === 'string' ? event.result.error : '';
-    run.result.textContent = `${labels[event.status] || '已结束'}${event.exitCode !== null && event.exitCode !== undefined ? ` · 退出代码 ${event.exitCode}` : ''}${message ? ` · ${message}` : ''}${event.result?.outputTruncated === true ? ' · 输出已节选首尾' : ''}`;
+    const pendingExit = event.result?.cleanupPending === true && event.result.processExitObserved === false;
+    const label = pendingExit ? '已停止等待命令' : labels[event.status] || '已结束';
+    const cleanupDetail = (event.result?.cleanupPending || event.result?.outputIncomplete)
+      ? window.ForgeCommandResult?.describe({}, event.result).detail || '' : '';
+    run.result.textContent = `${label}${event.exitCode !== null && event.exitCode !== undefined ? ` · 退出代码 ${event.exitCode}` : ''}${message ? ` · ${message}` : ''}${cleanupDetail ? ` · ${cleanupDetail}` : ''}${event.result?.outputTruncated === true ? ' · 输出已节选首尾' : ''}`;
     if (terminalCurrentId === event.id || !terminalCurrentId) {
       terminalRunning = false;
       terminalCurrentId = null;
-      $('terminal-status').textContent = labels[event.status] || '已结束';
+      $('terminal-status').textContent = label;
       $('run-status').textContent = '准备就绪';
       clearComposerApprovals();
       if (!restoringWorkspace) {

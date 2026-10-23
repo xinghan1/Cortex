@@ -44,6 +44,16 @@
       status = exitCode === 0 ? 'success' : 'failed';
       label = exitCode === 0 ? '执行完成' : '命令执行失败';
     }
+    if (result?.cleanupPending === true && result.processExitObserved === false) {
+      if (status === 'success' || status === 'unknown') status = 'stopped';
+      label = result.terminated === 'timeout' ? '运行超时，已停止等待' : '已停止等待命令';
+      detail = '已请求终止，但系统尚未确认进程退出；本轮后续操作已停止。请检查磁盘连接和残留进程后再重试。';
+    } else if (result?.outputIncomplete === true) {
+      detail = [detail, '输出管道未正常关闭，已结束等待，部分日志可能缺失。',
+        result.processTreeTerminationConfirmed === false ? '尚未确认所有子进程退出。' : ''].filter(Boolean).join(' ');
+    } else if (result?.cleanupPending === true && result.processTreeTerminationConfirmed === false) {
+      detail = [detail, '主进程已退出，尚未确认所有子进程退出。'].filter(Boolean).join(' ');
+    }
     const command = typeof result?.command === 'string' ? result.command : typeof args.command === 'string' ? args.command : '';
     const stdout = typeof result?.stdout === 'string' ? result.stdout : typeof result?.output === 'string' ? result.output : '';
     const stderr = typeof result?.stderr === 'string' ? result.stderr : '';

@@ -8,8 +8,8 @@ Synora code 是本地运行的 AI 编程桌面基础版。支持 OpenAI GPT、De
 
 | 版本 | 下载文件 | 使用方式 | 本机数据位置 |
 | --- | --- | --- | --- |
-| 安装版 | `Synora-code-Setup-0.18.3-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
-| 便携版 | `Synora-code-0.18.3-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
+| 安装版 | `Synora-code-Setup-0.18.4-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
+| 便携版 | `Synora-code-0.18.4-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
 
 两种版本均无需安装 Node.js。安装版按当前 Windows 用户安装，更新后继续使用固定数据目录，卸载默认保留本机数据；便携版需保留整个解压目录，移动时一并保留 `data\`。安装版与便携版使用各自的数据目录。
 
@@ -29,9 +29,9 @@ npm.cmd run build
 npm.cmd run build:installer
 ```
 
-`npm run build` 生成便携版 `dist/Synora-code-0.18.3-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
+`npm run build` 生成便携版 `dist/Synora-code-0.18.4-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
 
-`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.18.3-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
+`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.18.4-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
 
 `npm ci` 按锁文件安装依赖，首次运行或构建会下载 Electron 运行时，因此需要联网，且不能省略开发依赖。`prepare:sdk` 从仓库内的 TypeScript 源码生成 ChatGPT 登录组件，无需另外克隆第三方仓库。运行开发界面使用 `npm.cmd start`。
 
@@ -217,6 +217,8 @@ Windows 的最小化、最大化／还原和关闭按钮位于同一菜单行右
 视图菜单提供侧边栏（Ctrl + Shift + S）、底部面板（Ctrl + J）、终端（Ctrl + `）、文件导航面板（Ctrl + Shift + E）、摘要固定、对话与文件面板切换、查找（Ctrl + F）、返回与前进、前后侧栏条目、标签切换、文字放大/缩小/恢复，以及全屏（F11）。浏览器子菜单在右侧内置浏览器中打开 HTTP 或 HTTPS 链接。帮助菜单提供检查更新、使用说明和版本信息。
 
 底部终端执行你输入并确认的 PowerShell 命令，每条命令从当前项目根目录开始。它支持输出、退出码、超时及停止，不提供交互式程序输入；需要交互终端的命令请在系统终端运行。执行边界和文件工具的命令确认保持一致。
+
+命令启动前检查项目目录，目录检查最多等待 10 秒，也可通过停止按钮取消。手动终端复用已打开的项目，避免每次运行都同步访问磁盘。命令主进程退出后，输出管道若仍被子进程占用，会在短暂收取剩余输出后结束等待，保留实际退出码并提示日志可能不完整。点击停止或运行超时后，会尝试终止进程树；即使系统迟迟未回应，命令执行器也会在最多约 2.5 秒后释放等待。若尚未确认主进程退出，会明确显示“已停止等待命令”，停止本轮后续操作；请检查磁盘连接及残留进程后再重试。已经提交的文件更改会保留。
 
 ## 选择模型与排查 DeepSeek 错误
 

@@ -35,6 +35,43 @@ test('cancelled tool batch leaves a matching result for every tool call', async 
   assert.deepEqual(messages.filter(m => m.role === 'tool').map(m => m.toolCallId), ['a', 'b']);
 });
 
+test('unconfirmed command termination ends the turn and pairs skipped tools without executing them', async () => {
+  const messages = [], events = [], calls = [];
+  let requests = 0;
+  await assert.rejects(runAgent({ config, messages, signal: new AbortController().signal,
+    workspace: { root: 'test', execute: async name => {
+      calls.push(name);
+      return JSON.stringify({ terminated: 'timeout', exitCode: null, cleanupPending: true, processExitObserved: false });
+    } }, toolDefinitions: [], emit: event => events.push(event),
+    requestModel: async () => {
+      requests++;
+      return { message: { role: 'assistant', content: '', toolCalls: [
+        { id: 'hung', name: 'run_command', arguments: { command: 'build' } },
+        { id: 'write', name: 'write_file', arguments: { path: 'x', content: 'later' } },
+        { id: 'retry', name: 'run_command', arguments: { command: 'build' } },
+      ] }, usage: {} };
+    },
+  }), /尚未确认进程退出/);
+  assert.equal(requests, 1);
+  assert.deepEqual(calls, ['run_command']);
+  assert.deepEqual(messages.filter(message => message.role === 'tool').map(message => message.toolCallId), ['hung', 'write', 'retry']);
+  assert.match(messages.at(-1).content, /未执行此工具/);
+  assert.equal(events.filter(event => event.type === 'tool-start').length, 1);
+});
+
+test('an exited command with incomplete pipe output can return its real result to the model', async () => {
+  const messages = [];
+  let requests = 0;
+  const result = { exitCode: 0, outputIncomplete: true, cleanupPending: true, processExitObserved: true };
+  await runAgent({ config, messages, signal: new AbortController().signal,
+    workspace: { root: 'test', execute: async () => JSON.stringify(result) }, toolDefinitions: [], emit: () => {},
+    requestModel: async () => ({ message: { role: 'assistant', content: ++requests === 1 ? '' : 'Completed with partial logs.',
+      toolCalls: requests === 1 ? [{ id: 'exited', name: 'run_command', arguments: {} }] : [] }, usage: {} }),
+  });
+  assert.equal(requests, 2);
+  assert.deepEqual(JSON.parse(messages.find(message => message.role === 'tool').content), result);
+});
+
 test('legacy round limits are ignored while tool output stays redacted', async () => {
   const messages = [], events = [];
   let requests = 0;

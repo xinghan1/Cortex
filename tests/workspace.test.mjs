@@ -4,6 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { testTempRoot } from './helpers/temp-root.mjs';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { WorkspaceTools, TOOL_DEFINITIONS } from '../src/core/workspace.mjs';
 
 async function fixture(t, options = {}) {
@@ -436,4 +439,59 @@ test('an already aborted task cannot request approval', async t => {
   controller.abort();
   assert.match(await tools.execute('run_command', { command: 'Write-Output unsafe' }, { signal: controller.signal }), /错误：.*已取消/);
   assert.equal(approvals, 0);
+});
+
+test('cancellation during either command root check returns promptly and never proceeds to approval or spawn', async t => {
+  for (const phase of ['before-approval', 'after-approval']) {
+    let approvals = 0, spawns = 0, rootReads = 0, realpathReads = 0, releaseRead, enteredRead;
+    const entered = new Promise(resolve => { enteredRead = resolve; });
+    const { root, tools } = await fixture(t, {
+      approve: async () => { approvals++; return true; }, commandRuntime: { spawnImpl: () => { spawns++; throw new Error('must not spawn'); } },
+    });
+    const originalStat = fs.lstat.bind(fs), originalRealpath = fs.realpath.bind(fs), stat = await originalStat(root);
+    const statMock = t.mock.method(fs, 'lstat', async (...args) => {
+      if (args[0] === root && ++rootReads === (phase === 'before-approval' ? 1 : 2)) {
+        enteredRead(); return new Promise(resolve => { releaseRead = resolve; });
+      }
+      return originalStat(...args);
+    });
+    const realpathMock = t.mock.method(fs, 'realpath', (...args) => { realpathReads++; return originalRealpath(...args); });
+    const controller = new AbortController(), pending = tools.execute('run_command', { command: 'Write-Output never' }, { signal: controller.signal });
+    await entered; const readsAtStop = realpathReads; controller.abort();
+    const result = await pending;
+    assert.match(result, /^错误：任务已取消/u); assert.equal(spawns, 0);
+    assert.equal(approvals, phase === 'before-approval' ? 0 : 1);
+    releaseRead(stat); await immediate(); await immediate();
+    assert.equal(realpathReads, readsAtStop, 'a late disk read must not continue the validation chain');
+    assert.equal(spawns, 0);
+    statMock.mock.restore(); realpathMock.mock.restore();
+  }
+});
+
+test('per-command output routing uses the existing workspace without changing other tool event listeners', async t => {
+  const routed = [], defaults = [];
+  const child = new EventEmitter(); child.pid = 12345; child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  child.kill = () => false; child.unref = () => {};
+  let launched;
+  const started = new Promise(resolve => { launched = resolve; });
+  const { tools } = await fixture(t, { approve: async () => true, onEvent: event => defaults.push(event),
+    commandRuntime: { spawnImpl: () => { launched(); return child; } } });
+  const pending = tools.execute('run_command', { command: 'fixture' }, { onCommandOutput: event => routed.push(event) });
+  await started; child.stdout.write('routed command output'); child.emit('exit', 0, null); child.emit('close', 0, null);
+  const result = await jsonResult(pending);
+  assert.equal(result.exitCode, 0); assert.equal(routed[0].text, 'routed command output'); assert.deepEqual(defaults, []);
+  tools.onEvent({ type: 'separate-tool' }); assert.equal(defaults[0].type, 'separate-tool');
+});
+
+test('a stalled directory check times out before approval and does not continue when the disk read eventually returns', async t => {
+  let approvals = 0, spawned = false, completeRead, laterReads = 0;
+  const { tools, root } = await fixture(t, { approve: async () => { approvals++; return true; },
+    commandRuntime: { pathCheckTimeoutMs: 20, spawnImpl: () => { spawned = true; throw new Error('unexpected spawn'); } } });
+  const originalStat = fs.lstat.bind(fs), originalRealpath = fs.realpath.bind(fs), stat = await originalStat(root);
+  const statMock = t.mock.method(fs, 'lstat', (...args) => args[0] === root ? new Promise(resolve => { completeRead = resolve; }) : originalStat(...args));
+  const realpathMock = t.mock.method(fs, 'realpath', (...args) => { laterReads++; return originalRealpath(...args); });
+  const result = await tools.execute('run_command', { command: 'never' });
+  assert.match(result, /目录检查超时.*未启动命令/u); assert.equal(approvals, 0); assert.equal(spawned, false);
+  completeRead(stat); await immediate(); await immediate(); assert.equal(laterReads, 0); assert.equal(spawned, false);
+  statMock.mock.restore(); realpathMock.mock.restore();
 });

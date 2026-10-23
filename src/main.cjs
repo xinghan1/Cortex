@@ -1596,7 +1596,12 @@ function menuHandlers() {
       requireIdle(); requireSharedReady(); requireTools();
       if (typeof arg?.command !== 'string' || !arg.command.trim() || arg.command.includes('\0') || arg.command.length > 16000 || (arg.timeoutMs !== undefined && (!Number.isSafeInteger(arg.timeoutMs) || arg.timeoutMs < 1000 || arg.timeoutMs > 600000))) throw new Error('终端命令或超时参数无效。');
       const run = makeRun('terminal'); run.command = arg.command; activeRun = run;
-      terminal = new TerminalSession({ workspaceFactory: ({ onEvent }) => new WorkspaceTools(tools.root, { approve, onEvent }), redact, onEvent: emit });
+      // Reuse the validated workspace: constructing one here performs synchronous
+      // disk checks and can block even the stop IPC when a volume disappears.
+      const terminalTools = tools;
+      terminal = new TerminalSession({ workspaceFactory: ({ onEvent }) => ({
+        execute: (name, args, options) => terminalTools.execute(name, args, { ...options, onCommandOutput: onEvent }),
+      }), redact, onEvent: emit });
       setTimeout(async () => {
         try { await terminal.run({ id: run.id, command: arg.command, timeoutMs: arg.timeoutMs, signal: run.controller.signal }); }
         catch (error) { emit({ type: 'terminal-end', id: run.id, status: run.controller.signal.aborted ? 'stopped' : 'failed', result: redact(error.message || '终端执行失败。') }); }
@@ -1814,6 +1819,15 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'command-stop') {
+    const result = { version: app.getVersion(), commandStop: await require('./core/smoke-command-stop.cjs')({
+      win, output, dataDir, configureWorkspaceTools: decorate => { WorkspaceTools = decorate(WorkspaceTools); },
+    }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_COMMAND_STOP_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'updater') {
     const configureUpdater = async options => {
       await appUpdater.dispose();

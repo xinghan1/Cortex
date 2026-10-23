@@ -129,6 +129,52 @@ test('large command output uses its final bounded arrival-order preview without 
   assert.deepEqual(events.at(-1).result, value.result);
 });
 
+test('terminal end preserves observed process and cleanup facts without treating incomplete pipes as command failure', async () => {
+  const uncertain = { processExitObserved: false, terminationConfirmed: false, processTreeTerminationConfirmed: false,
+    outputIncomplete: true, cleanupPending: true };
+  const exitedWithOpenPipes = { processExitObserved: true, terminationConfirmed: null, processTreeTerminationConfirmed: false,
+    outputIncomplete: true, cleanupPending: true };
+  for (const [metadata, result, expected] of [
+    [uncertain, { exitCode: null, terminated: 'cancelled' }, 'stopped'],
+    [uncertain, { exitCode: null, terminated: 'timeout' }, 'failed'],
+    [exitedWithOpenPipes, { exitCode: 0 }, 'completed'],
+    [exitedWithOpenPipes, { exitCode: 7 }, 'failed'],
+    [{ ...exitedWithOpenPipes, terminationConfirmed: true }, { exitCode: 0, terminated: 'cancelled' }, 'stopped'],
+    [{ processExitObserved: true, terminationConfirmed: null, processTreeTerminationConfirmed: null, outputIncomplete: false, cleanupPending: false }, { exitCode: 0 }, 'completed'],
+  ]) {
+    const events = [], session = new TerminalSession({ onEvent: event => events.push(event),
+      workspaceFactory: () => ({ execute: async () => success({ ...metadata, ...result }) }) });
+    const completed = await session.run({ command: 'fixture' });
+    assert.equal(completed.status, expected); assert.deepEqual(events.at(-1).result, completed.result);
+    for (const [key, value] of Object.entries(metadata)) assert.equal(completed.result[key], value, key);
+    assert.equal(Object.hasOwn(completed.result, 'message'), false, 'Presentation can use the facts without a duplicate generated message');
+  }
+});
+
+test('command output callback supports a reused workspace and ignores cancelled or previous-run output', async () => {
+  const first = deferred(), started = deferred(), second = deferred(), secondStarted = deferred(), events = [], callbacks = [];
+  const workspace = { execute: async (_name, _args, options) => {
+    callbacks.push(options.onCommandOutput);
+    if (callbacks.length === 1) { started.resolve(); return first.promise; }
+    secondStarted.resolve(); return second.promise;
+  } };
+  const session = new TerminalSession({ workspaceFactory: () => workspace, onEvent: event => events.push(event) });
+  const one = session.run({ id: 'first', command: 'first' }); await started.promise;
+  callbacks[0]({ type: 'command-output', stream: 'stdout', text: 'first before stop\n' });
+  session.stop();
+  callbacks[0]({ type: 'command-output', stream: 'stdout', text: 'after stop\n' });
+  first.resolve(success({ exitCode: null, terminated: 'cancelled', processExitObserved: false,
+    terminationConfirmed: false, processTreeTerminationConfirmed: false, outputIncomplete: true, cleanupPending: true }));
+  assert.equal((await one).result.output, 'first before stop\n');
+  const two = session.run({ id: 'second', command: 'second' }); await secondStarted.promise;
+  callbacks[0]({ type: 'command-output', stream: 'stdout', text: 'late first output\n' });
+  callbacks[1]({ type: 'command-output', stream: 'stdout', text: 'second only\n' });
+  second.resolve(success());
+  assert.equal((await two).result.output, 'second only\n');
+  assert.deepEqual(events.filter(event => event.type === 'terminal-output').map(event => [event.id, event.text]),
+    [['first', 'first before stop\n'], ['second', 'second only\n']]);
+});
+
 test('reports denial, failure exit code, timeout, output limit and malformed workspace responses', async () => {
   for (const [raw, expected, code] of [
     [JSON.stringify({ denied: true, message: 'refused' }), 'denied', null],
@@ -223,9 +269,11 @@ test('executes a real approved local PowerShell command at the workspace root wi
   });
   const events = [];
   const approvals = [];
+  const originalEvents = [];
+  const workspace = new WorkspaceTools(root, { onEvent: event => originalEvents.push(event), approve: async approval => { approvals.push(approval); return true; } });
   const session = new TerminalSession({
     onEvent: event => events.push(event),
-    workspaceFactory: ({ onEvent }) => new WorkspaceTools(root, { onEvent, approve: async approval => { approvals.push(approval); return true; } }),
+    workspaceFactory: () => workspace,
   });
   const completed = await session.run({ command: "Write-Output 'terminal-module-ok 中文测试'; Write-Output (Get-Location).Path" });
   assert.equal(completed.status, 'completed', JSON.stringify(completed));
@@ -236,4 +284,5 @@ test('executes a real approved local PowerShell command at the workspace root wi
   assert.equal(approvals[0].kind, 'command');
   assert.match(approvals[0].detail, /系统沙箱/);
   assert.ok(events.some(event => event.type === 'terminal-output' && event.text.includes('中文测试')));
+  assert.equal(originalEvents.some(event => event.type === 'command-output'), false, 'Terminal output does not leak to the reused workspace event channel');
 });

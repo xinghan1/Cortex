@@ -417,9 +417,11 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
       telemetry.setPhase('completed'); return;
     }
     // Every requested call receives a result, including refusals and cancellation, so history remains valid.
+    let commandCleanupError = null;
     for (const call of message.toolCalls) {
       let result, fileChange;
       if (signal.aborted) result = '操作已停止，未执行此工具。';
+      else if (commandCleanupError) result = '操作已停止，未执行此工具。上一条命令尚未确认退出，本轮不再继续操作。';
       else {
         telemetry.setPhase('tool');
         emit({ type: 'tool-start', name: call.name, args: call.arguments, toolCallId: call.id });
@@ -444,12 +446,23 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
             : `工具执行失败：${error.message}`;
         }
       }
+      // A bounded stop can release the UI before Windows confirms shell exit.
+      // Preserve tool-call pairing, but never let this batch or the next model
+      // request start more work beside a possibly still-running command.
+      if (call.name === 'run_command') {
+        let commandResult;
+        try { commandResult = JSON.parse(result); } catch {}
+        if (commandResult?.cleanupPending === true && commandResult.processExitObserved === false) {
+          commandCleanupError = new Error('已停止等待命令，但系统尚未确认进程退出，本轮后续操作已停止。请检查磁盘连接和残留进程后再重试。');
+        }
+      }
       result = redact(String(result));
       messages.push({ role: 'tool', toolCallId: call.id, content: result });
       invalidateContext('changed');
       emit({ type: 'tool-result', name: call.name, result, toolCallId: call.id, ...(fileChange ? { fileChange } : {}) });
     }
     signal.throwIfAborted();
+    if (commandCleanupError) throw commandCleanupError;
   }
   } finally {
     clearInterval(timer);

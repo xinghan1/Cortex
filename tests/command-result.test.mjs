@@ -17,6 +17,28 @@ test('exit code determines command success independently of diagnostic output', 
   }
 });
 
+test('unconfirmed command cleanup never claims that the process stopped or succeeded', () => {
+  for (const terminated of ['cancelled', 'timeout', 'error']) {
+    const value = describe({}, { terminated, exitCode: null, processExitObserved: false, cleanupPending: true, outputIncomplete: true });
+    assert.match(value.label, /停止等待/);
+    assert.match(value.detail, /尚未确认进程退出/);
+    assert.notEqual(value.status, 'success');
+    assert.equal(value.exitCode, null);
+  }
+  assert.notEqual(describe({}, { exitCode: 0, processExitObserved: false, cleanupPending: true }).status, 'success');
+});
+
+test('incomplete output preserves the observed exit code and explains remaining child-process uncertainty', () => {
+  for (const exitCode of [0, 7]) {
+    const value = describe({}, { exitCode, processExitObserved: true, outputIncomplete: true,
+      cleanupPending: true, processTreeTerminationConfirmed: false });
+    assert.equal(value.status, exitCode === 0 ? 'success' : 'failed');
+    assert.equal(value.exitCode, exitCode);
+    assert.match(value.detail, /部分日志可能缺失/);
+    assert.match(value.detail, /尚未确认所有子进程退出/);
+  }
+});
+
 test('a bounded output preview preserves the real command exit status and old interruption records', () => {
   const preview = { stdout: 'head\n[中间输出已省略]\ntail\n', stderr: '', outputTruncated: true, outputBytes: 200_000 };
   for (const [result, expected] of [

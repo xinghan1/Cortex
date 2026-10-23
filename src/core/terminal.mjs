@@ -67,18 +67,19 @@ export class TerminalSession {
       if (combinedSignal.aborted) {
         result = { ...failure('终端命令已停止。'), terminated: 'cancelled' };
       } else {
-        const workspace = await this.#workspaceFactory({ onEvent: event => {
-          if (this.#active !== active || event?.type !== 'command-output' || typeof event.text !== 'string') return;
+        const onCommandOutput = event => {
+          if (this.#active !== active || combinedSignal.aborted || event?.type !== 'command-output' || typeof event.text !== 'string') return;
           if (event.stream !== 'stdout' && event.stream !== 'stderr') return;
           active.output += event.text;
           // Always redact the full arrival-order snapshot: credentials can cross stream/chunk boundaries.
           this.#emit({ type: 'terminal-output', id, stream: event.stream, text: this.#safeText(active.output), replace: true });
-        } });
+        };
+        const workspace = await this.#workspaceFactory({ onEvent: onCommandOutput });
         if (!workspace || typeof workspace.execute !== 'function') throw new Error('请先打开项目文件夹。');
         if (combinedSignal.aborted) {
           result = { ...failure('终端命令已停止。'), terminated: 'cancelled' };
         } else {
-          const raw = await workspace.execute('run_command', { command, timeout_ms: timeout }, { signal: combinedSignal });
+          const raw = await workspace.execute('run_command', { command, timeout_ms: timeout }, { signal: combinedSignal, onCommandOutput });
           if (typeof raw !== 'string') throw new Error('终端执行器返回了无效结果。');
           try { result = JSON.parse(raw); }
           catch { result = failure(raw || '终端执行器未返回结果。'); }
@@ -87,7 +88,7 @@ export class TerminalSession {
       }
       if (combinedSignal.aborted || result.terminated === 'cancelled') status = 'stopped';
       else if (result.denied === true) status = 'denied';
-      else if (result.exitCode === 0 && !result.terminated && !result.error) status = 'completed';
+      else if (result.exitCode === 0 && result.processExitObserved !== false && !result.terminated && !result.error) status = 'completed';
       else status = 'failed';
     } catch (error) {
       status = combinedSignal.aborted ? 'stopped' : 'failed';
@@ -101,6 +102,10 @@ export class TerminalSession {
     const output = result.outputTruncated === true && typeof result.output === 'string' ? result.output : active.output;
     const safeResult = { output: this.#safeText(output), exitCode };
     if (result.outputTruncated === true) safeResult.outputTruncated = true;
+    for (const key of ['processExitObserved', 'terminationConfirmed', 'processTreeTerminationConfirmed', 'outputIncomplete', 'cleanupPending']) {
+      if (typeof result[key] === 'boolean' || ['terminationConfirmed', 'processTreeTerminationConfirmed'].includes(key) && result[key] === null)
+        safeResult[key] = result[key];
+    }
     for (const key of ['outputBytes', 'outputOmittedBytes']) {
       if (Number.isSafeInteger(result[key]) && result[key] >= 0) safeResult[key] = result[key];
     }

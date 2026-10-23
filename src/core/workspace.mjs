@@ -1,24 +1,17 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { TextDecoder } from 'node:util';
-import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { withFileCommit } from './file-commit.mjs';
 import { taskUndoPlan } from './task-change-undo.mjs';
 import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.cjs';
-import { CommandOutputCapture } from './command-output.mjs';
+import { runPowerShellCommand, waitForCommandRead, validateCommandDirectory } from './command-runner.mjs';
 
 const MAX_FILE_BYTES = 512 * 1024;
-const MAX_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_COMMAND_TIMEOUT = 600_000;
 const MAX_COMMAND_TIMEOUT = 600_000;
 const MAX_LIST_ENTRIES = 500;
-const WINDOWS_SYSTEM = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-const POWERSHELL = process.platform === 'win32'
-  ? path.join(WINDOWS_SYSTEM, 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  : 'pwsh';
 const BLOCKED_DIRECTORIES = new Set([
   '.git', '.codex', '.aws', '.ssh', '.azure', '.gnupg', '.npm', '.npm-cache',
   'node_modules',
@@ -104,8 +97,9 @@ function decodeText(buffer) {
 
 export class WorkspaceTools {
   #observedFiles = new Map();
+  #commandRuntime;
 
-  constructor(root, { approve, onEvent, allowExternalPaths = false } = {}) {
+  constructor(root, { approve, onEvent, allowExternalPaths = false, commandRuntime } = {}) {
     if (typeof root !== 'string' || !root) throw new Error('请选择项目根目录。');
     const original = path.resolve(root);
     const stat = fs.lstatSync(original);
@@ -119,6 +113,7 @@ export class WorkspaceTools {
         }
       }
     }
+    this.#commandRuntime = commandRuntime;
     this.root = fs.realpathSync.native(original);
     this.approve = typeof approve === 'function' ? approve : async () => false;
     this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
@@ -144,25 +139,27 @@ export class WorkspaceTools {
     return normalizeWorkspaceReference(this.root, input, { allowExternalPaths: this.allowExternalPaths, allowRoot });
   }
 
-  async #resolve(input = '', { allowRoot = false, allowMissing = false } = {}) {
+  async #resolve(input = '', { allowRoot = false, allowMissing = false, signal } = {}) {
+    const read = operation => waitForCommandRead(operation, signal);
+    abortIfNeeded(signal);
     const reference = this.#reference(input, allowRoot);
     const { parts } = reference;
-    const rootStat = await fsp.lstat(this.root);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory() || !this.#samePath(await fsp.realpath(this.root), this.root)) {
+    const rootStat = await read(() => fsp.lstat(this.root));
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory() || !this.#samePath(await read(() => fsp.realpath(this.root)), this.root)) {
       throw new Error('项目根目录已变化，请重新打开项目。');
     }
     if (this.allowExternalPaths) {
       for (let index = 0; index < reference.walks.length; index += 1) {
         const component = reference.walks[index];
         let stat;
-        try { stat = await fsp.lstat(component); }
+        try { stat = await read(() => fsp.lstat(component)); }
         catch (error) { if (allowMissing && error.code === 'ENOENT') continue; throw error; }
         if (stat.isSymbolicLink()) throw new Error('不允许访问符号链接或 Windows 目录联接。');
         if (index < reference.walks.length - 1 && !stat.isDirectory()) throw new Error('路径的父级不是目录。');
-        if (!this.#samePath(await fsp.realpath(component), component)) throw new Error('路径包含重定向。');
+        if (!this.#samePath(await read(() => fsp.realpath(component)), component)) throw new Error('路径包含重定向。');
       }
       let stat;
-      try { stat = await fsp.lstat(reference.absolute); }
+      try { stat = await read(() => fsp.lstat(reference.absolute)); }
       catch (error) {
         if (allowMissing && error.code === 'ENOENT') return { ...reference, exists: false };
         throw error;
@@ -173,7 +170,7 @@ export class WorkspaceTools {
     let lastStat = rootStat;
     for (let index = 0; index < parts.length; index += 1) {
       current = path.join(current, parts[index]);
-      try { lastStat = await fsp.lstat(current); }
+      try { lastStat = await read(() => fsp.lstat(current)); }
       catch (error) {
         if (error.code === 'ENOENT' && allowMissing) {
           return { ...reference, exists: false };
@@ -182,7 +179,7 @@ export class WorkspaceTools {
       }
       if (lastStat.isSymbolicLink()) throw new Error('不允许访问符号链接或 Windows 目录联接。');
       if (index < parts.length - 1 && !lastStat.isDirectory()) throw new Error('路径的父级不是目录。');
-      const canonical = await fsp.realpath(current);
+      const canonical = await read(() => fsp.realpath(current));
       if (!this.#samePath(canonical, current) || !this.#inside(canonical)) throw new Error('路径超出项目目录或包含重定向。');
     }
     return { ...reference, absolute: current, exists: true, stat: lastStat };
@@ -542,10 +539,12 @@ export class WorkspaceTools {
     return this.#write(input, content.slice(0, index) + new_text + content.slice(index + old_text.length), signal, content, { onFileChange });
   }
 
-  async #command({ command, timeout_ms = DEFAULT_COMMAND_TIMEOUT }, signal) {
+  async #command({ command, timeout_ms = DEFAULT_COMMAND_TIMEOUT }, signal, onCommandOutput = this.onEvent) {
     if (typeof command !== 'string' || !command.trim() || command.includes('\0') || command.length > 16000) throw new Error('请提供 1 至 16000 个字符的 PowerShell 命令。');
     const timeout = Math.min(MAX_COMMAND_TIMEOUT, Math.max(1000, Number.isFinite(timeout_ms) ? timeout_ms : DEFAULT_COMMAND_TIMEOUT));
-    await this.#resolve('', { allowRoot: true });
+    const checkDirectory = () => validateCommandDirectory(checkSignal => this.#resolve('', { allowRoot: true, signal: checkSignal }),
+      signal, this.#commandRuntime?.pathCheckTimeoutMs ?? Math.min(timeout, 10000));
+    await checkDirectory();
     abortIfNeeded(signal);
     const approved = await this.approve({
       kind: 'command', title: '运行 PowerShell 命令', command,
@@ -553,91 +552,13 @@ export class WorkspaceTools {
     });
     abortIfNeeded(signal);
     if (approved !== true) return { denied: true, message: '用户拒绝了命令执行，未启动进程。' };
-    await this.#resolve('', { allowRoot: true });
+    await checkDirectory();
     abortIfNeeded(signal);
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/(?:API[_-]?KEY|(?:^|_)(?:TOKEN|SECRET|PASSWORD|CREDENTIALS?)(?:$|_)|PRIVATE[_-]?KEY)/i.test(name)));
-    return new Promise((resolve, reject) => {
-      const execution = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n${command}`;
-      const child = spawn(POWERSHELL, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', execution], {
-        cwd: this.root, env, shell: false, windowsHide: true,
-        detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const output = { stdout: new CommandOutputCapture(), stderr: new CommandOutputCapture() };
-      const combinedOutput = new CommandOutputCapture();
-      const outputDecoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
-      const liveDecoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
-      let outputBytes = 0;
-      let terminated = null;
-      let forceTimer;
-      let settled = false;
-      const stop = reason => {
-        if (terminated || settled) return;
-        terminated = reason;
-        if (child.pid) {
-          if (process.platform === 'win32') {
-            const killer = spawn(path.join(WINDOWS_SYSTEM, 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-            killer.on('error', () => { try { child.kill('SIGKILL'); } catch {} });
-          } else {
-            try { process.kill(-child.pid, 'SIGKILL'); }
-            catch { try { child.kill('SIGKILL'); } catch {} }
-          }
-        }
-        forceTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
-        forceTimer.unref();
-      };
-      const onAbort = () => stop('cancelled');
-      const timer = setTimeout(() => stop('timeout'), timeout);
-      const cleanup = () => { clearTimeout(timer); clearTimeout(forceTimer); signal?.removeEventListener('abort', onAbort); };
-      signal?.addEventListener('abort', onAbort, { once: true });
-      if (signal?.aborted) onAbort();
-      for (const stream of ['stdout', 'stderr']) {
-        let liveBytes = 0, liveTruncated = false;
-        child[stream].on('data', chunk => {
-          outputBytes += chunk.length;
-          output[stream].append(chunk);
-          combinedOutput.append(Buffer.from(outputDecoders[stream].write(chunk), 'utf8'));
-          const remaining = MAX_OUTPUT_BYTES / 2 - liveBytes;
-          if (remaining > 0) {
-            const part = chunk.subarray(0, remaining);
-            liveBytes += part.length;
-            const text = liveDecoders[stream].write(part);
-            if (text) { try { this.onEvent({ type: 'command-output', stream, text }); } catch {} }
-          }
-          if (chunk.length > remaining && !liveTruncated) {
-            liveTruncated = true;
-            try { this.onEvent({ type: 'command-output', stream, outputTruncated: true, outputBytes,
-              text: '\n[… 后续日志已折叠，命令继续运行，完成后显示首尾内容 …]\n' }); } catch {}
-          }
-        });
-        child[stream].once('end', () => {
-          combinedOutput.append(Buffer.from(outputDecoders[stream].end(), 'utf8'));
-          // A preview cut in the middle of UTF-8 must not emit a replacement
-          // character; the complete tail will be available in the final result.
-          const text = liveTruncated ? '' : liveDecoders[stream].end();
-          if (text) { try { this.onEvent({ type: 'command-output', stream, text }); } catch {} }
-        });
-      }
-      child.once('error', error => { settled = true; cleanup(); reject(new Error(`无法启动 PowerShell：${error.message}`)); });
-      child.once('close', (exitCode, exitSignal) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        const stdout = output.stdout.snapshot(), stderr = output.stderr.snapshot(), combined = combinedOutput.snapshot();
-        const outputTruncated = stdout.truncated || stderr.truncated || combined.truncated;
-        resolve({
-          command, exitCode, signal: exitSignal, terminated,
-          stdout: stdout.text, stderr: stderr.text,
-          ...(outputTruncated ? { output: combined.text } : {}),
-          outputTruncated,
-          outputBytes, outputByteCounts: { stdout: stdout.bytes, stderr: stderr.bytes },
-          outputOmittedBytes: stdout.omittedBytes + stderr.omittedBytes,
-          outputPreviewOmittedBytes: combined.omittedBytes,
-        });
-      });
-    });
+    return runPowerShellCommand({ command, cwd: this.root, env, timeout, signal, onEvent: onCommandOutput }, this.#commandRuntime);
   }
 
-  async execute(name, args = {}, { signal, onFileChange } = {}) {
+  async execute(name, args = {}, { signal, onFileChange, onCommandOutput } = {}) {
     try {
       abortIfNeeded(signal);
       if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('工具参数必须是对象。');
@@ -648,7 +569,7 @@ export class WorkspaceTools {
         case 'search_files': result = await this.#search(args, signal); break;
         case 'write_file': result = await this.#write(args.path, args.content, signal, undefined, { onFileChange }); break;
         case 'replace_in_file': result = await this.#replace(args, signal, onFileChange); break;
-        case 'run_command': result = await this.#command(args, signal); break;
+        case 'run_command': result = await this.#command(args, signal, onCommandOutput); break;
         case 'undo_last_change': return await this.undoLastChange({ signal, onFileChange });
         default: throw new Error(`未知工具：${name}`);
       }
