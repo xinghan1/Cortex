@@ -92,7 +92,7 @@ test('a continuous block mixes reads, lists, edits and commands while unsupporte
   assert.equal(groups(target).length, 1); assert.equal(group.dataset.count, '8'); assert.equal(group.dataset.kind, 'edit-command');
   assert.equal(group.querySelector('.tool-operation-group-label').textContent, '编辑了文件并运行了命令');
   assert.equal(group.querySelector('.tool-operation-group-count').textContent, '8 项操作');
-  for (const name of ['browser_snapshot', 'approval-review', 'search_text', '__proto__', 'constructor']) {
+  for (const name of ['browser_snapshot', 'approval-review', 'unsupported_search', '__proto__', 'constructor']) {
     const first = card(name, 'completed'), second = card(name, 'completed');
     assert.equal(api.appendTool(target, first, event(name)), null); assert.equal(api.appendTool(target, second, event(name)), null);
     assert.equal(first.parentElement, target); assert.equal(second.parentElement, target);
@@ -100,6 +100,53 @@ test('a continuous block mixes reads, lists, edits and commands while unsupporte
   assert.equal(groups(target).length, 1);
   api.appendTool(target, card('read again', 'completed'), event());
   assert.equal(groups(target).length, 1, 'The next operation cannot jump across a browser, approval or unsupported tool');
+});
+
+test('adjacent completed searches form one default-collapsed block preserving exact search results and manual disclosure', () => {
+  const target = new Element('div'), originals = [card('src/main/java', 'completed'), card('src/main/java', 'completed'), card('src/config', 'completed')];
+  assert.equal(api.appendTool(target, originals[0], event('search_files')), null, 'One search stays an ordinary result');
+  const group = api.appendTool(target, originals[1], event('search_files'));
+  assert.equal(group.open, false); assert.equal(group.dataset.kind, 'search'); assert.equal(group.dataset.operation, 'search_files');
+  assert.equal(group.querySelector('.tool-operation-group-label').textContent, '已完成搜索');
+  assert.equal(group.querySelector('.tool-operation-group-count').textContent, '2 次');
+  assert.equal(group.querySelector('.tool-operation-group-status').hidden, true);
+  assert.deepEqual(group.querySelector('.tool-operation-group-items').children, originals.slice(0, 2));
+  group.open = true;
+  assert.equal(api.appendTool(target, originals[2], event('search_files')), group);
+  assert.equal(group.open, true); assert.equal(group.dataset.count, '3');
+  assert.deepEqual(group.querySelector('.tool-operation-group-items').children, originals);
+  assert.ok(originals.every(original => original.querySelector('pre').textContent === 'Original parameters and exact tool result'));
+});
+
+test('search groups keep operation families, assistant messages, steering and task boundaries separate', () => {
+  const target = new Element('div');
+  const append = (name = 'search_files', runId = 'run-one') => api.appendTool(target, card(name, 'completed'), event(name, runId));
+  append('read_file'); append('read_file'); append(); append(); append('run_command'); append('run_command');
+  assert.deepEqual(groups(target).map(group => [group.dataset.kind, group.dataset.count]), [['read', '2'], ['search', '2'], ['command', '2']]);
+  append(); const assistant = new Element('article'); assistant.className = 'message assistant'; target.append(assistant);
+  append(); append();
+  assert.equal(groups(target).at(-1).dataset.kind, 'search'); assert.equal(groups(target).at(-1).dataset.count, '2');
+  api.breakGroup(target); assert.equal(append(), null);
+  append('search_text');
+  assert.equal(groups(target).at(-1).dataset.count, '2', 'Historical search_text joins only the adjacent search family');
+  assert.equal(groups(target).at(-1).dataset.operation, 'mixed');
+  assert.equal(append('search_files', 'another-run'), null);
+  assert.equal(groups(target).length, 5, 'Neither a task boundary nor an assistant message may join earlier searches');
+});
+
+test('search running and historical failure summaries never claim all searches completed or unfold automatically', () => {
+  const target = new Element('div'), completed = card('first', 'completed'), running = card('second');
+  api.appendTool(target, completed, event('search_files（模拟）'));
+  const group = api.appendTool(target, running, event('search_files（模拟）'));
+  assert.equal(group.querySelector('.tool-operation-group-label').textContent, '正在搜索');
+  assert.equal(group.querySelector('.tool-operation-group-status').textContent, '1 进行中 · 1 已完成');
+  finish(running, 'failed');
+  assert.equal(group.open, false); assert.equal(group.querySelector('.tool-operation-group-label').textContent, '搜索');
+  assert.equal(group.querySelector('.tool-operation-group-status').textContent, '1 已完成 · 1 未完成');
+  const historical = new Element('div');
+  api.appendTool(historical, card('restored one', 'completed'), event('search_files'));
+  const restored = api.appendTool(historical, card('restored two', 'completed'), event('search_text'));
+  assert.equal(restored.open, false); assert.equal(restored.querySelector('.tool-operation-group-label').textContent, '已完成搜索');
 });
 
 test('labels describe actual member kinds and count mixed operations without claiming every item edited or ran a command', () => {

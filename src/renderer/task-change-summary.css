@@ -16,6 +16,7 @@
 .task-change-file::before { content: ''; width: 5px; height: 5px; margin: 0 2px 0 1px; flex: none; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); transition: transform 230ms ease; opacity: .7; }
 .task-change-file[aria-expanded='true']::before { transform: rotate(45deg); }
 .task-change-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-change-file[data-external='true'] .task-change-path { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
 .task-change-more, .task-change-actions button { padding: 5px 9px; border: 1px solid rgb(186 209 247 / 20%); border-radius: 7px; background: rgb(170 196 241 / 5%); color: #c0d3f1; font: inherit; cursor: pointer; }
 .task-change-more { width: 100%; margin-top: 6px; border-color: transparent; border-top-color: rgb(186 209 247 / 13%); border-radius: 0; padding-top: 10px; background: transparent; }
 .task-change-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }

@@ -6,11 +6,12 @@
 })(typeof globalThis === 'object' ? globalThis : this, function () {
   const cards = new WeakMap(), groups = new WeakMap(), boundaries = new WeakMap();
   const kinds = Object.freeze({ read_file: 'read', list_files: 'list', write_file: 'edit',
-    replace_in_file: 'edit', undo_last_change: 'edit', run_command: 'command' });
+    replace_in_file: 'edit', undo_last_change: 'edit', run_command: 'command', search_files: 'search', search_text: 'search' });
   function describe(members) {
     const names = new Set(members.map(card => cards.get(card)?.name));
     const categories = new Set([...names].map(name => kinds[name]));
     const edit = categories.has('edit'), command = categories.has('command');
+    if (categories.has('search')) return { kind: 'search', complete: '已完成搜索', running: '正在搜索', neutral: '搜索', readOnly: true, names };
     if (edit && command) return { kind: 'edit-command', complete: '编辑了文件并运行了命令', running: '正在编辑文件并运行命令', neutral: '编辑文件并运行命令', readOnly: false, names };
     if (edit) return { kind: 'edit', complete: '编辑了文件', running: '正在编辑文件', neutral: '编辑文件', readOnly: false, names };
     if (command) return { kind: 'command', complete: '运行了命令', running: '正在运行命令', neutral: '运行命令', readOnly: false, names };
@@ -80,13 +81,16 @@
       return refresh(card);
     detach(card);
     const name = normalizeName(event.name), generation = boundaries.get(target) || 0;
-    const identity = { name, runId: typeof event.runId === 'string' ? event.runId : '', generation, target, group: null };
+    const family = kinds[name] === 'search' ? 'search' : 'operations';
+    const identity = { name, family, runId: typeof event.runId === 'string' ? event.runId : '', generation, target, group: null };
     // A block may mix local reads, edits and commands. Browsing, approvals and
     // arbitrary tool types retain their own rows and break the current block.
+    // Searches form their own adjacent block, keeping their result count and
+    // disclosure separate from local read/edit/command activity.
     if (!Object.hasOwn(kinds, name)) { cards.delete(card); target.append(card); return null; }
     const last = target.lastElementChild, existing = groups.get(last), single = cards.get(last);
     cards.set(card, identity);
-    const matches = value => value && value.runId === identity.runId && value.generation === generation && value.target === target;
+    const matches = value => value && value.family === family && value.runId === identity.runId && value.generation === generation && value.target === target;
     if (matches(existing)) {
       identity.group = last; existing.cards.push(card); existing.body.append(card); refresh(last); return last;
     }
@@ -106,7 +110,7 @@
       group.append(summary, body);
       target.insertBefore(group, last); body.append(last, card);
       single.group = identity.group = group;
-      const state = { runId: identity.runId, generation, target, cards: [last, card], body, label, count, status };
+      const state = { family, runId: identity.runId, generation, target, cards: [last, card], body, label, count, status };
       groups.set(group, state);
       refresh(group); onGroup(group); return group;
     }

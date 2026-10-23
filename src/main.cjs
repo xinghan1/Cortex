@@ -2,6 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const { AppUpdater } = require('./core/app-updater.cjs');
 const { Store } = require('./core/store.cjs');
 const { makePendingContextUsage } = require('./core/session-metrics.cjs');
 const { createTurnUsage } = require('./core/turn-usage.cjs');
@@ -9,6 +11,8 @@ const { installEditorContextMenu } = require('./core/editor-context-menu.cjs');
 const { loadUsageAnalytics } = require('./core/usage-analytics-loader.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
 const { UIPreferences } = require('./core/ui-preferences.cjs');
+const { PermissionPreferences } = require('./core/permission-preferences.cjs');
+const { ApprovalReviewerPreferences, approvalReviewerConnectionKey } = require('./core/approval-reviewer-preferences.cjs');
 const { AppearanceStore } = require('./core/appearance.cjs');
 const { nativeAppearance } = require('./core/native-appearance.cjs');
 const { RecentProjects } = require('./core/recent-projects.cjs');
@@ -45,8 +49,8 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, TerminalSession, ManualFileManager, normalizeImageAttachments, persistentTaskUndo;
-let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, appearance, recentProjects, primaryContext;
+let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
+let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
 const windows = new Map();
@@ -56,6 +60,71 @@ const sessionDeleteLocks = new Set();
 let sessionRenameRevision = 0;
 const rendererErrors = [];
 let sharedQueue = Promise.resolve(), sharedMutations = 0, quitting = false;
+let appUpdater, updateEnabled = false, updateInstalling = false, updateInstallPromise = null;
+let updateTimer, updateInterval;
+let launchInstaller = launchUpdateInstaller;
+let quitForUpdate = () => { quitting = true; app.quit(); };
+function appUpdateSnapshot() {
+  return { ...appUpdater?.snapshot(), currentVersion: app.getVersion(), enabled: updateEnabled,
+    ...(updateInstalling ? { status: 'installing' } : {}) };
+}
+function publishAppUpdate() {
+  const update = appUpdateSnapshot();
+  for (const host of windows.values()) {
+    if (host.win && !host.win.isDestroyed() && !host.win.webContents.isDestroyed())
+      host.win.webContents.send('forge:event', { type: 'app-update', update });
+  }
+}
+function launchUpdateInstaller(filename) {
+  // The path comes only from verifiedInstaller(), never from renderer input.
+  // These flags are supported by the bundled electron-builder NSIS template.
+  return new Promise((resolve, reject) => {
+    const child = spawn(filename, ['--updated', '/S', '--force-run'], {
+      detached: true, stdio: 'ignore', windowsHide: true, shell: false,
+    });
+    child.once('error', () => reject(new Error('无法启动更新程序，请稍后重试。')));
+    child.once('spawn', () => { child.unref(); resolve(); });
+  });
+}
+function requireUpdateIdle() {
+  if (!updateEnabled) throw new Error('此版本请从 GitHub Releases 下载新版；安装版支持应用内更新。');
+  if (quitting || sharedMutations || sessionRenameLocks.size || sessionDeleteLocks.size
+      || [...windows.values()].some(host => host.busy || host.hasPendingPrompts || host.editorDirty || host.hasFileOperation))
+    throw new Error('请先结束所有窗口的任务、保存文件，并处理待发送消息，再重启更新。');
+}
+function installAppUpdate() {
+  if (updateInstallPromise) return updateInstallPromise;
+  requireUpdateIdle();
+  if (appUpdater.snapshot().status !== 'downloaded') throw new Error('请先下载并校验更新包。');
+  const lockedWindows = [...windows.values()].map(host => ({ win: host.win, enabled: host.win.isEnabled() }));
+  for (const { win } of lockedWindows) win.setEnabled(false);
+  updateInstalling = true; publishAppUpdate();
+  updateInstallPromise = (async () => {
+    try {
+      const filename = await appUpdater.verifiedInstaller();
+      requireUpdateIdle();
+      const contexts = [...windows.values()].flatMap(host => [...host.contexts]);
+      for (const context of contexts) context.cancelPromptCompletion();
+      await Promise.all([...contexts.map(context => context.settlePromptCompletion()), sessionRestore?.flush(), persistentTaskUndo?.flush(), permissionPreferences?.settled(),
+        approvalReviewerPreferences?.settled(), sharedQueue]);
+      requireUpdateIdle();
+      await launchInstaller(filename);
+      chatgpt?.cancelSignIn();
+      quitForUpdate();
+      return appUpdateSnapshot();
+    } finally {
+      for (const { win, enabled } of lockedWindows) if (!win.isDestroyed()) win.setEnabled(enabled);
+      updateInstalling = false; updateInstallPromise = null; publishAppUpdate();
+    }
+  })();
+  return updateInstallPromise;
+}
+function startUpdateChecks() {
+  if (!updateEnabled || smoke) return;
+  const check = () => { if (!quitting && !updateInstalling) void appUpdater.check().catch(() => {}); };
+  updateTimer = setTimeout(check, 15000); updateTimer.unref();
+  updateInterval = setInterval(check, 4 * 60 * 60 * 1000); updateInterval.unref();
+}
 function redact(value) { return chatgpt ? chatgpt.redact(store.redact(value)) : store.redact(value); }
 function requireGlobalIdle() {
   if ([...windows.values()].some(context => context.busy || context.hasPendingPrompts)) throw new Error('请先停止所有窗口的任务，并发送或移除待发送消息，再更改共享配置。');
@@ -166,6 +235,7 @@ function createWindowHost({ restoreTarget = null } = {}) {
         // The editor has already saved before the renderer requests a switch.
         // Recheck after asynchronous filesystem/history work as well.
         previous.requireSwitchReady();
+        previous.cancelPromptCompletion();
         host.active = target;
         await target.rememberSelection();
         previous.refreshBrowserVisibility(); target.refreshBrowserVisibility();
@@ -188,13 +258,14 @@ function createWindowHost({ restoreTarget = null } = {}) {
 }
 
 function createWindowContext(host) {
-let win, tools, currentSession, activeRun, terminal, fileManager;
+let win, tools, currentSession, activeRun, terminal, fileManager, editorFiles;
 const workspaceId = randomUUID();
 let modelSelection = null, configRevision = 0, approvalReviewerModel = null;
+let approvalReviewerScope = null, approvalReviewerConnectionCache = null;
 let metricsConnectionKey = null;
 const settingsCatalogPreviews = new Map();
 const terminalEvents = [];
-let permissionMode = 'request', browser;
+let permissionMode = permissionPreferences.get(null), browser;
 let eventSequence = 0, localOperation = false, promptPreflights = 0, closeAllowed = false, closing = false, loadedSnapshot = false;
 let initialized = false, lastRememberedSessionId = null;
 let lastFindText = null;
@@ -204,6 +275,39 @@ let queuePaused = false, queueReason = null, promptOperations = Promise.resolve(
 const approvals = new Map();
 const approvalController = createApprovalController({ pending: approvals, getMode: () => permissionMode,
   decide: approvalDecision, review: reviewOperation, emit, redact, idFactory: randomUUID });
+const promptCompletion = createPromptCompletionController({
+  getSnapshot() {
+    requireSharedReady();
+    if (shuttingDown || quitting || win?.isDestroyed() || host.active !== context || localOperation || promptPreflights)
+      throw new Error('会话正在切换或关闭，请稍后补全提示词。');
+    return { sessionId: currentSession?.id, workspaceId, messages: currentSession?.messages,
+      chatgptProfileId: currentSession?.chatgptProfileId || null, configRevision };
+  },
+  isCurrent: snapshot => !shuttingDown && !quitting && !win?.isDestroyed() && host.active === context
+    && currentSession?.id === snapshot.sessionId && configRevision === snapshot.configRevision
+    && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId,
+  async getConfig(snapshot, signal) {
+    signal.throwIfAborted();
+    const connection = await catalogContext();
+    signal.throwIfAborted();
+    const profileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
+    if (snapshot.hasConversation && (snapshot.chatgptProfileId || null) !== profileId)
+      throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
+    const config = await currentRequestConfig({ controller: { signal }, connectionKey: connection.key,
+      chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null }, publicSettings().model);
+    return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null };
+  },
+  async validateConfig(config, snapshot, signal) {
+    signal.throwIfAborted();
+    const connection = await catalogContext();
+    signal.throwIfAborted();
+    if (connection.key !== config.connectionKey || configRevision !== snapshot.configRevision
+        || config.authMode === 'chatgpt' && (!connection.account?.session?.profileId
+          || connection.account.session.profileId !== config.chatgptProfileId))
+      throw new DOMException('模型连接已变化，提示词补全已取消。', 'AbortError');
+  },
+  requestModel: dispatchModelRequest, onUsage: recordRunUsage, redact,
+});
 function publicSettings() {
   const settings = store.publicSettings();
   if (!modelSelection) modelSelection = {
@@ -217,9 +321,9 @@ function publicSettings() {
   return { ...settings, provider: modelSelection.provider, ...settings.providers[modelSelection.provider] };
 }
 function rememberSelection(settings) {
-  const previous = publicSettings();
+  promptCompletion.abort();
+  publicSettings();
   const value = settings.providers[settings.provider];
-  if (previous.provider !== settings.provider || previous.authMode !== value.authMode) approvalReviewerModel = null;
   modelSelection.provider = settings.provider;
   modelSelection.providers[settings.provider] = {
     model: value.model, reasoningEffort: value.reasoningEffort, authMode: value.authMode,
@@ -311,7 +415,7 @@ function emit(event) {
     event = { ...event, retryAt: Date.now() + Math.max(0, Math.min(60_000, Number(event.delayMs) || 0)) };
   }
   if (activeRun && event.type === 'context-compaction-start') activeRun.compacting = true;
-  if (activeRun && event.type === 'context-compacted') activeRun.compacting = false;
+  if (activeRun && ['context-compacted', 'context-compaction-end'].includes(event.type)) activeRun.compacting = false;
   if (activeRun?.kind === 'agent' && event.type === 'telemetry') activeRun.telemetry = telemetrySnapshot(event);
   if (activeRun?.kind === 'agent' && !activeRun.demo && event.type === 'tool-start') {
     currentSession.toolSteps = (Number.isSafeInteger(currentSession.toolSteps) ? currentSession.toolSteps
@@ -353,7 +457,7 @@ function emit(event) {
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
   if (host.active === context) win.webContents.send('forge:event', clean);
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
-  if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
+  if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'context-compaction-end', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
     // Snapshots have their own bounded archive. Do not retain a second copy
     // in the 150-event suffix after the live event has been delivered.
     const { fileChange: localSnapshot, ...publicEvent } = clean;
@@ -467,6 +571,7 @@ function scheduleNextPrompt() {
   }));
 }
 async function submitPrompt(arg) {
+  promptCompletion.abort();
   const attachments = normalizeImageAttachments(arg?.attachments);
   if (typeof arg?.text !== 'string' || (!arg.text.trim() && !attachments.length) || arg.text.trim().length > 40000 || (arg.mode !== undefined && !['queue', 'steer'].includes(arg.mode))) throw new Error('请输入最多 40000 个字符的提示词或添加图片，并选择有效发送方式。');
   const createdAt = new Date().toISOString();
@@ -584,6 +689,7 @@ async function reviewOperation(request, { signal, runId }) {
   const run = activeRun;
   if (!run || run.id !== runId || signal.aborted) throw new DOMException('审批已取消。', 'AbortError');
   const sessionId = currentSession.id;
+  restoreApprovalReviewer(await catalogContext());
   const config = await currentRequestConfig(run, approvalReviewerModel || undefined);
   signal.throwIfAborted();
   const userIntent = currentSession.messages.filter(message => message.role === 'user' && typeof message.content === 'string').map(message => message.content);
@@ -594,6 +700,7 @@ async function reviewOperation(request, { signal, runId }) {
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
   const context = await catalogContext({}, account);
+  restoreApprovalReviewer(context);
   metricsConnectionKey = context.key;
   reconcileReasoningSelection(context);
   const sessions = (await store.listSessions()).filter(session => !recentProjects?.isHidden(session.workspace));
@@ -624,6 +731,29 @@ function catalogConnectionKey(provider, authMode, config, account) {
   const credential = authMode === 'chatgpt' ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId] : store.settings.providers[provider].encryptedKey || '';
   return createHash('sha256').update(JSON.stringify([provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl, credential,
     ...(provider === 'ollama' ? [config.contextWindowTokens] : [])])).digest('hex');
+}
+function reviewerConnectionKey(connection) {
+  const { provider, authMode, config, account } = connection;
+  // Cache by encrypted credential/config identity so periodic UI broadcasts do
+  // not repeatedly decrypt keys. The persisted digest uses the stable secret,
+  // not random encrypted bytes or transient ChatGPT connection status.
+  const fingerprint = JSON.stringify([provider, authMode, authMode === 'chatgpt' ? account?.session?.profileId || null
+    : [config.baseUrl, config.apiProtocol, store.settings.providers[provider].encryptedKey || '']]);
+  if (approvalReviewerConnectionCache?.fingerprint === fingerprint) return approvalReviewerConnectionCache.key;
+  try {
+    const key = approvalReviewerConnectionKey(connection, authMode === 'chatgpt' ? '' : store.key(provider));
+    approvalReviewerConnectionCache = { fingerprint, key };
+    return key;
+  } catch { return null; /* Unreadable credentials must not break the settings UI. */ }
+}
+function restoreApprovalReviewer(connection) {
+  const key = reviewerConnectionKey(connection), root = tools?.root || null;
+  const scope = JSON.stringify([root, key]);
+  if (approvalReviewerScope !== scope) {
+    approvalReviewerScope = scope;
+    approvalReviewerModel = key ? approvalReviewerPreferences.get(root, key) : null;
+  }
+  return key;
 }
 function capabilitiesFor(context, model) {
   const metadata = catalogSnapshots.get(context.key)?.models.find(item => item.id === model);
@@ -761,10 +891,10 @@ function setWorkspace(root) {
   if (shuttingDown) throw new Error('窗口正在关闭，请在新窗口继续操作。');
   requireEditorSettled();
   if (tools && projectIdentity(tools.root) !== projectIdentity(root)) throw new Error('请通过项目下拉菜单切换项目，当前任务的项目目录不能更改。');
-  const nextTools = new WorkspaceTools(root, { approve, onEvent: emit });
+  const nextTools = new WorkspaceTools(root, { approve, onEvent: emit, allowExternalPaths: true });
   const nextFiles = new ManualFileManager(nextTools.root, { trash: absolute => shell.trashItem(absolute) });
-  if (!tools || projectIdentity(tools.root) !== projectIdentity(nextTools.root)) { permissionMode = 'request'; browser?.resetWorkspace(); }
-  tools = nextTools; fileManager = nextFiles; fileClipboard = null; editorDirty = false;
+  if (!tools || projectIdentity(tools.root) !== projectIdentity(nextTools.root)) { permissionMode = permissionPreferences.get(nextTools.root); browser?.resetWorkspace(); }
+  tools = nextTools; fileManager = nextFiles; editorFiles = new EditorFileTargets(nextFiles); fileClipboard = null; editorDirty = false;
 }
 async function activateProjectLocal(root, restore = true) {
   const canonical = await fs.realpath(root);
@@ -781,6 +911,7 @@ async function activateProjectLocal(root, restore = true) {
   return state();
 }
 async function createSession({ temporary = false } = {}) {
+  promptCompletion.abort();
   currentSession = store.createSession(tools?.root || null);
   loadedSnapshot = false;
   if (temporary) currentSession.temporary = true;
@@ -791,6 +922,7 @@ async function createSession({ temporary = false } = {}) {
   return currentSession;
 }
 async function startTask(input) {
+  promptCompletion.abort();
   requireIdle();
   requireSharedReady();
   const startingGeneration = stopGeneration;
@@ -881,7 +1013,7 @@ async function startTask(input) {
             return browser.execute(name, args, { ...options, approve });
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id,
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);
@@ -996,6 +1128,10 @@ function buildHandlers() {
     await broadcastState(); return state();
   };
   const handlers = {
+    getAppUpdate: () => appUpdateSnapshot(),
+    checkAppUpdate: async () => { if (updateEnabled) await appUpdater.check(); return appUpdateSnapshot(); },
+    downloadAppUpdate: async () => { await appUpdater.download(); return appUpdateSnapshot(); },
+    installAppUpdate,
     getState: state,
     getUsageAnalytics: () => loadUsageAnalytics(store, [...windows.values()].flatMap(value => [...value.contexts].map(context => context.currentSession)).filter(Boolean)),
     getAppearance: () => appearance.snapshot(),
@@ -1065,6 +1201,9 @@ function buildHandlers() {
       const mode = validateMode(arg?.mode);
       if (localOperation || promptPreflights || shuttingDown || quitting) throw new Error('请等待当前操作结束后再切换权限。');
       if (mode === 'full' && arg?.confirmed !== true) throw new Error('启用完全控制前需要确认风险。');
+      const root = tools?.root || null;
+      await permissionPreferences.set(root, mode);
+      if ((tools?.root || null) !== root || shuttingDown || quitting) return { mode: permissionMode };
       permissionMode = mode;
       ++configRevision;
       approvalController.reconcile();
@@ -1080,8 +1219,14 @@ function buildHandlers() {
         const capabilities = capabilitiesFor(context, arg.model);
         if (capabilities.textCompatible === false || capabilities.compatible === false && capabilities.textCompatible !== true) throw new Error('此模型不支持文字审批，请选择支持文字对话的模型。');
       }
-      approvalReviewerModel = arg.model;
-      approvalController.reconcile();
+      const root = tools?.root || null, connection = restoreApprovalReviewer(context);
+      if (!connection) throw new Error('当前模型连接不可用，请检查连接设置后重试。');
+      await approvalReviewerPreferences.set(root, connection, arg.model);
+      const currentConnection = restoreApprovalReviewer(await catalogContext());
+      if ((tools?.root || null) === root && currentConnection === connection && !shuttingDown && !quitting) {
+        approvalReviewerModel = arg.model;
+        approvalController.reconcile();
+      }
       await broadcastState();
       return { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider };
     },
@@ -1111,7 +1256,14 @@ function buildHandlers() {
     readFile: arg => requireTools({ allowDuringUndo: true }).readFile(arg || {}),
     fileList: arg => requireFileManager({ allowDuringUndo: true }).list(arg || {}),
     listProjectSessions: () => store.listProjectSessions(tools?.root || null),
-    fileRead: arg => requireFileManager({ allowDuringUndo: true }).read(arg),
+    chooseEditorFile: async () => {
+      requireFileManager({ allowDuringUndo: true });
+      const selected = await dialog.showOpenDialog(win, { title: '打开文件', defaultPath: tools.root, properties: ['openFile'] });
+      if (selected.canceled || !selected.filePaths.length) return null;
+      const file = await editorFiles.paths({ path: selected.filePaths[0] });
+      return { path: file.absolute };
+    },
+    fileRead: arg => { requireFileManager({ allowDuringUndo: true }); return editorFiles.read(arg); },
     fileCreate: async arg => fileChanged('create', await requireFileManager().create(arg)),
     ...require('./core/explorer-batch.cjs').createExplorerHandlers({
       getManager: requireFileManager, getClipboard: () => fileClipboard,
@@ -1126,11 +1278,12 @@ function buildHandlers() {
       },
     }),
     fileReveal: async arg => {
-      const target = await requireFileManager().paths(arg);
+      requireFileManager();
+      const target = await editorFiles.paths(arg);
       shell.showItemInFolder(target.absolute);
       return null;
     },
-    fileSave: async arg => fileChanged('save', await requireFileManager().save(arg)),
+    fileSave: async arg => { requireFileManager(); return fileChanged('save', await editorFiles.save(arg)); },
     listModels: fetchModelCatalog,
     selectModel: async arg => {
       if (typeof arg?.model !== 'string' || !arg.model || arg.model.length > 200) throw new Error('模型标识无效。');
@@ -1195,6 +1348,8 @@ function buildHandlers() {
       await broadcastState(); return state();
     },
     runTask: startTask,
+    completePrompt: arg => promptCompletion.complete(arg),
+    cancelPromptCompletion: arg => promptCompletion.cancel(arg),
     stopTask: () => { ++stopGeneration; pauseQueue('任务已停止，待发送消息已暂停。'); activeRun?.controller.abort(); return null; },
     stopSubagent: async arg => {
       if (!arg || typeof arg.id !== 'string' || Object.keys(arg).some(key => key !== 'id')) throw new Error('子智能体参数无效。');
@@ -1208,6 +1363,7 @@ function buildHandlers() {
     },
     getSession: async arg => {
       requireIdle();
+      promptCompletion.abort();
       const loaded = await readSessionForContext(arg?.id);
       if (loaded.workspace && (!tools || projectIdentity(loaded.workspace) !== projectIdentity(tools.root))) throw new Error('请先通过项目下拉菜单切换到此会话所属项目，再打开历史会话。');
       currentSession = loaded;
@@ -1239,6 +1395,7 @@ function buildHandlers() {
         if (peers.some(value => value.editorDirty || value.hasFileOperation || value.hasPendingPrompts || value !== context && value.busy))
           throw new Error('此会话正在另一个窗口处理任务或保存文件，请等待结束后再删除。');
         await store.validateSessionDeletion(arg.id, target.workspace, { temporary: target.temporary === true });
+        for (const peer of peers) peer.cancelPromptCompletion();
         let replacement;
         if (peers.length) {
           for (const row of await store.listProjectSessions(target.workspace)) {
@@ -1459,12 +1616,16 @@ function menuHandlers() {
 async function shutdown() {
   ++stopGeneration;
   shuttingDown = true;
+  promptCompletion.abort();
   pauseQueue('窗口正在关闭。');
   const run = activeRun;
   run?.controller.abort(); terminal?.stop();
   for (const done of [...approvals.values()]) done(false);
   if (run?.done) await run.done;
   if (fileOperationDone) await fileOperationDone;
+  await promptCompletion.settled();
+  await permissionPreferences.settled();
+  await approvalReviewerPreferences.settled();
 }
 function initializeBrowser() {
   browser = new BrowserPanel({ window: win, externalLifecycle: true, isForeground: () => host.active === context,
@@ -1491,6 +1652,7 @@ const context = {
   publicCurrentSession: () => publicSession(currentSession),
   async replaceDeletedSession(id, replacement) {
     if (currentSession?.id !== id) return;
+    promptCompletion.abort();
     currentSession = structuredClone(replacement); loadedSnapshot = true;
     await persistentTaskUndo.loadSession(currentSession);
     await rememberSessionSelection();
@@ -1500,8 +1662,10 @@ const context = {
   refreshBrowserVisibility: () => browser?.applyLayout(),
   clearFind: () => { lastFindText = null; },
   cancelEditorClose() { editorCloseRequest?.resolve(true); editorCloseRequest = null; },
-  dispose: () => browser?.destroy(),
-  abort() { ++stopGeneration; activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
+  cancelPromptCompletion: () => promptCompletion.abort(),
+  settlePromptCompletion: () => promptCompletion.settled(),
+  dispose: () => { promptCompletion.abort(); browser?.destroy(); },
+  abort() { ++stopGeneration; promptCompletion.abort(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
   get activeRun() { return activeRun; }, get busy() { return Boolean(activeRun || localOperation || promptPreflights || fileOperationDone); },
   get hasPendingPrompts() { return pendingPrompts.length > 0; },
   get editorDirty() { return editorDirty; },
@@ -1543,6 +1707,7 @@ const context = {
     win.webContents.on('found-in-page', (_event, result) => host.active.emit({ type: 'find-result', requestId: result.requestId, matches: result.matches, activeMatchOrdinal: result.activeMatchOrdinal, finalUpdate: result.finalUpdate }));
     for (const event of ['enter-full-screen', 'leave-full-screen']) win.on(event, () => { host.active.emit({ type: 'window-state', isFullscreen: win.isFullScreen() }); host.broadcastState().catch(() => {}); });
     win.on('close', event => {
+      if (updateInstalling && quitting !== true) { event.preventDefault(); return; }
       if (closeAllowed || quitting === true) return;
       if (!host.activeRun && !host.editorDirty && !host.hasFileOperation) { host.abortAll(); shuttingDown = true; return; }
       event.preventDefault();
@@ -1578,6 +1743,7 @@ function registerHandlers() {
   for (const name of Object.keys(primaryContext.handlers)) ipcMain.handle(`forge:${name}`, (event, arg) => {
     const context = windows.get(event.sender.id);
     if (!context || event.sender !== context.win.webContents || event.senderFrame !== context.win.webContents.mainFrame) throw new Error('IPC 调用来源无效。');
+    if (updateInstalling && !['getAppUpdate', 'getState', 'setEditorDirty', 'installAppUpdate'].includes(name)) throw new Error('正在准备重启更新，请稍候。');
     return context.handlers[name](arg);
   });
 }
@@ -1591,10 +1757,12 @@ async function boot() {
   ({ createSubagentWorkspace } = await import('./core/subagent-workspace.mjs'));
   ({ reviewApproval } = await import('./core/approval-review.mjs'));
   ({ createApprovalController } = await import('./core/approval-controller.mjs'));
+  ({ createPromptCompletionController } = await import('./core/prompt-completion.mjs'));
   ({ runAgent, runDemo } = await import('./core/agent.mjs'));
   ({ requestModel } = await import('./core/providers.mjs'));
   ({ TerminalSession } = await import('./core/terminal.mjs'));
   ({ ManualFileManager } = await import('./core/file-manager.mjs'));
+  ({ EditorFileTargets } = await import('./core/editor-file-targets.mjs'));
   ({ normalizeImageAttachments } = await import('./core/message-images.mjs'));
   const { ModelCatalog, deriveModelCapabilities: deriveCapabilities } = await import('./core/model-catalog.mjs');
   modelCatalog = new ModelCatalog(); deriveModelCapabilities = deriveCapabilities;
@@ -1616,6 +1784,8 @@ async function boot() {
   }
   uiPreferences = new UIPreferences(dataDir);
   await uiPreferences.init();
+  permissionPreferences = await new PermissionPreferences(dataDir).init();
+  approvalReviewerPreferences = await new ApprovalReviewerPreferences(dataDir).init();
   appearance = new AppearanceStore({ dataDir, decodeImage: bytes => {
     const image = nativeImage.createFromBuffer(bytes);
     return image.isEmpty() ? null : image.getSize();
@@ -1625,6 +1795,8 @@ async function boot() {
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await chatgpt.init();
+  updateEnabled = !smoke && app.isPackaged && isInstalledBuild && process.platform === 'win32' && process.arch === 'x64';
+  appUpdater = new AppUpdater({ currentVersion: app.getVersion(), dataDir, enabled: updateEnabled, onChange: publishAppUpdate });
   Menu.setApplicationMenu(null);
   electronSession.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   electronSession.defaultSession.setPermissionCheckHandler(() => false);
@@ -1635,13 +1807,31 @@ async function boot() {
   await primaryContext.initialize();
   win = primaryContext.win;
   ({ setWorkspace, createSession, broadcastState } = primaryContext);
+  startUpdateChecks();
   if (smoke) await smokeTest();
 }
 
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
-  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'updater') {
+    const configureUpdater = async options => {
+      await appUpdater.dispose();
+      updateEnabled = true;
+      appUpdater = options.createUpdater(publishAppUpdate);
+      launchInstaller = options.launchInstaller; quitForUpdate = options.quitForUpdate;
+      publishAppUpdate();
+      return appUpdater;
+    };
+    const result = { version: app.getVersion(), updater: await require('./core/smoke-updater.cjs')({
+      win, output, dataDir, configureUpdater, getHost: () => windows.get(win.webContents.id),
+    }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_UPDATER_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -1910,6 +2100,8 @@ async function smokeTest() {
   result.largeResponse = await require('./core/smoke-large-response.cjs')({ win, output, dataDir });
   result.explorer = await require('./core/smoke-explorer.cjs')({ win, output, dataDir });
   result.activity = await require('./core/smoke-activity.cjs')({ win, output, dataDir });
+  result.operationProgress = await require('./core/smoke-operation-progress.cjs')({ win, output, dataDir });
+  result.promptCompletion = await require('./core/smoke-prompt-completion.cjs')({ win, output, dataDir, store });
   result.windowChrome = await require('./core/smoke-window-chrome.cjs')({ win, output, dataDir });
   result.userMessages = await require('./core/smoke-user-messages.cjs')({ win, output, dataDir });
   result.markdown = await require('./core/smoke-markdown.cjs')({ win, output });
@@ -1973,7 +2165,12 @@ else {
   });
 }
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => {
+  clearTimeout(updateTimer); clearInterval(updateInterval);
+  void appUpdater?.dispose();
+});
 app.on('before-quit', event => {
+  if (updateInstalling && quitting !== true) { event.preventDefault(); return; }
   if (quitting === true) return;
   if (quitting === 'pending') { event.preventDefault(); return; }
   if (![...windows.values()].some(context => context.activeRun || context.editorDirty || context.hasFileOperation)) {

@@ -2,14 +2,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { taskUndoPlan } from './task-change-undo.mjs';
-import { safeRelativePath } from './approval-policy.cjs';
+import { validStoredWorkspaceReference } from './workspace-path.cjs';
 
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu;
 const MAX_FILE = 48 * 1024 * 1024, MAX_RAW = 32 * 1024 * 1024, MAX_RUN = 8 * 1024 * 1024;
 const size = value => Buffer.byteLength(JSON.stringify(value), 'utf8');
 const identity = value => process.platform === 'win32' ? value.toLowerCase() : value;
 const failure = () => new Error('持久撤销记录无法安全读取或保存，原文件已保留；该会话的自动撤销与恢复已停用。');
-const safePath = value => safeRelativePath(value) && value === value.split(/[\\/]/u).filter(part => part !== '.').join('/');
+// Journals retain the tool's canonical reference: project-relative paths for
+// internal files, complete absolute paths for files outside that project.
+// Reopening a journal never grants access by itself; undoChanges performs the
+// normal filesystem, approval and unchanged-content guards before each commit.
+const safePath = value => validStoredWorkspaceReference(value);
 const validChange = value => value && safePath(value.path) && ['before', 'after'].every(key => value[key] === null
   || typeof value[key] === 'string' && !value[key].includes('\0') && Buffer.byteLength(value[key]) <= 512 * 1024);
 

@@ -23,6 +23,14 @@ async function fixture(t) {
 }
 const undo = async (tools, changes, options) => JSON.parse(await tools.undoChanges(changes, options));
 
+test('undo plans keep project-relative and external absolute same-name files separate', () => {
+  const external = path.join(path.parse(testTempRoot).root, 'external', 'same.txt').replace(/\\/gu, '/');
+  const plan = taskUndoPlan([{ path: 'same.txt', before: 'client-before', after: 'client-after' },
+    { path: external, before: 'server-before', after: 'server-middle' }, { path: external, before: 'server-middle', after: 'server-after' }]);
+  assert.deepEqual(plan, [{ path: external, before: 'server-before', after: 'server-after' },
+    { path: 'same.txt', before: 'client-before', after: 'client-after' }]);
+});
+
 test('repeated writes collapse to original raw contents, new files are removed, and unrelated undo history retains its order', async t => {
   const { root, tools, changes, write, read } = await fixture(t);
   await fs.writeFile(path.join(root, 'original.txt'), 'PRIVATE_original_key_text');

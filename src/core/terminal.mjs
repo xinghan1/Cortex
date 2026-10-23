@@ -96,7 +96,14 @@ export class TerminalSession {
     }
 
     const exitCode = Number.isInteger(result.exitCode) ? result.exitCode : null;
-    const safeResult = { output: this.#safeText(active.output), exitCode };
+    // Large commands keep a bounded arrival-order snapshot, including the tail
+    // that was no longer streamed. Redact the combined text before display.
+    const output = result.outputTruncated === true && typeof result.output === 'string' ? result.output : active.output;
+    const safeResult = { output: this.#safeText(output), exitCode };
+    if (result.outputTruncated === true) safeResult.outputTruncated = true;
+    for (const key of ['outputBytes', 'outputOmittedBytes']) {
+      if (Number.isSafeInteger(result[key]) && result[key] >= 0) safeResult[key] = result[key];
+    }
     // Never forward the original streams: a credential split between stdout and stderr
     // is visible only in the combined snapshot, so redacting each stream separately is insufficient.
     for (const key of ['command', 'message', 'error', 'signal', 'terminated']) {

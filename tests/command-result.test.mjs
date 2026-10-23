@@ -17,6 +17,24 @@ test('exit code determines command success independently of diagnostic output', 
   }
 });
 
+test('a bounded output preview preserves the real command exit status and old interruption records', () => {
+  const preview = { stdout: 'head\n[中间输出已省略]\ntail\n', stderr: '', outputTruncated: true, outputBytes: 200_000 };
+  for (const [result, expected] of [
+    [{ ...preview, exitCode: 0 }, 'success'],
+    [{ ...preview, exitCode: 7 }, 'failed'],
+    [{ ...preview, exitCode: 0, terminated: 'timeout' }, 'timeout'],
+    [{ ...preview, exitCode: null, terminated: 'cancelled' }, 'cancelled'],
+    [{ ...preview }, 'unknown'],
+    [{ exitCode: null, terminated: 'output_limit' }, 'output-limit'],
+  ]) {
+    const actual = describe({}, JSON.stringify(result));
+    assert.equal(actual.status, expected);
+    assert.equal(actual.outputTruncated, result.outputTruncated === true);
+    assert.equal(actual.outputBytes, result.outputBytes ?? null);
+    if (result.stdout) assert.equal(actual.stdout, result.stdout);
+  }
+});
+
 test('a known interruption or refusal takes precedence over exit zero', () => {
   const cases = [
     [{ denied: true, exitCode: 0, terminated: 'timeout' }, 'denied'],

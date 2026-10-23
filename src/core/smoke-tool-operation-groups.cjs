@@ -41,10 +41,15 @@ module.exports = async function smokeToolOperationGroups({ win, output }) {
       setRunning(true,{kind:'agent',runId:${JSON.stringify(runId)}});
       window.__operationGroupsSmoke={sequence:0,trustedClicks:0,trustedWheels:0};
       window.__operationGroupsSmoke.tool=(name,status='completed',path='fixture.txt')=>{
-        const toolCallId='operation-'+(++window.__operationGroupsSmoke.sequence),event={name,toolCallId,runId:${JSON.stringify(runId)},args:name==='run_command'?{command:'DISPLAY_ONLY_COMMAND',timeout_ms:600000}:{path}};
+        const toolCallId='operation-'+(++window.__operationGroupsSmoke.sequence),event={name,toolCallId,runId:${JSON.stringify(runId)},args:name==='run_command'?{command:'DISPLAY_ONLY_COMMAND',timeout_ms:600000}:['search_files','search_text'].includes(name)?{path,query:'Display fixture query'}:{path}};
         addTool(event);const original=pendingTools.find(t=>t.toolCallId===toolCallId),card=original.card;card.id=toolCallId;
+        const stdout='DISPLAY_COMMAND_STDOUT_'+toolCallId+'\\n',stderr='DISPLAY_COMMAND_STDERR_'+toolCallId+'\\n';
+        if(name==='run_command'&&status!=='denied'){
+          handleEvent({type:'command-output',workspaceId:currentWorkspaceId(),runId:${JSON.stringify(runId)},stream:'stdout',text:stdout});
+          handleEvent({type:'command-output',workspaceId:currentWorkspaceId(),runId:${JSON.stringify(runId)},stream:'stderr',text:stderr});
+        }
         const edit=['write_file','replace_in_file','undo_last_change'].includes(name)?{path,before:'const before = 1;\\n',after:'const after = 2;\\n'}:null;
-        const result=status==='failed'?{error:'Display fixture missing file'}:status==='denied'?{denied:true,message:'Display fixture denied'}:status==='stopped'?{command:event.args.command,stdout:'',stderr:'',exitCode:null,signal:null,terminated:'cancelled'}:name==='run_command'?{command:event.args.command,stdout:'DISPLAY_COMMAND_STDOUT',stderr:'',exitCode:0,signal:null,terminated:null}:{path,content:'Display fixture result',files:[]};
+        const result=status==='failed'?(name==='run_command'?{command:event.args.command,stdout,stderr,exitCode:1,signal:null,terminated:null}:{error:'Display fixture missing file'}):status==='denied'?{denied:true,message:'Display fixture denied'}:status==='stopped'?{command:event.args.command,stdout,stderr,exitCode:null,signal:null,terminated:'cancelled'}:name==='run_command'?{command:event.args.command,stdout,stderr,exitCode:0,signal:null,terminated:null}:{path,content:'Display fixture result',files:[]};
         if(status==='unknown'){pendingTools.splice(pendingTools.indexOf(original),1);finishToolWithoutResult(original);}
         else if(status!=='running')completeTool({...event,result:JSON.stringify(result),...(edit?{fileChange:edit}:{})});
         return toolCallId;};
@@ -145,16 +150,80 @@ module.exports = async function smokeToolOperationGroups({ win, output }) {
     }
     evidence.live = await allGroups();
 
+    stage = 'consecutive search results have their own collapsed block and preserve native manual expansion';
+    await js(`addMessage('assistant','独立搜索显示样例。');true`);
+    const searchIds = [await tool('search_files', 'completed', 'src/main/java'), await tool('search_files', 'completed', 'src/main/java'), await tool('search_text', 'completed', 'src/config')];
+    const search = (await allGroups()).at(-1);
+    assert.equal(search.kind, 'search'); assert.equal(search.count, 3); assert.equal(search.open, false);
+    assert.equal(search.label, '已完成搜索'); assert.equal(search.countLabel, '3 次');
+    await js(`[...document.querySelectorAll('.tool-operation-group')].at(-1).id='search-operation-group';true`);
+    await capture('tool-operation-groups-search-collapsed.png');
+    await click('#search-operation-group > summary');
+    await until('native search group expands only after click', () => js('$("search-operation-group").open'));
+    assert.equal(await js('$("search-operation-group").querySelectorAll(".tool-card").length'), 3);
+    await click('#' + searchIds[0] + ' > summary');
+    assert.match(await js(`$(${JSON.stringify(searchIds[0])}).textContent`), /Display fixture result/u);
+    await click('#search-operation-group > summary');
+    await until('native search group closes', () => js('!$("search-operation-group").open'));
+    await js(`handleEvent({type:'user-message',workspaceId:currentWorkspaceId(),runId:${JSON.stringify(runId)},id:'search-steer-'+${JSON.stringify(nonce)},text:'搜索引导分隔样例',source:'steering',createdAt:'2026-10-22T12:00:00Z'});true`);
+    const followingSearch = await tool('search_files', 'completed', 'src/after-steer');
+    assert.equal(await js(`$(${JSON.stringify(followingSearch)}).parentElement.classList.contains('tool-operation-group-items')`), false, 'A search after steering never joins the earlier group');
+    await tool('search_files', 'completed', 'src/after-steer-again');
+    assert.deepEqual((await allGroups()).slice(-2).map(group => [group.kind, group.count, group.open]), [['search', 3, false], ['search', 2, false]]);
+    evidence.search = { original: search, afterSteering: (await allGroups()).slice(-2) };
+
+    stage = 'six consecutive commands with live output form one collapsed group';
+    await setup(false);
+    const outputCommands = [];
+    for (let index = 0; index < 6; index++) outputCommands.push(await tool('run_command'));
+    groups = await allGroups();
+    assert.deepEqual(groups.map(group => [group.kind, group.count, group.open]), [['command', 6, false]]);
+    const outputs = await js(`(()=>{const cards=[...document.querySelectorAll('.tool-card')];return {loose:document.querySelectorAll('.task-activity-events > .command-output-disclosure').length,cards:cards.map(card=>({id:card.id,outputs:card.querySelectorAll('.command-output').length,insideDetails:!!card.querySelector('.tool-details > .command-output-disclosure'),open:card.open,text:card.querySelector('.command-output')?.textContent}))};})()`);
+    assert.equal(outputs.loose, 0, 'Live command output must not be a sibling that splits adjacent tools');
+    for (const item of outputs.cards) {
+      assert.equal(item.outputs, 1); assert.equal(item.insideDetails, true); assert.equal(item.open, false);
+      assert.equal(item.text, `DISPLAY_COMMAND_STDOUT_${item.id}\nDISPLAY_COMMAND_STDERR_${item.id}\n`, 'Each command owns only its own stdout/stderr');
+    }
+    await js(`document.querySelector('.tool-operation-group').id='live-command-output-group';true`);
+    await capture('tool-operation-groups-command-output-collapsed.png');
+    await click('#live-command-output-group > summary');
+    await click('#' + outputCommands[0] + ' > summary');
+    await click('#' + outputCommands[0] + ' .command-output-disclosure > summary');
+    await until('native expansion exposes matching live command output', () => js(`$(${JSON.stringify(outputCommands[0])}).querySelector('.command-output').checkVisibility({visibilityProperty:true,opacityProperty:true})`));
+    assert.equal(await js(`$(${JSON.stringify(outputCommands[0])}).querySelector('.command-output').innerText`), outputs.cards[0].text);
+    await capture('tool-operation-groups-command-output-expanded.png');
+    await click('#live-command-output-group > summary');
+    await until('command output group closes on native user click', () => js('!$("live-command-output-group").open'));
+    await tool('run_command'); await tool('run_command', 'failed');
+    const appendedOutputGroup = (await allGroups())[0];
+    assert.equal(appendedOutputGroup.count, 8); assert.equal(appendedOutputGroup.status, 'failed'); assert.equal(appendedOutputGroup.open, false);
+    assert.match(appendedOutputGroup.detail, /7 已完成 · 1 未完成/u);
+    await js(`addMessage('assistant','COMMAND_OUTPUT_PROSE_BOUNDARY');true`);
+    await tool('run_command'); await tool('run_command');
+    await js(`handleEvent({type:'user-message',workspaceId:currentWorkspaceId(),runId:${JSON.stringify(runId)},id:'output-steer-'+${JSON.stringify(nonce)},text:'COMMAND_OUTPUT_STEERING_BOUNDARY',source:'steering',createdAt:'2026-10-23T00:00:00Z'});true`);
+    await tool('run_command'); await tool('run_command');
+    const outputBoundaries = await allGroups();
+    assert.deepEqual(outputBoundaries.map(group => [group.kind, group.count, group.open]), [['command', 8, false], ['command', 2, false], ['command', 2, false]]);
+    const outputOrder = await js(`(()=>{const groups=[...document.querySelectorAll('.tool-operation-group')],prose=[...document.querySelectorAll('.message.assistant')].find(n=>n.textContent.includes('COMMAND_OUTPUT_PROSE_BOUNDARY')),steer=[...document.querySelectorAll('.message.user')].find(n=>n.textContent.includes('COMMAND_OUTPUT_STEERING_BOUNDARY'));const before=(a,b)=>!!(a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);return {firstBeforeProse:before(groups[0],prose),proseBeforeSecond:before(prose,groups[1]),secondBeforeSteer:before(groups[1],steer),steerBeforeThird:before(steer,groups[2])};})()`);
+    assert.deepEqual(outputOrder, { firstBeforeProse: true, proseBeforeSecond: true, secondBeforeSteer: true, steerBeforeThird: true });
+    evidence.commandOutput = { original: groups[0], outputs, appended: appendedOutputGroup, boundaries: outputBoundaries, order: outputOrder };
+
     stage = 'history reconstructs the same grouping and steering separation from original message/tool records';
     const history = { id: randomUUID(), title: 'Display tool-group history', workspace: null, messages: [], events: [], taskRuns: [], fileEdits: [] };
     history.messages.push({ id: 'history-first', role: 'user', content: 'Read first files.' });
     const addHistoryCalls = (names, prefix, statuses = []) => {
       const toolCalls = names.map((name, index) => ({ id: prefix + index, name, arguments: name === 'run_command' ? { command: 'DISPLAY_ONLY_COMMAND' } : { path: prefix + index } }));
       history.messages.push({ role: 'assistant', content: '', toolCalls });
+      const assistantIndex = history.messages.length - 1;
       for (const [index, call] of toolCalls.entries()) {
         history.messages.push({ role: 'tool', name: call.name, toolCallId: call.id, content: JSON.stringify(statuses[index] === 'failed' ? { error: 'Historical display fixture failure' } : call.name === 'run_command'
-          ? { command: call.arguments.command, stdout: 'HISTORICAL_COMMAND_STDOUT', stderr: '', exitCode: 0, signal: null, terminated: null }
+          ? { command: call.arguments.command, stdout: 'HISTORICAL_COMMAND_STDOUT_' + call.id + '\n', stderr: 'HISTORICAL_COMMAND_STDERR_' + call.id + '\n', exitCode: 0, signal: null, terminated: null }
           : { path: call.arguments.path, content: 'Historical original result' }) });
+        if (call.name === 'run_command') history.events.push(
+          { type: 'tool-start', runId: 'history-' + nonce, toolCallId: call.id, name: call.name, args: call.arguments, messageIndex: assistantIndex },
+          { type: 'command-output', runId: 'history-' + nonce, stream: 'stdout', text: 'HISTORICAL_COMMAND_STDOUT_' + call.id + '\n', messageIndex: assistantIndex },
+          { type: 'command-output', runId: 'history-' + nonce, stream: 'stderr', text: 'HISTORICAL_COMMAND_STDERR_' + call.id + '\n', messageIndex: assistantIndex },
+          { type: 'tool-result', runId: 'history-' + nonce, toolCallId: call.id, name: call.name, result: history.messages.at(-1).content, messageIndex: history.messages.length - 1 });
         if (call.name === 'write_file') history.fileEdits.push({ runId: 'history-' + nonce, toolCallId: call.id, path: call.arguments.path, before: 'before\n', after: 'after\n' });
       }
     };
@@ -164,16 +233,37 @@ module.exports = async function smokeToolOperationGroups({ win, output }) {
     addHistoryCalls(['read_file', 'read_file', 'write_file', 'run_command'], 'history-after-');
     history.messages.push({ role: 'assistant', content: 'Historical failure boundary.', toolCalls: [] });
     addHistoryCalls(['read_file', 'read_file'], 'history-failure-', ['completed', 'failed']);
+    history.messages.push({ role: 'assistant', content: 'Historical search boundary.', toolCalls: [] });
+    addHistoryCalls(['search_files', 'search_files', 'search_text'], 'history-search-');
+    history.messages.push({ role: 'assistant', content: 'Historical command output boundary.', toolCalls: [] });
+    addHistoryCalls(Array(6).fill('run_command'), 'history-output-');
     history.messages.push({ role: 'assistant', content: 'History fixture finished.', toolCalls: [] });
     history.taskRuns.push({ runId: 'history-' + nonce, kind: 'agent', status: 'completed', elapsedMs: 1000, fileChangeCount: 1, messageStartIndex: 0, messageIndex: history.messages.length - 1 });
     await js(`finishTaskActivity({runId:${JSON.stringify(runId)},status:'completed',elapsedMs:1});setRunning(false);renderSessionSnapshot(${JSON.stringify(history)});true`);
-    const historical = await allGroups(); assert.deepEqual(historical.map(group => [group.kind, group.count, group.open]), [['read-list', 5, false], ['edit-command', 4, false], ['read', 2, false]]);
+    const historical = await allGroups(); assert.deepEqual(historical.map(group => [group.kind, group.count, group.open]), [['read-list', 5, false], ['edit-command', 4, false], ['read', 2, false], ['search', 3, false], ['command', 6, false]]);
     assert.equal(historical[2].status, 'failed'); assert.match(historical[2].detail, /1 已完成 · 1 未完成/u);
-    assert.equal(await js('document.querySelectorAll(".tool-card").length'), 11);
+    assert.equal(historical[3].label, '已完成搜索');
+    assert.equal(await js('document.querySelectorAll(".tool-card").length'), 20);
     assert.equal(await js('document.querySelectorAll(".tool-operation-group .code-diff-card").length'), 1);
-    assert.equal(await js('document.querySelectorAll(".tool-operation-group .command-result").length'), 1);
+    assert.equal(await js('document.querySelectorAll(".tool-operation-group .command-result").length'), 7);
     assert.equal(await js(`[...document.querySelectorAll('.message.user')].filter(n=>n.textContent.includes('Historical steering boundary.')).length`), 1);
     evidence.history = historical;
+    const historicalOutput = await js(`(()=>{const cards=[...document.querySelectorAll('.tool-card')].filter(card=>card.querySelector('.command-output'));return {loose:document.querySelectorAll('.task-activity-events > .command-output-disclosure').length,cards:cards.map(card=>({text:card.querySelector('.command-output').textContent,disclosures:card.querySelectorAll('.command-output-disclosure').length,insideDetails:!!card.querySelector('.tool-details > .command-output-disclosure'),open:card.open}))};})()`);
+    assert.equal(historicalOutput.loose, 0); assert.equal(historicalOutput.cards.length, 7);
+    for (const [index, item] of historicalOutput.cards.entries()) {
+      const id = index === 0 ? 'history-after-3' : 'history-output-' + (index - 1);
+      assert.equal(item.text, `HISTORICAL_COMMAND_STDOUT_${id}\nHISTORICAL_COMMAND_STDERR_${id}\n`);
+      assert.equal(item.disclosures, 1); assert.equal(item.insideDetails, true); assert.equal(item.open, false);
+    }
+    evidence.historicalCommandOutput = historicalOutput;
+    await click('.task-activity > summary');
+    await js(`[...document.querySelectorAll('.tool-operation-group')].at(-1).id='historical-command-output-group';document.querySelector('#historical-command-output-group .tool-card').id='historical-output-first-command';true`);
+    await click('#historical-command-output-group > summary');
+    await click('#historical-output-first-command > summary');
+    await click('#historical-output-first-command .command-output-disclosure > summary');
+    await until('native history output expansion shows original stdout', () => js(`$('historical-output-first-command').querySelector('.command-output').checkVisibility({visibilityProperty:true,opacityProperty:true})`));
+    assert.match(await js(`$('historical-output-first-command').querySelector('.command-output').innerText`), /HISTORICAL_COMMAND_STDOUT_history-output-0/u);
+    await capture('tool-operation-groups-command-output-history.png');
 
     stage = 'long bottom group reveals fully above the composer with bounded internal scrolling';
     await setup(true);
@@ -211,9 +301,12 @@ module.exports = async function smokeToolOperationGroups({ win, output }) {
       continuousMixedOperationsGrouped: true, singleAndUnsupportedOperationsPreserved: true, originalToolDetailsPreserved: true,
       mixedEditAndCommandLabel: true, editOnlyAndCommandOnlyLabels: true, originalDiffAndCommandViewsPreserved: true,
       nativeCollapseAndExpand: true, defaultCollapsed: true, steeringSeparatesGroups: true, failedStatusSurfaced: true,
+      searchGroupsCollapsedByDefault: true, searchNativeDisclosure: true, searchSteeringBoundary: true, historicalSearchGrouping: true,
+      liveCommandOutputStaysInOwnTool: true, commandOutputDoesNotSplitGroup: true, nativeCommandOutputDisclosure: true,
+      commandOutputProseAndSteeringBoundaries: true, historicalCommandOutputOwnership: true,
       manualExpansionPreserved: true, manualCollapsePreserved: true, allStatusesStayCollapsedByDefault: true,
       historyRestoresSameGroups: true, historicalFailureCollapsed: true, progressiveHeightTransition: true, bottomFullyVisible: true, internalNativeWheel: true,
-      shortViewportCap: true, reducedMotion: true, evidence, screenshots: ['tool-operation-groups-failed-collapsed.png', 'tool-operation-groups.png', 'tool-operation-groups-short.png'] };
+      shortViewportCap: true, reducedMotion: true, evidence, screenshots: ['tool-operation-groups-failed-collapsed.png', 'tool-operation-groups-search-collapsed.png', 'tool-operation-groups-command-output-collapsed.png', 'tool-operation-groups-command-output-expanded.png', 'tool-operation-groups-command-output-history.png', 'tool-operation-groups.png', 'tool-operation-groups-short.png'] };
     await fs.writeFile(path.join(output, 'tool-operation-groups-result.json'), JSON.stringify(result, null, 2)); return result;
   } catch (error) {
     const failure = { stage, error: error.message, stack: error.stack, evidence };

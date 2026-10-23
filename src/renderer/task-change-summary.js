@@ -7,6 +7,7 @@
   const valid = edit => edit && typeof edit.runId === 'string' && typeof edit.path === 'string' && edit.path
     && ['before', 'after'].every(key => edit[key] === null || typeof edit[key] === 'string');
   const normalizedPath = path => path.replace(/\\/g, '/').replace(/^(?:\.\/)+/u, '');
+  const absolutePath = path => /^(?:[A-Za-z]:\/|\/)/u.test(path);
   function aggregate(edits, runId, { expectedCount } = {}) {
     const files = new Map(), seen = new Map();
     let recordedCount = 0;
@@ -104,6 +105,7 @@
     summary.files.forEach((file, index) => {
       const element = node('div', 'task-change-entry'), preview = collapse('task-change-file-preview'); element.dataset.path = file.path;
       const row = node('button', 'task-change-file'); row.type = 'button'; row.dataset.path = file.path; row.title = file.path;
+      row.dataset.external = String(absolutePath(file.path));
       row.setAttribute('aria-expanded', 'false');
       row.append(node('span', 'task-change-path', file.path), stats(file));
       if (!file.continuous) row.append(node('span', 'task-change-warning', '记录不连续'));

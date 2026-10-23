@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { runAgent } from '../src/core/agent.mjs';
 import { createSubagentManager, normalizeSubagentPath, SUBAGENT_LIMITS } from '../src/core/subagents.mjs';
 import { TOOL_DEFINITIONS } from '../src/core/workspace.mjs';
@@ -171,7 +172,7 @@ test('strict tool arguments reject forged IDs, unknown properties and unsafe pat
   for (const args of [null, [], 'json', { name: 'x', task: 'y', extra: true }, { name: '', task: 'y' },
     { name: 'x', task: 'y', write_paths: 'src/' }, JSON.parse('{"name":"x","task":"y","__proto__":{}}')])
     await assert.rejects(manager.execute('spawn_agent', args));
-  for (const path of ['', '/', '../x', 'src/../x', 'C:/x', '//server/x', '/absolute', 'src//x', 'src/./x',
+  for (const path of ['', '/', '../x', 'src/../x', 'C:x', '//server/x', 'src//x', 'src/./x',
     'src/a:stream', '.git/config', 'src/NUL.txt', 'src/a.']) assert.throws(() => normalizeSubagentPath(path));
   assert.equal(normalizeSubagentPath('src\\sub\\'), 'src/sub/');
   assert.equal(normalizeSubagentPath('src/test.js'), 'src/test.js');
@@ -181,6 +182,42 @@ test('strict tool arguments reject forged IDs, unknown properties and unsafe pat
   await assert.rejects(manager.execute('wait_agents', { ids: Array(9).fill('x') }));
   await assert.rejects(manager.execute('wait_agents', { ids: [], extra: true }));
   assert.equal(manager.snapshots().length, 0);
+  await manager.abortAndWait();
+});
+
+test('canonical absolute scopes detect project aliases and preserve external directory boundaries', async () => {
+  const root = path.resolve('tests/.tmp/client-scope'), server = path.resolve('tests/.tmp/server-scope'), held = deferred();
+  const manager = createSubagentManager(managerOptions({ root, runChild: async () => held.promise }));
+  try {
+    await spawn(manager, { write_paths: ['src/'] });
+    await assert.rejects(spawn(manager, { write_paths: [path.join(root, 'src/a.js')] }), /重叠/);
+    assert.throws(() => manager.assertParentTool('write_file', { path: path.join(root, 'src/a.js') }), /正由子智能体/);
+    await spawn(manager, { write_paths: [server.replaceAll('\\', '/') + '/'] });
+    await assert.rejects(spawn(manager, { write_paths: [path.join(server, 'a.js')] }), /重叠/);
+    if (process.platform === 'win32') {
+      await assert.rejects(spawn(manager, { write_paths: [path.join(server, 'A.JS').toUpperCase()] }), /重叠/);
+    }
+    assert.throws(() => manager.assertParentTool('replace_in_file', { path: path.join(server, 'nested/a.js') }), /正由子智能体/);
+    manager.assertParentTool('write_file', { path: server + '-other/a.js' });
+    assert.equal(normalizeSubagentPath(path.join(root, 'src/a.js'), { root }), 'src/a.js');
+    assert.equal(normalizeSubagentPath(path.join(server, 'a.js'), { root }).replaceAll('\\', '/'), path.join(server, 'a.js').replaceAll('\\', '/'));
+  } finally { held.resolve(); await manager.abortAndWait(); }
+});
+
+test('manager permits only assigned external files through canonical aliases', async () => {
+  const root = path.resolve('tests/.tmp/client-scope'), server = path.resolve('tests/.tmp/server-scope'), target = path.join(server, 'a.js'), executed = [];
+  const manager = createSubagentManager(managerOptions({ root,
+    createWorkspace: async () => ({ root, execute: async (name, args) => { executed.push([name, args.path]); return 'ok'; } }),
+    runChild: async child => {
+      await child.workspace.execute('write_file', { path: target, content: 'yes' });
+      for (const candidate of [path.join(root, 'a.js'), path.join(server, 'b.js'), target + '/child', server + '-other/a.js']) {
+        await assert.rejects(child.workspace.execute('write_file', { path: candidate, content: 'no' }), /写入范围/);
+      }
+    },
+  }));
+  await spawn(manager, { write_paths: [target] });
+  const result = JSON.parse(await manager.execute('wait_agents', {}));
+  assert.equal(result.agents[0].status, 'completed'); assert.deepEqual(executed, [['write_file', target]]);
   await manager.abortAndWait();
 });
 

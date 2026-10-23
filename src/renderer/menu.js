@@ -11,7 +11,7 @@
   const menus = {
     file: [
       ['new-window', '新窗口'], ['new-chat', '新聊天', 'Ctrl+N', locked], ['temporary-chat', '临时聊天', 'Ctrl+Shift+N', locked], null,
-      ['create-project', '新建项目…', '', state => state.projectBusy || state.authBusy], ['open-project', '打开项目…', 'Ctrl+O', state => state.projectBusy || state.authBusy], ['close-window', '关闭窗口', 'Ctrl+W', (state) => state.authBusy], null,
+      ['create-project', '新建项目…', '', state => state.projectBusy || state.authBusy], ['open-project', '打开项目…', 'Ctrl+O', state => state.projectBusy || state.authBusy], ['open-file', '打开文件…', 'Ctrl+Shift+O', state => !state.hasWorkspace || state.projectBusy], ['close-window', '关闭窗口', 'Ctrl+W', (state) => state.authBusy], null,
       ['logout', '退出账号登录', '', (state) => locked(state) || !state.hasChatGPTAccount], ['quit', '退出 Synora code', 'Ctrl+Q', (state) => state.authBusy]
     ],
     edit: [
@@ -30,7 +30,7 @@
     appearance: [
       ['import-background', '导入背景图…'], ['appearance-settings', '外观与背景…']
     ],
-    help: [['guide', '使用说明'], ['about', '关于 Synora code']]
+    help: [['guide', '使用说明'], ['check-update', '检查更新'], ['about', '关于 Synora code']]
   };
   let activeMenu = null;
   let savedFocus = null;
@@ -258,7 +258,7 @@
       if (code === 'BracketLeft' || key === '[') action = 'previous-sidebar';
       if (code === 'BracketRight' || key === ']') action = 'next-sidebar';
     } else if (event.ctrlKey && !event.altKey && event.shiftKey) {
-      action = { n: 'temporary-chat', s: 'toggle-sidebar', e: 'toggle-navigation', z: 'redo' }[key];
+      action = { n: 'temporary-chat', o: 'open-file', s: 'toggle-sidebar', e: 'toggle-navigation', z: 'redo' }[key];
       if (code === 'BracketLeft' || key === '{') action = 'previous-tab';
       if (code === 'BracketRight' || key === '}') action = 'next-tab';
       if (code === 'Equal' || key === '+') action = 'zoom-in';

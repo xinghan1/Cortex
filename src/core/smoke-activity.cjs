@@ -7,6 +7,7 @@ const { randomUUID } = require('node:crypto');
 const { dialog } = require('electron');
 
 module.exports = async function smokeActivity({ win, output, dataDir }) {
+  assert.equal(win.webContents.isOffscreen(), true, 'Activity smoke requires an isolated offscreen app');
   const js = code => win.webContents.executeJavaScript(code);
   const call = (method, arg) => js(`window.forge[${JSON.stringify(method)}](${arg === undefined ? '' : JSON.stringify(arg)})`);
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -23,11 +24,11 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
   const privateReasoning = 'PRIVATE_ACTIVITY_THINKING_' + randomUUID();
   const completedPrompt = 'ACTIVITY_COMPLETED_' + randomUUID();
   const stoppedPrompt = 'ACTIVITY_STOPPED_' + randomUUID();
-  const command = "Start-Sleep -Milliseconds 1400; Write-Output 'ACTIVITY_COMMAND_OK'";
+  const command = "Start-Sleep -Milliseconds 1400; Write-Output ('ACTIVITY_LARGE_OUTPUT_' + ('x' * 120000)); Write-Output 'ACTIVITY_COMMAND_OK'";
   const finalText = '活动状态测试完成：命令执行成功，时长与速度已记录。';
   const originalOpen = dialog.showOpenDialog;
   const records = [], problems = [];
-  let installed = false, configured = false;
+  let installed = false, configured = false, attached = false;
   const log = () => js('window.__activitySmoke.events');
   const seconds = text => {
     assert.match(text, /已处理|用时/u);
@@ -42,13 +43,20 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
   const snapshot = runId => js(`(()=>{
     const block=document.querySelector('.task-activity[data-run-id=${JSON.stringify(runId)}]');
     if(!block)return null;
-    const elapsed=block.querySelector('.task-activity-elapsed'),stored=block.querySelector('.task-activity-speed');
+    const elapsed=block.querySelector('.task-activity-elapsed'),stored=block.querySelector('.task-activity-speed'),summary=block.querySelector(':scope > summary');
+    const phaseLine=block.querySelector(':scope > .task-activity-phase-line');
+    const currentPhase=phaseLine&&!phaseLine.hidden?phaseLine.querySelector('.task-activity-phase'):block.querySelector('.tool-card.running > .tool-summary .tool-title');
     const speed=document.getElementById('generation-speed'),metric=document.getElementById('session-speed');
-    return{status:block.dataset.status,phase:block.querySelector('.task-activity-phase')?.textContent||'',elapsed:elapsed?.textContent||'',speed:speed?.textContent||'',storedSpeed:stored?.textContent||'',speedHidden:!metric||metric.classList.contains('unknown'),speedInFooter:!!speed&&!!speed.closest('#session-metrics'),activitySpeedHidden:!stored||stored.hidden||!stored.getClientRects().length,central:!!block.closest('#messages'),currentSpeedInBlock:block.contains(speed),headerSpeed:!!document.querySelector('.conversation-header #generation-speed')};
+    return{status:block.dataset.status,phase:currentPhase?.textContent||'',elapsed:elapsed?.textContent||'',summary:summary.innerText.trim(),phaseInSummary:!!summary.querySelector('.task-activity-phase'),phaseVisible:!!currentPhase&&currentPhase.checkVisibility({visibilityProperty:true,opacityProperty:true}),speed:speed?.textContent||'',storedSpeed:stored?.textContent||'',speedHidden:!metric||metric.classList.contains('unknown'),speedInFooter:!!speed&&!!speed.closest('#session-metrics'),activitySpeedHidden:!stored||stored.hidden||!stored.getClientRects().length,central:!!block.closest('#messages'),currentSpeedInBlock:block.contains(speed),headerSpeed:!!document.querySelector('.conversation-header #generation-speed')};
   })()`);
   const phase = (runId, pattern, label) => until(label, async () => {
     const observed = await snapshot(runId);
-    return observed?.status === 'running' && pattern.test(observed.phase) && observed;
+    if (observed?.status !== 'running' || !pattern.test(observed.phase)) return false;
+    assert.equal(observed.summary, observed.elapsed, label + ': first row contains only elapsed time');
+    assert.match(observed.summary, /^用时\s/u);
+    assert.equal(observed.phaseInSummary, false, label + ': current activity belongs in the conversation flow');
+    assert.equal(observed.phaseVisible, true, label + ': current activity must be visible');
+    return observed;
   });
   const capture = async name => { win.webContents.invalidate(); await wait(100); await fs.writeFile(path.join(output, name), (await win.webContents.capturePage()).toPNG()); };
   const send = (record, value) => {
@@ -87,6 +95,10 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
         const result = JSON.parse(returned.content);
         assert.equal(result.exitCode, 0);
         assert.ok(result.stdout.includes('ACTIVITY_COMMAND_OK'));
+        assert.equal(result.terminated, null, 'Preview truncation must not terminate a healthy command');
+        assert.equal(result.outputTruncated, true, 'Large output must report its bounded preview');
+        assert.ok(result.outputBytes > 120000, 'Original output byte count must include the complete command output');
+        assert.ok(Buffer.byteLength(result.stdout + result.stderr, 'utf8') <= 70000, 'Model must receive a bounded command preview');
       }
       const record = { response, body, completed: false, aborted: false };
       records.push(record);
@@ -104,6 +116,9 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
   });
   try {
     await fs.mkdir(fixture, { recursive: true });
+    assert.equal(win.webContents.debugger.isAttached(), false);
+    win.webContents.debugger.attach('1.3'); attached = true;
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fixture] });
     await call('chooseWorkspace'); await call('newSession');
@@ -156,8 +171,19 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
     finish(records[0], { prompt_tokens: 7, completion_tokens: 5 });
     const executing = await phase(start.runId, /运行.*命令|执行.*命令|PowerShell/u, 'running command central activity');
     assert.ok(seconds(executing.elapsed) >= initialSeconds);
+    const commandSweep = await js(`(()=>{const node=document.querySelector('.tool-card.running > .tool-summary .tool-title'),style=getComputedStyle(node);return {name:style.animationName,position:style.backgroundPosition,visible:node.checkVisibility({visibilityProperty:true,opacityProperty:true}),summary:!!node.closest('.task-activity-summary')};})()`);
+    assert.match(commandSweep.name, /context-status-shimmer/u);
+    assert.equal(commandSweep.visible, true); assert.equal(commandSweep.summary, false);
+    await until('real running command highlight moves', () => js(`(()=>{const node=document.querySelector('.tool-card.running > .tool-summary .tool-title');return !!node&&getComputedStyle(node).backgroundPosition!==${JSON.stringify(commandSweep.position)};})()`));
     await capture('activity-command.png');
     await until('second model request follows real command', () => records[1]);
+    assert.equal(await js(`getComputedStyle(document.querySelector('.tool-card > .tool-summary .tool-title')).animationName`), 'none', 'Completed real command must stop sweeping');
+    const largeOutput = await js(`(()=>{const result=document.querySelector('.tool-card .command-result'),output=document.querySelector('.task-activity .command-output');return {status:result.dataset.status,note:result.querySelector('.command-result-output-notice')?.textContent||'',text:result.textContent,flowOutput:output?.textContent||''};})()`);
+    assert.equal(largeOutput.status, 'success', 'Large command keeps its real successful completion status');
+    assert.match(largeOutput.note, /输出较多.*节选首尾/u);
+    assert.ok(largeOutput.text.includes('ACTIVITY_COMMAND_OK'), 'Command details retain the final output marker');
+    assert.ok(largeOutput.flowOutput.includes('ACTIVITY_COMMAND_OK'), 'Conversation output replaces its live prefix with the final head/tail preview');
+    assert.ok(!largeOutput.text.includes('输出达到上限，已停止'), 'New preview truncation must not show the legacy command termination message');
     await phase(start.runId, /等待.*模型|等待响应/u, 'waiting for second model response');
     send(records[1], { choices: [{ index: 0, delta: { role: 'assistant', content: finalText }, finish_reason: 'stop' }] });
     finish(records[1], { prompt_tokens: 11, completion_tokens: 3 });
@@ -218,22 +244,26 @@ module.exports = async function smokeActivity({ win, output, dataDir }) {
     const historicalCompleted = await until('completed activity restored from history', async () => { const observed = await snapshot(start.runId); return observed?.status === 'completed' && observed; });
     const historicalStopped = await until('stopped activity restored from history', async () => { const observed = await snapshot(stopStart.runId); return observed?.status === 'stopped' && observed; });
     assert.equal(historicalCompleted.elapsed, completed.elapsed);
+    assert.equal(historicalCompleted.summary, historicalCompleted.elapsed);
+    assert.equal(historicalStopped.summary, historicalStopped.elapsed);
     assert.equal(historicalCompleted.storedSpeed, completed.speed);
     assert.equal(historicalCompleted.activitySpeedHidden, true);
     assert.equal(historicalStopped.elapsed, stopped.elapsed);
     assert.equal(historicalStopped.speedHidden, true, 'The latest no-output historical task must not inherit an earlier output rate');
     assert.ok(!(await js('document.body.innerText')).includes(privateReasoning));
     assert.equal(await js('document.querySelectorAll(".task-activity[data-status=running]").length'), 0);
+    assert.equal(await js(`Array.from(document.querySelectorAll('#messages .tool-title,#messages .tool-operation-group-label,#messages .task-activity-phase')).some(node=>getComputedStyle(node).animationName.includes('context-status-shimmer'))`), false, 'Reopened historical activities must remain still');
     await capture('activity-history.png');
     assert.equal(records.length, 3);
     assert.deepEqual(problems, []);
-    return { status: 'completed', realApi: false, modelRequests: records.length, waitingModel: true, privateThinking: true, realApprovedCommand: true, elapsedIncreases: true, speedInSessionMetrics: true, noRateWithoutOutput: true, completedAndStoppedFreeze: true, historicalFooters: true, tokensRecorded: 26, unreportedRequests: 1, screenshots: ['activity-thinking.png', 'activity-command.png', 'activity-history.png'] };
+    return { status: 'completed', realApi: false, modelRequests: records.length, waitingModel: true, privateThinking: true, realApprovedCommand: true, realCommandSweepAndStop: true, largeCommandCompletesWithBoundedHeadTailPreview: true, durationOnlySummaries: true, phasesInConversationFlow: true, historicalSweepsStopped: true, elapsedIncreases: true, speedInSessionMetrics: true, noRateWithoutOutput: true, completedAndStoppedFreeze: true, historicalFooters: true, tokensRecorded: 26, unreportedRequests: 1, screenshots: ['activity-thinking.png', 'activity-command.png', 'activity-history.png'] };
   } catch (error) {
     const cards = win.isDestroyed() ? [] : await js('[...document.querySelectorAll(".task-activity")].map(node=>({id:node.dataset.runId,status:node.dataset.status,text:node.textContent}))').catch(() => []);
     console.error('ACTIVITY_SMOKE_DIAGNOSTIC', JSON.stringify({ error: error.message, requests: records.length, problems, cards }));
     throw error;
   } finally {
     dialog.showOpenDialog = originalOpen;
+    if (attached && !win.isDestroyed()) win.webContents.debugger.detach();
     if (!win.isDestroyed()) { try { await call('stopTask'); } catch {} }
     for (const record of records) clearInterval(record.heartbeat);
     const closed = new Promise(resolve => server.close(resolve));

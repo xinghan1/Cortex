@@ -2,7 +2,7 @@
   'use strict';
   const options = [
     ['request', '请求批准', '文件修改、命令和网页操作先由你确认。'],
-    ['assist', '帮我批准', '低风险操作直接通过，其余交给独立 AI 审查；需要你决定时再询问。'],
+    ['assist', '帮我批准', '低风险操作直接通过，其余交给独立 AI 按任务范围允许或拒绝。'],
     ['full', '完全控制', '自动批准文件修改、终端命令和网页操作。']
   ];
   const el = (tag, className, text) => {
@@ -29,7 +29,7 @@
       dialog.append(el('div', 'permission-danger-icon', '⚠'), heading,
         el('p', '', 'AI 将无需逐项确认，直接修改项目文件、执行终端命令和操作网页。'),
         el('p', 'permission-danger-emphasis', '终端命令以你的 Windows 用户权限运行，可能修改或删除项目外文件，或通过网络发送数据。请仅在信任当前任务时启用。'),
-        el('p', 'permission-danger-scope', '仅对当前窗口中的此项目有效，其他项目单独设置；重新启动后恢复“请求批准”。文件工具的项目范围和凭据保护仍然有效。'));
+        el('p', 'permission-danger-scope', '当前窗口中的此项目将使用该权限，并在本机记住选择，重新打开此项目时恢复；其他项目单独设置。文件工具的范围和凭据保护仍然有效。'));
       const actions = el('div', 'permission-danger-actions');
       const cancel = el('button', 'button', '取消'); cancel.id = 'permission-danger-cancel'; cancel.type = 'button'; cancel.autofocus = true;
       const confirm = el('button', 'button permission-danger-confirm', '启用完全控制'); confirm.id = 'permission-danger-confirm'; confirm.type = 'button';

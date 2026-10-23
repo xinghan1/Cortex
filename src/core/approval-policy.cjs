@@ -27,6 +27,9 @@ function isText(value) {
 }
 
 function assistedWrite(request) {
+  // A relative project edit can use the narrow local shortcut. Absolute paths
+  // are reviewed against the real user intent by the independent reviewer;
+  // returning false here requests that review rather than denying the write.
   return safeRelativePath(request.path)
     && (request.before === null || isText(request.before))
     && (request.after === null || isText(request.after))

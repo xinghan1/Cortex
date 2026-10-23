@@ -48,7 +48,9 @@
     const stdout = typeof result?.stdout === 'string' ? result.stdout : typeof result?.output === 'string' ? result.output : '';
     const stderr = typeof result?.stderr === 'string' ? result.stderr : '';
     const output = !result && typeof raw === 'string' && status !== 'failed' && status !== 'denied' ? raw : '';
-    return { status, label, detail, command, exitCode, stdout, stderr, output,
+    const outputTruncated = result?.outputTruncated === true;
+    const outputBytes = Number.isSafeInteger(result?.outputBytes) && result.outputBytes >= 0 ? result.outputBytes : null;
+    return { status, label, detail, command, exitCode, stdout, stderr, output, outputTruncated, outputBytes,
       signal: typeof result?.signal === 'string' ? result.signal : '',
       timeoutMs: Number.isFinite(args.timeout_ms) && args.timeout_ms > 0 ? args.timeout_ms : null };
   }
@@ -75,6 +77,11 @@
       // original-data disclosure provided by the tool card.
       const first = value.detail.split(/\r?\n/).find(line => line.trim()) || '';
       card.append(el('p', 'command-result-explanation', first.length > 240 ? first.slice(0, 240) + '…' : first));
+    }
+    if (value.outputTruncated) {
+      const note = el('p', 'command-result-explanation command-result-output-notice', '输出较多，部分预览已节选首尾，省略处已标记。');
+      if (value.outputBytes !== null) note.title = `总输出 ${value.outputBytes.toLocaleString()} 字节。执行结果以实际退出状态为准。`;
+      card.append(note);
     }
     const section = (label, text, className, language) => {
       const block = el('div', 'command-result-section');

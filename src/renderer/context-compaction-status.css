@@ -1,0 +1,75 @@
+.context-compaction-progress,
+.context-compaction-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 12px 0;
+  color: var(--ui-muted, #929292);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.7;
+}
+
+.context-compaction-mark {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.context-compaction-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.context-compaction-progress .context-compaction-message,
+.task-activity.running[data-phase='thinking'] .task-activity-phase,
+.task-activity.running[data-phase='compacting'] .task-activity-phase,
+.tool-card.running > .tool-summary .tool-title,
+.tool-operation-group[data-status='running'] > .tool-operation-group-summary .tool-operation-group-label {
+  background-image: linear-gradient(100deg, currentColor 43%, #fff 50%, currentColor 57%);
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: context-status-shimmer 2.4s ease-in-out infinite;
+}
+
+/* A narrow translucent highlight retains dark letterforms on a light theme. */
+html[data-ui-style='white'] :is(.context-compaction-progress .context-compaction-message,
+  .task-activity.running[data-phase='thinking'] .task-activity-phase,
+  .task-activity.running[data-phase='compacting'] .task-activity-phase,
+  .tool-card.running > .tool-summary .tool-title,
+  .tool-operation-group[data-status='running'] > .tool-operation-group-summary .tool-operation-group-label) {
+  background-image: linear-gradient(100deg, currentColor 46%, color-mix(in srgb, currentColor 65%, white) 50%, currentColor 54%);
+}
+
+@keyframes context-status-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-compaction-progress .context-compaction-message,
+  .task-activity.running[data-phase='thinking'] .task-activity-phase,
+  .task-activity.running[data-phase='compacting'] .task-activity-phase,
+  .tool-card.running > .tool-summary .tool-title,
+  .tool-operation-group[data-status='running'] > .tool-operation-group-summary .tool-operation-group-label {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* A pending notice remains outside a folded task's hidden operation list. */
+.task-activity + .context-compaction-progress {
+  margin-top: -8px;
+  margin-bottom: 18px;
+}

@@ -1,0 +1,13 @@
+.prompt-completion-hint {
+  max-width: 200px;
+  color: var(--ui-muted, var(--muted, #a4b6d0));
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.prompt-completion-hint[hidden] { display: none; }
+.prompt-completion-hint[data-status='loading'] { color: var(--ui-text, var(--text-primary, #dce9ff)); }
+@media (max-width: 1000px) {
+  .send-actions:has(.prompt-completion-hint:not([hidden])) .keyboard-hint { display: none; }
+  .prompt-completion-hint { max-width: 150px; }
+}

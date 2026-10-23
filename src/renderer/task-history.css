@@ -1,4 +1,4 @@
-/* Compact task history: current action while running, elapsed time when finished. */
+/* Round headings show elapsed time; live actions follow their process. */
 
 .task-activity {
   min-width: 0;
@@ -37,9 +37,11 @@
 }
 
 .task-activity .task-activity-phase-line {
-  flex: 1 1 200px;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin: 0;
+  margin: 9px 0 9px 7px;
+  padding-left: 15px;
 }
 
 .task-activity .task-activity-phase-line[hidden] {
@@ -64,7 +66,7 @@
   gap: 7px;
   min-width: 0;
   color: #a4b6d0;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .task-activity .task-activity-speed {
@@ -87,7 +89,7 @@
   transform: rotate(135deg) translate(-1px, -1px);
 }
 
-.task-activity:not(.running) > .task-activity-summary {
+.task-activity > .task-activity-summary {
   justify-content: flex-start;
   padding: 6px 0 11px;
   border-bottom: 1px solid var(--line-soft, rgb(215 231 255 / 10%));
@@ -437,11 +439,8 @@
     gap: 2px 10px;
   }
 
-  .task-activity.running .task-activity-meta {
-    margin-left: 24px;
-  }
-
-  .task-activity-events {
+  .task-activity-events,
+  .task-activity .task-activity-phase-line {
     padding-left: 10px;
   }
 

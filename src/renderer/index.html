@@ -12,6 +12,8 @@
   <link rel="stylesheet" href="./glass.css">
   <link rel="stylesheet" href="./file-icons.css">
   <link rel="stylesheet" href="./task-history.css">
+  <link rel="stylesheet" href="./context-compaction-status.css">
+  <link rel="stylesheet" href="./prompt-completion.css">
   <link rel="stylesheet" href="./tool-operation-groups.css">
   <link rel="stylesheet" href="./subagents.css">
   <link rel="stylesheet" href="./code-diff.css">
@@ -32,6 +34,7 @@
   <link rel="stylesheet" href="./round-navigator.css">
   <link rel="stylesheet" href="./explorer-selection.css">
   <link rel="stylesheet" href="./chat-selection-menu.css">
+  <link rel="stylesheet" href="./app-update.css">
   <script src="./syntax-highlight.js" defer></script>
   <script src="./editor-highlight.js" defer></script>
   <script src="./code-completion.js" defer></script>
@@ -44,6 +47,8 @@
   <script src="./sessions.js" defer></script>
   <script src="./file-icons.js" defer></script>
   <script src="./task-history.js" defer></script>
+  <script src="./context-compaction-status.js" defer></script>
+  <script src="./prompt-completion.js" defer></script>
   <script src="./round-token-usage.js" defer></script>
   <script src="./tool-operation-groups.js" defer></script>
   <script src="./subagents.js" defer></script>
@@ -53,6 +58,7 @@
   <script src="./command-result.js" defer></script>
   <script src="./explorer-selection.js" defer></script>
   <script src="./chat-selection-menu.js" defer></script>
+  <script src="./app-update.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
@@ -77,6 +83,7 @@
         <button id="menu-appearance" class="app-menu-trigger" data-menu="appearance" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">外观</button>
         <button id="menu-help" class="app-menu-trigger" data-menu="help" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">帮助</button>
       </nav>
+      <button id="app-update-button" class="app-update-button" type="button" aria-busy="false" hidden><span id="app-update-label" role="status" aria-live="polite" aria-atomic="true">更新</span><progress id="app-update-progress" class="app-update-progress" max="100" value="0" aria-label="更新下载进度" hidden></progress></button>
     </header>
 
     <div class="workspace-layout">
@@ -131,7 +138,7 @@
                 <div id="model-list-panel" class="model-list-panel" hidden><div class="model-list-heading"><button id="model-list-back" class="icon-button small" type="button" aria-label="返回推理设置">‹</button><strong>选择模型</strong><button id="model-list-refresh" class="icon-button small" type="button" title="刷新模型目录" aria-label="刷新模型目录">↻</button></div><input id="model-search" class="model-search" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型"><p id="model-list-status" class="model-list-status" role="status"></p><div id="model-list" class="model-list" role="listbox" aria-label="可选模型"></div><div class="model-list-footer"><button id="model-list-retry" class="text-button" type="button" hidden>重试</button><button id="model-open-settings" class="text-button" type="button">模型设置</button></div></div>
                 <div class="reasoning-popup-footer"><button id="reasoning-open-settings" class="reasoning-settings-button" type="button"><span>模型设置</span><span aria-hidden="true">⚙</span></button></div>
               </section>
-            </div></div><div class="send-actions"><span class="keyboard-hint">Ctrl + Enter</span><button id="stop-button" class="button stop-button" type="button" hidden>停止</button><button id="send-button" class="send-button" type="submit" title="发送任务（Ctrl + Enter）" aria-label="发送任务"><svg class="send-plane-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3"/></svg></button></div></div>
+            </div></div><div class="send-actions"><span id="prompt-completion-hint" class="prompt-completion-hint" role="status" aria-live="polite" hidden></span><span class="keyboard-hint">Ctrl + Enter</span><button id="stop-button" class="button stop-button" type="button" hidden>停止</button><button id="send-button" class="send-button" type="submit" title="发送任务（Ctrl + Enter）" aria-label="发送任务"><svg class="send-plane-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 3-7 18-4-7-7-4L21 3ZM10 14 21 3"/></svg></button></div></div>
           </form>
           <div class="composer-footer">
             <div class="composer-footer-account">

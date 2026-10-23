@@ -238,7 +238,38 @@
         let node;
         if (token.type === 'fence') {
           node = element('div', 'message-code');
-          const label = element('div', 'message-code-label'); label.textContent = token.language || '代码';
+          const label = element('div', 'message-code-label');
+          const language = element('span', 'message-code-language'); language.textContent = token.language || '代码';
+          const copy = element('button', 'message-code-copy'); copy.type = 'button';
+          const feedback = element('span', 'message-code-copy-feedback');
+          feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite'); feedback.setAttribute('aria-atomic', 'true');
+          copy.append(feedback);
+          const setCopyState = state => {
+            copy.dataset.state = state;
+            feedback.textContent = state === 'copying' ? '复制中…' : state === 'copied' ? '已复制' : state === 'failed' ? '复制失败' : '复制';
+            copy.title = state === 'failed' ? '复制失败，点击重试' : state === 'copied' ? '已复制代码' : '复制代码';
+            copy.setAttribute('aria-label', copy.title);
+          };
+          let feedbackTimer;
+          setCopyState('idle');
+          copy.addEventListener('click', async event => {
+            event.preventDefault();
+            if (copy.disabled) return;
+            clearTimeout(feedbackTimer);
+            copy.disabled = true; setCopyState('copying');
+            try {
+              if (typeof options.onCopy !== 'function') throw new Error('复制暂不可用。');
+              // Use the parser's exact source, never the language, syntax spans
+              // or feedback labels displayed around the code.
+              await options.onCopy(token.value);
+              if (!container.contains(copy)) return;
+              setCopyState('copied');
+              feedbackTimer = setTimeout(() => setCopyState('idle'), 1800);
+            } catch {
+              if (container.contains(copy)) setCopyState('failed');
+            } finally { copy.disabled = false; }
+          });
+          label.append(language, copy);
           const pre = element('pre'); pre.tabIndex = 0;
           const code = element('code');
           if (globalThis.ForgeSyntax?.append) globalThis.ForgeSyntax.append(doc, code, token.value, token.language);

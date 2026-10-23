@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.cjs';
 
 export const SUBAGENT_LIMITS = Object.freeze({ concurrent: 3, total: 8, taskChars: 12000,
   nameChars: 80, writePaths: 24, activity: 40, summaryChars: 6000, messages: 8, messageChars: 4000 });
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 export const SUBAGENT_TOOL_DEFINITIONS = [
-  { name: 'spawn_agent', description: '启动一个独立子智能体并立即返回 ID；最多同时 3 个、每次主任务累计 8 个。适合可独立完成的明确任务。默认只读且不能运行命令。write_paths 可授予相对文件路径或以 / 结尾的目录；活跃子任务的写入范围不能重叠。目录范围仅限制文件工具，不是命令的系统沙箱；命令仍需遵守当前审批规则。子智能体不能再次委派。',
+  { name: 'spawn_agent', description: '启动一个独立子智能体并立即返回 ID；最多同时 3 个、每次主任务累计 8 个。适合可独立完成的明确任务。默认只读且不能运行命令。write_paths 可授予项目内相对路径或任务授权的项目外绝对路径，目录必须以 / 结尾；活跃子任务的写入范围不能重叠。目录范围仅限制文件工具，不是命令的系统沙箱；命令仍需遵守当前审批规则。子智能体不能再次委派。',
     parameters: schema({ name: { type: 'string', maxLength: 80 }, task: { type: 'string', maxLength: 12000 },
-      write_paths: { type: 'array', maxItems: 24, items: { type: 'string', description: '相对项目路径；目录必须以 / 结尾。禁止绝对路径和 ..。' } } }, ['name', 'task']) },
+      write_paths: { type: 'array', maxItems: 24, items: { type: 'string', description: '项目内相对路径或项目外完整绝对路径；目录必须以 / 结尾。不可包含 .. 或授予无关目录。' } } }, ['name', 'task']) },
   { name: 'wait_agents', description: '等待指定子智能体结束并返回摘要、错误和用量。省略 ids 时等待目前所有子智能体；不会创建额外模型请求。',
     parameters: schema({ ids: { type: 'array', maxItems: 8, items: { type: 'string' } } }) },
   { name: 'send_agent_message', description: '向运行中的子智能体发送任务补充；已结束的子任务不会重启。',
@@ -27,25 +28,29 @@ function textArg(value, max, label) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || value.includes('\0')) throw new Error(`${label}格式无效或超过长度限制。`);
   return value.trim();
 }
-export function normalizeSubagentPath(value) {
-  if (typeof value !== 'string' || !value || value.length > 500 || /[\x00-\x1f:<>"|?*]/.test(value)) throw new Error('写入范围必须是项目内的相对文件路径或以 / 结尾的目录。');
-  const normalized = value.replaceAll('\\', '/');
-  const directory = normalized.endsWith('/');
-  const parts = (directory ? normalized.slice(0, -1) : normalized).split('/');
-  if (parts.some(part => !part || part === '.' || part === '..' || part.trim() !== part || /[. ]$/.test(part)
-      || /^(?:\.git|\.codex|\.aws|\.ssh|\.azure|\.gnupg|node_modules)$/i.test(part)
-      || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new Error('写入范围包含无效或受保护路径。');
-  return parts.join('/') + (directory ? '/' : '');
+export function normalizeSubagentPath(value, { root = process.cwd() } = {}) {
+  if (typeof value !== 'string' || !value || value.length > 500 || value !== value.trim()) throw new Error('写入范围必须是相对或绝对文件路径，目录以 / 结尾。');
+  const normalized = value.replaceAll('\\', '/'), directory = normalized.endsWith('/');
+  const clean = directory ? normalized.slice(0, -1) : normalized;
+  // Scopes must be explicit. Runtime file arguments may use equivalent absolute
+  // paths, but a grant never silently expands through a dot or parent segment.
+  const segments = clean.replace(/^[A-Za-z]:\//u, '').replace(/^\//u, '').split('/');
+  if (segments.some(part => !part || part === '.' || part === '..' || part !== part.trim())) throw new Error('写入范围包含无效或受保护路径。');
+  const reference = normalizeWorkspaceReference(root, clean, { allowExternalPaths: true });
+  return reference.relative.replaceAll('\\', '/') + (directory ? '/' : '');
 }
-const covers = (scope, file) => scope.toLowerCase() === file.toLowerCase()
-  || scope.endsWith('/') && file.toLowerCase().startsWith(scope.toLowerCase());
+const identity = (root, value) => {
+  const directory = value.endsWith('/'), clean = directory ? value.slice(0, -1) : value;
+  return workspacePathKey(normalizeWorkspaceReference(root, clean, { allowExternalPaths: true }).absolute).replaceAll('\\', '/') + (directory ? '/' : '');
+};
+const covers = (scope, file) => scope === file || scope.endsWith('/') && file.startsWith(scope);
 const overlap = (a, b) => covers(a, b) || covers(b, a)
-  || a.endsWith('/') && b.toLowerCase() === a.slice(0, -1).toLowerCase()
-  || b.endsWith('/') && a.toLowerCase() === b.slice(0, -1).toLowerCase();
+  || a.endsWith('/') && b === a.slice(0, -1)
+  || b.endsWith('/') && a === b.slice(0, -1);
 
 // The manager owns lifecycle and public snapshots only. Provider messages and
 // native reasoning stay in each independent runAgent invocation.
-export function createSubagentManager({ createWorkspace, runChild, parentSignal, emit, redact = value => value }) {
+export function createSubagentManager({ root = process.cwd(), createWorkspace, runChild, parentSignal, emit, redact = value => value }) {
   if (typeof createWorkspace !== 'function' || typeof runChild !== 'function') throw new Error('子智能体运行环境无效。');
   const records = new Map();
   let closed = false;
@@ -62,7 +67,7 @@ export function createSubagentManager({ createWorkspace, runChild, parentSignal,
     return records.get(id);
   };
   const pending = () => [...records.values()].filter(record => record.status === 'running');
-  const activeScopes = () => pending().flatMap(record => record.writePaths);
+  const activeScopes = () => pending().flatMap(record => record.scopes);
   const addActivity = (record, item) => {
     record.activity.push(item);
     if (record.activity.length > SUBAGENT_LIMITS.activity) record.activity.splice(0, record.activity.length - SUBAGENT_LIMITS.activity);
@@ -121,11 +126,12 @@ export function createSubagentManager({ createWorkspace, runChild, parentSignal,
     const name = textArg(args.name, SUBAGENT_LIMITS.nameChars, '子任务名称');
     const task = textArg(args.task, SUBAGENT_LIMITS.taskChars, '子任务内容');
     if (args.write_paths !== undefined && (!Array.isArray(args.write_paths) || args.write_paths.length > SUBAGENT_LIMITS.writePaths)) throw new Error('写入范围最多 24 项。');
-    const writePaths = [...new Set((args.write_paths || []).map(normalizeSubagentPath))];
+    const writePaths = [...new Set((args.write_paths || []).map(value => normalizeSubagentPath(value, { root })))];
+    const scopes = writePaths.map(value => identity(root, value));
     if (records.size >= SUBAGENT_LIMITS.total) throw new Error('本次主任务最多创建 8 个子智能体。');
     if (pending().length >= SUBAGENT_LIMITS.concurrent) throw new Error('最多同时运行 3 个子智能体，请先等待现有任务。');
-    if (writePaths.some(scope => activeScopes().some(active => overlap(scope, active)))) throw new Error('写入范围与正在运行的子智能体重叠，请等待它完成或分配不同文件。');
-    const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), writePaths,
+    if (scopes.some(scope => activeScopes().some(active => overlap(scope, active)))) throw new Error('写入范围与正在运行的子智能体重叠，请等待它完成或分配不同文件。');
+    const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), writePaths, scopes,
       status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', activity: [],
       inputTokens: 0, outputTokens: 0, controller: new AbortController(), queue: [], delivered: false, promise: null,
       commandBuffers: {}, commandActivity: {} };
@@ -144,8 +150,8 @@ export function createSubagentManager({ createWorkspace, runChild, parentSignal,
             record.controller.signal.throwIfAborted();
             if (!allowed.has(tool)) throw new Error('此工具不在子智能体授权范围内。');
             if (tool === 'write_file' || tool === 'replace_in_file') {
-              const file = normalizeSubagentPath(parameters?.path);
-              if (file.endsWith('/') || !writePaths.some(scope => covers(scope, file))) throw new Error('文件不在此子智能体的写入范围内。');
+              const file = identity(root, parameters?.path || '');
+              if (file.endsWith('/') || !scopes.some(scope => covers(scope, file))) throw new Error('文件不在此子智能体的写入范围内。');
             }
             return workspace.execute(tool, parameters, options);
           } },
@@ -195,7 +201,7 @@ export function createSubagentManager({ createWorkspace, runChild, parentSignal,
       if (!scopes.length) return;
       if (name === 'undo_last_change') throw new Error('子智能体正在写入文件，请等待它完成后再撤销。');
       if (name === 'write_file' || name === 'replace_in_file') {
-        const file = normalizeSubagentPath(args?.path);
+        const file = identity(root, args?.path || '');
         if (scopes.some(scope => overlap(scope, file))) throw new Error('此文件正由子智能体处理，请等待它完成后再修改。');
       }
     },

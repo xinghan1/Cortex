@@ -51,10 +51,44 @@ test('child observed versions are independent and refuse edits changed during ap
 
 test('invalid scopes and cancellation never start a write or approval', async t => {
   const root = await fixture(t); let approved = false;
-  for (const scope of ['../x', 'src/../x', '.git/config', '.env', '/', 'C:/x', 'x//y', 'src/:bad']) assert.throws(() => createSubagentWorkspace({ root, id: 'x', name: 'x', writePaths: [scope], approve: async () => true }));
+  for (const scope of ['../x', 'src/../x', '.git/config', '.env', '/', 'C:x', 'x//y', 'src/:bad']) assert.throws(() => createSubagentWorkspace({ root, id: 'x', name: 'x', writePaths: [scope], approve: async () => true }));
   const child = createSubagentWorkspace({ root, id: 'x', name: 'x', writePaths: ['src/a.js'], approve: async () => { approved = true; return true; } });
   const controller = new AbortController(); controller.abort();
   await assert.rejects(child.execute('write_file', { path: 'src/a.js', content: 'no' }, { signal: controller.signal })); assert.equal(approved, false);
+});
+
+test('external absolute child scopes allow the assigned server file but preserve exact scope and approval denial', async t => {
+  const fixtureRoot = await fixture(t), root = path.join(fixtureRoot, 'client'), server = path.join(fixtureRoot, 'server');
+  await fs.mkdir(root); await fs.mkdir(server); await fs.mkdir(path.join(fixtureRoot, 'server-other'));
+  const target = path.join(server, 'a.js'); await fs.writeFile(target, 'server original');
+  const requests = [], history = [];
+  const child = createSubagentWorkspace({ root, id: 'external', name: '服务端', writePaths: [server.replaceAll('\\', '/') + '/'], history,
+    approve: async request => { requests.push(request); return true; } });
+  assert.match(await child.execute('read_file', { path: target }), /server original/);
+  assert.match(await child.execute('replace_in_file', { path: target, old_text: 'server original', new_text: 'server updated' }), /替换|保存/);
+  assert.equal(await fs.readFile(target, 'utf8'), 'server updated');
+  assert.equal(requests.length, 1); assert.equal(requests[0].agentId, 'external');
+  assert.equal(path.resolve(requests[0].path), target); assert.equal(path.resolve(history[0].path), target);
+  for (const candidate of [path.join(root, 'a.js'), path.join(fixtureRoot, 'server-other/a.js'), path.join(server, '.env'), path.join(server, '.git/config')]) {
+    await assert.rejects(child.execute('write_file', { path: candidate, content: 'no' }));
+  }
+  assert.equal(requests.length, 1, 'Out-of-scope writes never reach approval');
+  const exact = createSubagentWorkspace({ root, id: 'denied', name: '拒绝', writePaths: [target], approve: async () => false });
+  await exact.execute('read_file', { path: target });
+  assert.match(await exact.execute('write_file', { path: target, content: 'rejected' }), /取消|拒绝/);
+  await assert.rejects(exact.execute('write_file', { path: path.join(server, 'b.js'), content: 'no' }));
+  assert.equal(await fs.readFile(target, 'utf8'), 'server updated');
+});
+
+test('relative grants and equivalent absolute operation paths share one child scope, while readonly children remain readonly outside the project', async t => {
+  const root = await fixture(t), target = path.join(root, 'src/a.js');
+  const child = createSubagentWorkspace({ root, id: 'alias', name: 'Alias', writePaths: ['src/a.js'], approve: async () => true });
+  await child.execute('read_file', { path: target });
+  assert.match(await child.execute('write_file', { path: target, content: 'absolute alias' }), /保存/);
+  const readonly = createSubagentWorkspace({ root: path.join(root, 'src'), id: 'read', name: 'Read', approve: async () => { throw new Error('Readonly must not ask'); } });
+  assert.match(await readonly.execute('read_file', { path: target }), /absolute alias/);
+  await assert.rejects(readonly.execute('write_file', { path: target, content: 'no' }));
+  await assert.rejects(readonly.execute('run_command', { command: 'Get-Location' }));
 });
 
 test('workspace write scope limit agrees with the advertised runtime limit', async t => {

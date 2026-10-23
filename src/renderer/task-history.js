@@ -109,6 +109,14 @@
   function runItems(session, record, messages, finalIndex) {
     const start = record.messageStartIndex, end = record.messageIndex;
     const nodes = [], calls = [], pending = [], steeringIndices = new Map();
+    // runItems is only used after project has verified an unambiguous range.
+    // Older image receipts included attachments from the entire model context;
+    // display only this task's initial request and consumed steering messages.
+    // Keep references whose attachment bytes are missing so the card can show
+    // its existing "original image not retained" placeholder.
+    const imageMessageIds = new Set(messages.slice(start, end + 1)
+      .filter(message => message?.role === 'user' && typeof message.id === 'string' && message.id)
+      .map(message => message.id));
     const changes = new Map((Array.isArray(session.fileEdits) ? session.fileEdits : [])
       .filter(value => value?.runId === (record.runId || record.id) && typeof value.toolCallId === 'string' && fileChange(value))
       .map(value => [value.toolCallId, fileChange(value)]));
@@ -193,6 +201,12 @@
     for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
       let value = events[eventIndex];
       if (!value || typeof value !== 'object') continue;
+      if (value.type === 'images-viewed') {
+        const images = (Array.isArray(value.images) ? value.images : [])
+          .filter(image => image && imageMessageIds.has(image.messageId));
+        if (!images.length) continue;
+        value = { ...value, images };
+      }
       if (value.type === 'user-message') {
         const index = value.source === 'steering' && (!value.runId || value.runId === (record.runId || record.id))
           ? steeringIndices.get(value.id) : null;

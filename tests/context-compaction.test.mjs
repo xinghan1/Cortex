@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareContext, contextChars } from '../src/core/context-compaction.mjs';
+import { estimateRequestTokens, captureContextMeasurement } from '../src/core/context-usage.mjs';
 
 const signal = () => new AbortController().signal;
 const user = (content, extra = {}) => ({ role: 'user', content, ...extra });
@@ -359,4 +360,82 @@ test('local fallback is bounded and sanitizes inline attachment bytes without mo
   assert.doesNotMatch(result.messages[0].content, /data:image|UEhPVE8=/);
   assert.match(result.messages[0].content, /上下文|历史/);
   assert.ok(result.metadata.summaryChars <= 12_000);
+});
+
+test('long tool archives find the earliest fitting batch without repeatedly scanning every historical output', async () => {
+  const batchCount = 600, messages = [user('Inspect each fixture once, preserve all changes.')];
+  let contentReads = 0, summaryCalls = 0;
+  const output = 'completed fixture\n' + 'x'.repeat(10_000);
+  for (let index = 0; index < batchCount; index++) messages.push(assistant(`batch-${index}`), {
+    role: 'tool', toolCallId: `batch-${index}`, get content() { contentReads++; return output; },
+  });
+  const result = await prepareContext({ messages, modelCapabilities: { contextWindow: 128_000 },
+    summarize: async ({ maxSummaryChars }) => { summaryCalls++; return '摘'.repeat(maxSummaryChars); } });
+  assert.equal(summaryCalls, 1);
+  assert.ok(contentReads < batchCount * 64,
+    `Budget planning must not rescan a multi-megabyte archive once per batch (observed ${contentReads} output reads)`);
+  assert.equal(result.metadata.throughIndex % 2, 0, 'Never split a call/result pair');
+  const previousBatch = messages.slice(result.metadata.throughIndex - 1, result.metadata.throughIndex + 1);
+  assert.ok(estimateRequestTokens(result.messages) <= result.metadata.targetTokens);
+  assert.ok(estimateRequestTokens([result.messages[0], messages[0], ...previousBatch, ...messages.slice(result.metadata.throughIndex + 1)])
+    > result.metadata.targetTokens, 'The preceding complete batch cannot fit: keep as much recent exact output as possible');
+});
+
+test('optimized cuts match linear projection across steering, image captions, native state and reported measurements', async () => {
+  // Independent reference enumerates every legal batch boundary. This protects
+  // the monotonic-search assumption when optional retained content changes.
+  const archivedCaption = '[这是一条历史图片消息，图片完整保留；其较长文字已纳入历史摘要，完整原文保留在本地会话历史中。]';
+  for (let variation = 0; variation < 12; variation++) {
+    const messages = [user('Keep the original task and user changes.')], ends = [0];
+    for (let index = 0; index < 18; index++) {
+      if (index % 2 === 0) {
+        messages.push(user(`Requirement ${index}: ` + (index % 3 ? '摘' : 'x').repeat(1000 + variation * 97), {
+          ...(index % 3 ? { source: 'steering' } : {}), ...(index % 4 === 0 ? { attachments: [image] } : {}),
+        })); ends.push(messages.length - 1);
+      }
+      messages.push(assistant(`mixed-${index}`, index % 4 === 0 ? { providerState: { thinking: 'native'.repeat(800) } } : {}),
+        tool(`mixed-${index}`, 'output '.repeat(1800 + variation * 9)));
+      ends.push(messages.length - 1);
+      if (index % 5 === 0) { messages.push({ role: 'assistant', content: 'local failure'.repeat(100), localOnly: true }); ends.push(messages.length - 1); }
+    }
+    messages.push(user('The latest task must stay exact.'), user('Final steering must stay exact.', { source: 'steering' }));
+    ends.push(messages.length - 2, messages.length - 1);
+    const modelCapabilities = { contextWindow: 32_000 }, config = { provider: 'fixture', model: 'fixture', modelCapabilities };
+    const original = structuredClone(messages);
+    const result = await prepareContext({ messages, modelCapabilities,
+      ...(variation % 2 ? { contextMeasurement: captureContextMeasurement({ config, messages, inputTokens: 27_000, outputTokens: 1000 }) } : {}),
+      summarize: async ({ maxSummaryChars }) => '摘'.repeat(maxSummaryChars) });
+    assert.equal(result.compacted, true);
+    const first = 0, latest = messages.length - 1, latestTask = messages.length - 2;
+    const essential = new Set([first, latest, latestTask]);
+    const fits = values => estimateRequestTokens(values) <= result.metadata.targetTokens;
+    const linearProjection = through => {
+      const preferred = messages.flatMap((message, index) => index <= through && message.role === 'user'
+        && message.source === 'steering' && !essential.has(index) ? [index] : []).slice(-3);
+      const kept = new Set(preferred), shortened = new Set();
+      const build = () => [result.messages[0], ...messages.flatMap((message, index) => {
+        if (message.role === 'assistant' && message.localOnly) return [];
+        if (index > through) return [message];
+        if (message.role !== 'user' || !(essential.has(index) || kept.has(index) || message.attachments?.length)) return [];
+        return [shortened.has(index) ? { ...message, content: archivedCaption } : message];
+      })];
+      let projected = build();
+      for (let index = 0; index <= through && !fits(projected); index++) {
+        const message = messages[index];
+        if (message.role === 'user' && message.attachments?.length && !essential.has(index) && !kept.has(index)
+            && message.content.length > archivedCaption.length) { shortened.add(index); projected = build(); }
+      }
+      for (const index of preferred) {
+        if (fits(projected)) break;
+        kept.delete(index);
+        if (messages[index].attachments?.length && messages[index].content.length > archivedCaption.length) shortened.add(index);
+        projected = build();
+      }
+      return projected;
+    };
+    const expectedCut = ends.find(index => fits(linearProjection(index)));
+    assert.equal(result.metadata.throughIndex, expectedCut, `Variation ${variation} must retain the earliest safe suffix`);
+    assert.deepEqual(result.messages, linearProjection(expectedCut));
+    assert.deepEqual(messages, original);
+  }
 });

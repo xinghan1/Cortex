@@ -51,6 +51,25 @@ test('Windows case and separator variants merge as one file identity', () => {
   assert.equal(value.files[0].continuous, true); assert.equal(value.complete, true);
 });
 
+test('external same-name files show complete addresses and merge only their own canonical snapshots', async () => {
+  const edits = [edit('1', 'same.txt', 'client before', 'client after'),
+    edit('2', 'G:/server/same.txt', 'server before', 'server middle'),
+    edit('2', 'g:\\server\\same.txt', 'server before', 'server middle'),
+    edit('3', 'g:\\server\\same.txt', 'server middle', 'server after'),
+    edit('4', 'H:/other/same.txt', null, 'other server')];
+  const value = aggregate(edits, 'run-one', { expectedCount: 4 });
+  assert.equal(value.complete, true); assert.equal(value.files.length, 3);
+  assert.deepEqual(value.files.map(file => [file.path, file.before, file.after]), [
+    ['same.txt', 'client before', 'client after'], ['G:/server/same.txt', 'server before', 'server after'], ['H:/other/same.txt', null, 'other server']]);
+  const card = context.ForgeTaskChangeSummary.create(value), rows = card.querySelectorAll('.task-change-file');
+  assert.deepEqual(rows.map(row => row.dataset.external), ['false', 'true', 'true']);
+  assert.equal(rows[1].querySelector('.task-change-path').textContent, 'G:/server/same.txt');
+  assert.equal(rows[1].title, 'G:/server/same.txt');
+  await rows[1].click();
+  assert.equal(card.querySelectorAll('.task-change-diff').length, 1);
+  assert.equal(card.querySelector('.task-change-diff').dataset.path, 'G:/server/same.txt');
+});
+
 class Element {
   constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.listeners = {}; this.attributes = {}; this.className = ''; this.disabled = false; this.hidden = false; this.content = ''; }
   set textContent(value) { this.content = String(value); this.children.forEach(child => { child.parentNode = null; }); this.children = []; }

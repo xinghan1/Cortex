@@ -39,6 +39,14 @@ test('assist allows guarded project text creation, edits and undo', () => {
   }
 });
 
+test('external file writes use independent review in assist, manual review in request and existing full control in full', () => {
+  const operation = write('G:/plugin/QcNPCDialogue/src/Region.java');
+  assert.equal(approvalDecision('assist', operation), 'ask', 'External paths leave the shortcut and reach independent intent review');
+  assert.equal(approvalDecision('request', operation), 'ask');
+  assert.equal(approvalDecision('full', operation), 'allow');
+  assert.equal(approvalDecision('assist', write('src/Region.java')), 'allow', 'Current-project local shortcut stays intact');
+});
+
 test('assist never auto-approves unsafe, secret, ambiguous or non-text writes', () => {
   const paths = ['', '.', '..', '../other.txt', 'src/../../other.txt', '/tmp/note', '\\server\share\note', 'C:\\note.txt', 'notes.txt:stream', 'src//note.txt', 'src/note.txt ', 'src/.git/config', '.aws/config', '.ENV.local', 'src/secret.json', 'id_ed25519', 'src/file.PEM', 'node_modules/a.js', 'NUL.txt'];
   for (const path of paths) assert.equal(approvalDecision('assist', write(path)), 'ask', path);

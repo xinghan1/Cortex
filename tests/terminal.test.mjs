@@ -105,6 +105,30 @@ test('redaction failure hides output and listeners cannot break process cleanup'
   assert.match(events[1].text, /隐藏/);
 });
 
+test('large command output uses its final bounded arrival-order preview without changing success or leaking raw streams', async () => {
+  const secret = 'sk-local-truncated-credential', events = [];
+  const session = new TerminalSession({
+    redact: value => value.replaceAll(secret, '[REDACTED]'), onEvent: event => events.push(event),
+    workspaceFactory: ({ onEvent }) => ({ execute: async () => {
+      onEvent({ type: 'command-output', stream: 'stdout', text: 'initial preview\n' });
+      return success({ outputTruncated: true, outputBytes: 200_000, outputOmittedBytes: 160_000,
+        output: `head\n[中间输出已省略]\n${secret}\nFINAL_MARKER\n`,
+        stdout: secret.slice(0, 10), stderr: secret.slice(10) });
+    } }),
+  });
+  const value = await session.run({ command: 'fixture' });
+  assert.equal(value.status, 'completed');
+  assert.equal(value.result.exitCode, 0);
+  assert.equal(value.result.outputTruncated, true);
+  assert.equal(value.result.outputBytes, 200_000);
+  assert.equal(value.result.outputOmittedBytes, 160_000);
+  assert.match(value.result.output, /\[REDACTED\]\nFINAL_MARKER\n$/);
+  assert.equal(Object.hasOwn(value.result, 'stdout'), false);
+  assert.equal(Object.hasOwn(value.result, 'stderr'), false);
+  assert.ok(!JSON.stringify(value).includes(secret));
+  assert.deepEqual(events.at(-1).result, value.result);
+});
+
 test('reports denial, failure exit code, timeout, output limit and malformed workspace responses', async () => {
   for (const [raw, expected, code] of [
     [JSON.stringify({ denied: true, message: 'refused' }), 'denied', null],

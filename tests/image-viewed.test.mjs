@@ -43,6 +43,61 @@ test('reference batches and the per-run identity set stay bounded without replay
   assert.equal(full.size, 2048);
 });
 
+test('run-scoped references intersect the actual request and do not consume old or absent image identities', () => {
+  const old = { ...user(), id: 'old-image' }, current = { ...user(), id: 'current-image' };
+  const seen = new Set(), allowed = new Set([current.id]);
+  assert.deepEqual(collectViewedImages([old], seen, allowed), []);
+  assert.equal(seen.size, 0);
+  assert.deepEqual(collectViewedImages([old, current], seen, allowed), [
+    { messageId: current.id, attachmentIndex: 0, attachmentId: image.id },
+  ]);
+  assert.deepEqual([...seen], ['current-image\u00000']);
+  assert.deepEqual(collectViewedImages([old, current], new Set(), new Set()), []);
+  assert.deepEqual(collectViewedImages([old, current], new Set(), []), []);
+  assert.deepEqual(collectViewedImages([current, { ...current }], new Set(), allowed), [], 'ambiguous history IDs cannot be relabelled');
+});
+
+test('successive runs report only their new two, one and zero images while preserving all model history', async () => {
+  const messages = [], references = [], requestImageIds = [];
+  for (const [index, count] of [2, 1, 0].entries()) {
+    const messageStartIndex = messages.length, id = `round-${index}`;
+    messages.push({ id, role: 'user', content: `Round ${index}`, attachments: Array.from({ length: count },
+      (_, attachmentIndex) => ({ ...image, id: `photo-${index}-${attachmentIndex}` })) });
+    const events = [];
+    await runAgent(options({ messages, messageStartIndex, emit: event => events.push(event), requestModel: async request => {
+      requestImageIds.push(request.messages.filter(message => message.attachments?.length).map(message => message.id));
+      return reply();
+    } }));
+    references.push(viewed(events).flatMap(event => event.images));
+  }
+  assert.deepEqual(references, [
+    [{ messageId: 'round-0', attachmentIndex: 0, attachmentId: 'photo-0-0' },
+      { messageId: 'round-0', attachmentIndex: 1, attachmentId: 'photo-0-1' }],
+    [{ messageId: 'round-1', attachmentIndex: 0, attachmentId: 'photo-1-0' }], [],
+  ]);
+  assert.deepEqual(requestImageIds, [['round-0'], ['round-0', 'round-1'], ['round-0', 'round-1']]);
+  assert.equal(messages.filter(message => message.role === 'user').length, 3);
+  assert.equal(messages[0].attachments.length, 2);
+});
+
+test('standalone runs default to the latest user, including text-only turns, rather than the latest photo', async () => {
+  for (const attachments of [[image], []]) {
+    const events = [], messages = [user(), reply().message, { id: 'latest', role: 'user', content: 'Next.', attachments }];
+    await runAgent(options({ messages, emit: event => events.push(event) }));
+    assert.deepEqual(viewed(events).flatMap(event => event.images.map(item => item.messageId)), attachments.length ? ['latest'] : []);
+  }
+});
+
+test('an explicit run boundary admits each current user message and rejects invalid boundaries before requesting', async () => {
+  const events = [], messages = [user(), reply().message, { ...user(), id: 'current-task' },
+    { ...user(), id: 'applied-steering', source: 'steering' }];
+  await runAgent(options({ messages, messageStartIndex: 2, emit: event => events.push(event) }));
+  assert.deepEqual(viewed(events).flatMap(event => event.images.map(item => item.messageId)), ['current-task', 'applied-steering']);
+  for (const messageStartIndex of [-1, 0.5, '0', null, 2]) {
+    await assert.rejects(runAgent(options({ messageStartIndex, requestModel: async () => assert.fail('invalid boundary sent a request') })), /任务消息起始位置无效/u);
+  }
+});
+
 test('real provider request carries image bytes, then exactly one successful public reference appears after the response', async () => {
   let release;
   const held = new Promise(resolve => { release = resolve; });
@@ -68,7 +123,8 @@ test('real provider request carries image bytes, then exactly one successful pub
 test('failed, malformed and cancelled image requests never report that the AI viewed images', async () => {
   for (const mode of ['failure', 'abort', 'malformed']) {
     const events = [], controller = new AbortController();
-    await assert.rejects(runAgent(options({ signal: controller.signal, emit: event => events.push(event), requestModel: async () => {
+    await assert.rejects(runAgent(options({ messages: [{ ...user(), id: 'earlier-round' }, reply().message, user()],
+      messageStartIndex: 2, signal: controller.signal, emit: event => events.push(event), requestModel: async () => {
       if (mode === 'failure') throw new Error('Provider failed');
       if (mode === 'abort') { controller.abort(new Error('Stopped')); return reply(); }
       return { message: { role: 'assistant', content: 'Malformed' }, usageReported: false };
@@ -78,8 +134,8 @@ test('failed, malformed and cancelled image requests never report that the AI vi
 });
 
 test('tool continuations deduplicate old images, while newly applied image steering gets its own successful reference', async () => {
-  const events = [], steering = [], messages = [user()]; let requests = 0;
-  await runAgent(options({ messages, emit: event => events.push(event), takeSteering: () => steering.splice(0),
+  const events = [], steering = [], messages = [{ ...user(), id: 'earlier-round' }, reply().message, user()]; let requests = 0;
+  await runAgent(options({ messages, messageStartIndex: 2, emit: event => events.push(event), takeSteering: () => steering.splice(0),
     toolDefinitions: [{ name: 'read_file', description: 'Read fixture', parameters: { type: 'object' } }],
     requestModel: async () => {
       requests++;
@@ -89,7 +145,7 @@ test('tool continuations deduplicate old images, while newly applied image steer
     } }));
   assert.equal(requests, 3);
   assert.deepEqual(viewed(events).map(event => event.images.map(image => image.messageId)), [['user-one'], ['steering-image']]);
-  assert.equal(messages.filter(message => message.role === 'user').length, 2, 'display evidence does not manufacture conversation turns');
+  assert.equal(messages.filter(message => message.role === 'user').length, 3, 'display evidence does not manufacture conversation turns');
 });
 
 test('compaction summarizes metadata only and never emits an image-view event for its request', async () => {
@@ -107,6 +163,29 @@ test('compaction summarizes metadata only and never emits an image-view event fo
   assert.equal(viewed(events)[0].requestId, records.find(record => !record.purpose).id);
   assert.notEqual(viewed(events)[0].requestId, records.find(record => record.purpose).id);
   assert.equal(messages[0].attachments[0], image);
+});
+
+test('compaction can retain past images in the request without reporting them again in the new round', async () => {
+  const messages = [{ ...user(), id: 'old-round', attachments: [image, { ...image, id: 'old-second' }] },
+    { role: 'assistant', content: 'Earlier answer', toolCalls: [],
+      providerState: { provider: 'ollama', message: { thinking: 'R'.repeat(180001) } } },
+    { ...user(), id: 'new-round' }];
+  const events = [], records = []; let summaries = 0;
+  await runAgent(options({ messages, messageStartIndex: 2, emit: event => events.push(event), onUsage: async record => records.push(record),
+    requestModel: async request => {
+      if (request.messages[0].content.startsWith('[CONTEXT_COMPACTION]')) {
+        summaries++;
+        assert.equal(JSON.stringify(request.messages).includes(png), false);
+        return reply('Previous task completed; inspect the latest attachment.');
+      }
+      assert.deepEqual(request.messages.filter(message => message.attachments?.length).map(message => message.id), ['old-round', 'new-round']);
+      return reply();
+    } }));
+  assert.equal(summaries, 1);
+  assert.equal(viewed(events).length, 1);
+  assert.deepEqual(viewed(events)[0].images, [{ messageId: 'new-round', attachmentIndex: 0, attachmentId: image.id }]);
+  assert.equal(viewed(events)[0].requestId, records.find(record => !record.purpose).id);
+  assert.equal(messages[0].attachments.length, 2);
 });
 
 test('an explicit AI approval rejection remains structured denial data for the tool UI and following model request', async () => {

@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const source = await fs.readFile(new URL('../src/renderer/task-history.js', import.meta.url), 'utf8');
 const context = vm.createContext({});
 vm.runInContext(source, context);
+vm.runInContext(await fs.readFile(new URL('../src/renderer/image-view-card.js', import.meta.url), 'utf8'), context);
 const project = (session, records) => JSON.parse(JSON.stringify(context.ForgeTaskHistory.project(session, records)));
 const user = content => ({ role: 'user', content });
 const assistant = (content, toolCalls = []) => ({ role: 'assistant', content, toolCalls });
@@ -63,6 +64,73 @@ test('a legacy unmarked multi-user task restores actual image receipts without g
   assert.equal(run.unanchored, true);
   assert.deepEqual(events(run).filter(event => event.type === 'images-viewed').map(event => event.requestId), ['first-image', 'second-image']);
   assert.deepEqual(blocks.filter(block => block.type === 'message').map(block => block.message.content), ['先看图片', '正在查看', '再看这张', '完成']);
+});
+
+test('each anchored history displays only its own images from legacy context-wide receipts', () => {
+  const reference = messageId => ({ messageId, attachmentIndex: 0 });
+  const messages = [{ ...user('旧图片一'), id: 'old-one' }, assistant('一'),
+    { ...user('旧图片二'), id: 'old-two' }, assistant('二'),
+    { ...user('新图片'), id: 'current' }, assistant('三'),
+    { ...user('下一轮图片'), id: 'future' }, assistant('四')];
+  const view = { type: 'images-viewed', version: 1, requestId: 'current-images', runId: 'current-run', messageIndex: 4,
+    images: ['old-one', 'old-two', 'current', 'future'].map(reference) };
+  for (const archive of ['events', 'activityEvents', 'imageViews']) {
+    const currentRun = record('current-run', 4, 5);
+    const session = deepFreeze({ messages, taskRuns: [record('old-one-run', 0, 1), record('old-two-run', 2, 3),
+      { ...currentRun, ...(archive === 'activityEvents' ? { activityEvents: [view] } : {}) }, record('future-run', 6, 7)],
+      events: archive === 'events' ? [view] : [], imageViews: archive === 'imageViews' ? [view] : [] });
+    const snapshot = JSON.stringify(session);
+    const restored = events(runBlocks(project(session)).find(run => run.record.runId === 'current-run'))
+      .filter(event => event.type === 'images-viewed');
+    assert.equal(restored.length, 1, archive);
+    assert.deepEqual(restored[0].images, [reference('current')], archive);
+    assert.equal(context.ForgeImageViewCard.resolve(restored[0], messages).count, 1, archive);
+    assert.equal(JSON.stringify(session), snapshot, 'projection must not rewrite source messages or receipts');
+  }
+});
+
+test('a text-only anchored round omits receipts containing only earlier images, including archive fallback', () => {
+  const oldView = { type: 'images-viewed', version: 1, requestId: 'old-images', runId: 'text-run', messageIndex: 2,
+    images: [{ messageId: 'old-user', attachmentIndex: 0 }] };
+  const session = deepFreeze({ messages: [{ ...user('旧图片'), id: 'old-user' }, assistant('已看'),
+    { ...user('只发文字'), id: 'text-user' }, assistant('完成')],
+    taskRuns: [record('old-run', 0, 1), record('text-run', 2, 3)], events: [oldView],
+    imageViews: [oldView, { ...oldView, requestId: 'fallback-old-images' }] });
+  const run = runBlocks(project(session)).find(run => run.record.runId === 'text-run');
+  assert.equal(events(run).filter(event => event.type === 'images-viewed').length, 0);
+  assert.equal(session.imageViews.length, 2);
+});
+
+test('anchored image filtering retains initial and consumed steering references with missing originals', () => {
+  const references = ['old-user', 'initial-user', 'steering-user'].map(messageId => ({ messageId, attachmentIndex: 0 }));
+  const view = { type: 'images-viewed', version: 1, requestId: 'steering-images', runId: 'r', messageIndex: 4, images: references };
+  const session = deepFreeze({ messages: [{ ...user('旧图片'), id: 'old-user' }, assistant('旧回复'),
+    { ...user('当前图片'), id: 'initial-user' }, assistant('查看中'),
+    { ...user('补充图片'), id: 'steering-user', source: 'steering' }, assistant('完成')],
+    taskRuns: [record('old', 0, 1), record('r', 2, 5)], events: [], imageViews: [view] });
+  const run = runBlocks(project(session)).find(run => run.record.runId === 'r');
+  const restored = events(run).find(event => event.type === 'images-viewed');
+  assert.deepEqual(restored.images, references.slice(1));
+  const resolved = context.ForgeImageViewCard.resolve(restored, session.messages);
+  assert.equal(resolved.count, 2); assert.equal(resolved.availableCount, 0); assert.equal(resolved.missingCount, 2);
+  assert.equal(run.items.find(item => item.index === 4).message.source, 'steering');
+});
+
+test('unanchored and overlapping histories preserve image receipts and missing preview counts without guessing', () => {
+  const view = { type: 'images-viewed', version: 1, requestId: 'unknown-images', runId: 'r', messageIndex: 2,
+    images: [{ messageId: 'old-user', attachmentIndex: 0 }, { messageId: 'missing-user', attachmentIndex: 0 }] };
+  const messages = [{ ...user('旧图片'), id: 'old-user' }, assistant('旧回复'),
+    { ...user('现在的文字'), id: 'current-user' }, assistant('完成')];
+  for (const taskRuns of [[{ runId: 'r', messageIndex: 3 }],
+    [record('r', 2, 3), record('overlapping', 2, 3)]]) {
+    const session = deepFreeze({ messages, taskRuns, events: [], imageViews: [view] });
+    const run = runBlocks(project(session)).find(run => run.record.runId === 'r');
+    assert.equal(run.unanchored, true);
+    const restored = events(run).find(event => event.type === 'images-viewed');
+    assert.deepEqual(restored.images, view.images);
+    const resolved = context.ForgeImageViewCard.resolve(restored, messages);
+    assert.equal(resolved.count, 2); assert.equal(resolved.missingCount, 2);
+  }
 });
 
 test('manual undo/redo remains archived without adding a model task or hiding chat messages', () => {

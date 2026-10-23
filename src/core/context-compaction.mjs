@@ -304,12 +304,22 @@ export async function prepareContext({ messages, checkpoint = {}, signal, redact
   // Reserve the maximum accepted summary size before doing any paid work. This
   // also handles a single huge completed tool batch by folding that whole batch.
   const select = () => {
-    for (const throughIndex of ends) {
-      if (throughIndex < fromIndex) continue;
-      const candidate = projection(messages, throughIndex, '摘'.repeat(budget.summaryChars), underTarget);
-      if (underTarget(candidate.messages)) return throughIndex;
+    const candidates = [...ends].filter(index => index >= fromIndex);
+    const placeholder = '摘'.repeat(budget.summaryChars);
+    let low = 0, high = candidates.length - 1, selected = null;
+    // Advancing a complete-batch boundary only removes archived text/native
+    // state. Mandatory user messages and image bytes stay the same; optional
+    // steering/captions can only become eligible for omission. Thus feasibility
+    // is monotone. Find the earliest fitting boundary without re-tokenizing a
+    // multi-megabyte archive once per historical tool batch on the main thread.
+    while (low <= high) {
+      checkSignal(signal);
+      const middle = Math.floor((low + high) / 2), throughIndex = candidates[middle];
+      const candidate = projection(messages, throughIndex, placeholder, underTarget);
+      if (underTarget(candidate.messages)) { selected = throughIndex; high = middle - 1; }
+      else low = middle + 1;
     }
-    return null;
+    return selected;
   };
   selected = select();
   if (selected === null && previous) {

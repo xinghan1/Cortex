@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { clipboard, ClipboardItem } = require('electron');
 
 module.exports = async function smokeMarkdown({ win, output }) {
   assert.equal(win.webContents.isOffscreen(), true, 'Markdown smoke requires an isolated offscreen window');
@@ -9,7 +10,36 @@ module.exports = async function smokeMarkdown({ win, output }) {
   const windowsPath = 'E:\\其他项目\\pelican-cycle.html';
   const code = '<script>globalThis.__markdownExecuted=true</script>\r\nconst literal = "**原样**";\r\n';
   const fixture = '# Markdown 格式预览\n\n你好！已经创建好了：**' + windowsPath + '**\n\n- **鹈鹕骑行动画**：踏板、车轮旋转、身体起伏。\n- **验证结果**：SVG XML 结构和 JavaScript 语法检查通过。\n\n> 支持 *斜体*、~~删除线~~ 和 `行内代码`。\n\n| 名称 | 状态 |\n| :--- | ---: |\n| 中文格式 | **通过** |\n| 图片标签 | 保留原文 |\n\n```html\r\n' + code + '```\n\n<script>globalThis.__markdownExecuted=true</script>\n![图片](https://example.invalid/do-not-load.png)\n[危险链接](javascript:alert(1))';
-  let installed = false;
+  let installed = false, originalAppearance, originalClipboard, clipboardReadbackAvailable = false;
+  const originalClipboardWrite = clipboard.writeText, clipboardWrites = [];
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const until = async (label, predicate) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) { const value = await predicate(); if (value) return value; await wait(25); }
+    throw new Error('Markdown smoke timed out: ' + label);
+  };
+  const copyBlock = async (host, index, expected) => {
+    const point = await until('visible code copy button', () => js(`(() => {
+      const button=window.__markdownSmoke[${JSON.stringify(host)}].querySelectorAll('.message-code-copy')[${index}];
+      if(!button||button.disabled)return null;
+      button.scrollIntoView({block:'center',behavior:'instant'});
+      const box=button.getBoundingClientRect(),label=button.closest('.message-code-label').getBoundingClientRect();
+      const point={x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)};
+      const visible=button.checkVisibility({visibilityProperty:true,opacityProperty:true});
+      return visible&&box.width>0&&box.height>0&&button.contains(document.elementFromPoint(point.x,point.y))
+        ? {...point,rightGap:label.right-box.right,topGap:box.top-label.top} : null;
+    })()`));
+    assert.ok(point.rightGap >= 0 && point.rightGap < 32 && point.topGap >= 0 && point.topGap < 16, 'Code copy button must sit at the header top right');
+    win.webContents.focus();
+    for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) win.webContents.sendInputEvent({ type, x: point.x, y: point.y,
+      ...(type === 'mouseMove' ? {} : { button: 'left', clickCount: 1 }) });
+    await until('code copied feedback', () => js(`(() => {
+      const button=window.__markdownSmoke[${JSON.stringify(host)}].querySelectorAll('.message-code-copy')[${index}];
+      return button.dataset.state==='copied'&&button.textContent==='已复制'&&!button.disabled;
+    })()`));
+    assert.equal(clipboardWrites.at(-1), expected, 'Native clipboard call included labels, feedback, fences or transformed code');
+    if (clipboardReadbackAvailable) assert.equal(await clipboard.readText(), expected);
+  };
   try {
     const initial = await js(`(() => {
       if (!window.ForgeMarkdown) throw new Error('Markdown script was not loaded before app.js');
@@ -92,12 +122,58 @@ module.exports = async function smokeMarkdown({ win, output }) {
     assert.equal(visible.heading, true, 'Markdown heading must be visible in the screenshot viewport');
     assert.equal(visible.list, true, 'Markdown list must be visible in the screenshot viewport');
     await fs.writeFile(path.join(output, 'markdown-rendering.png'), (await win.webContents.capturePage()).toPNG());
-    return { status: 'completed', boldWindowsPath: true, lists: 2, tableRows: 2, codeSourcePreserved: true, blockedHtmlAndImages: true, controlledLinkClicks: true, streaming: true };
+    originalAppearance = await js('window.forge.getAppearance()');
+    originalClipboard = await Promise.all((await clipboard.read()).filter(item => item.types.length).map(async item => new ClipboardItem(Object.fromEntries(
+      await Promise.all(item.types.map(async type => [type, await item.getType(type)]))))));
+    clipboard.writeText = async function (...args) {
+      clipboardWrites.push(args[0]);
+      return await originalClipboardWrite.apply(this, args);
+    };
+    const seed = 'SYNORA_MARKDOWN_COPY_PROBE';
+    await clipboard.writeText(seed);
+    clipboardReadbackAvailable = await clipboard.readText() === seed;
+    await copyBlock('message', 0, code);
+    const secondCode = '  const greeting = "你好";\n\tconsole.log(greeting);\n';
+    const plainCode = '**plain** & <literal>\r\n\r\n';
+    const copyFixture = '```javascript\n' + secondCode + '```\n\n```\r\n' + plainCode + '```\r\n\r\n```text\n```\n\n普通行内 `code` 没有块复制按钮。';
+    assert.deepEqual(await js(`(() => {
+      const saved=window.__markdownSmoke;
+      saved.copyMessage=addMessage('assistant',${JSON.stringify(copyFixture)}).message;
+      const blocks=[...saved.copyMessage.querySelectorAll('.message-code')];
+      return {count:blocks.length,buttons:saved.copyMessage.querySelectorAll('.message-code-copy').length,
+        languages:blocks.map(block=>block.querySelector('.message-code-language').textContent),
+        feedback:blocks.map(block=>{const status=block.querySelector('.message-code-copy-feedback');return [status.getAttribute('role'),status.getAttribute('aria-live')];})};
+    })()`), { count: 3, buttons: 3, languages: ['javascript', '代码', 'text'], feedback: [['status','polite'],['status','polite'],['status','polite']] });
+    await copyBlock('copyMessage', 0, secondCode);
+    await copyBlock('copyMessage', 1, plainCode);
+    await copyBlock('copyMessage', 2, '');
+    for (const style of ['white', 'industrial']) {
+      await js(`window.forge.setAppearance({uiStyle:${JSON.stringify(style)}})`);
+      await js('window.synoraAppearance.settled()');
+      await until('copy theme '+style, () => js(`document.documentElement.dataset.uiStyle===${JSON.stringify(style)}`));
+      await copyBlock('copyMessage', 0, secondCode);
+      win.webContents.invalidate(); await wait(120);
+      await fs.writeFile(path.join(output, 'markdown-copy-' + style + '.png'), (await win.webContents.capturePage()).toPNG());
+    }
+    return { status: 'completed', boldWindowsPath: true, lists: 2, tableRows: 2, codeSourcePreserved: true, blockedHtmlAndImages: true,
+      controlledLinkClicks: true, streaming: true, nativeCopyButtons: true, exactCopiedCRLF: true, multipleAndEmptyBlocks: true,
+      copyFeedback: true, copyThemes: ['white', 'industrial'], clipboardReadbackVerified: clipboardReadbackAvailable,
+      clipboardCallVerified: true, copyOperations: clipboardWrites.length - 1 };
   } finally {
+    clipboard.writeText = originalClipboardWrite;
+    if (originalClipboard) {
+      if (originalClipboard.length) await clipboard.write(originalClipboard);
+      else await clipboard.clear();
+    }
+    if (originalAppearance && !win.isDestroyed()) {
+      await js(`window.forge.setAppearance({uiStyle:${JSON.stringify(originalAppearance.uiStyle)}})`);
+      await js('window.synoraAppearance.settled()');
+    }
     if (!win.isDestroyed()) await js(`(async () => {
       const saved = window.__markdownSmoke;
       if (!saved) return;
       saved.message?.remove();
+      saved.copyMessage?.remove();
       document.getElementById('messages').hidden = saved.messagesHidden;
       if (saved.welcome) saved.welcome.hidden = saved.welcomeHidden;
       if (saved.scroll) saved.scroll.scrollTop = saved.scrollTop;

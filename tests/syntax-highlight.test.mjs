@@ -75,14 +75,16 @@ test('large and punctuation-heavy inputs have bounded visual work and preserve t
 function documentFixture() {
   const doc = {};
   class Node {
-    constructor(tag, value = '') { this.tag = tag; this.value = value; this.children = []; this.ownerDocument = doc; this.classList = { add() {} }; }
+    constructor(tag, value = '') { this.tag = tag; this.value = value; this.children = []; this.ownerDocument = doc; this.dataset = {}; this.attributes = {}; this.classList = { add() {} }; }
     appendChild(node) { this.children.push(node); return node; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    addEventListener() {}
     set textContent(value) { this.value = value; this.children = []; }
     get textContent() { return this.value + this.children.map(node => node.textContent).join(''); }
   }
-  doc.createElement = tag => { assert.ok(['span', 'div', 'pre', 'code'].includes(tag), `Unexpected element: ${tag}`); return new Node(tag); };
+  doc.createElement = tag => { assert.ok(['span', 'div', 'pre', 'code', 'button'].includes(tag), `Unexpected element: ${tag}`); return new Node(tag); };
   doc.createTextNode = value => new Node('#text', value);
   doc.createDocumentFragment = () => new Node('#fragment');
   return { doc, container: new Node('div') };

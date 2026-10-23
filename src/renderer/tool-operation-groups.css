@@ -7,6 +7,8 @@
 .tool-operation-group-icon::after { content: ''; position: absolute; inset: 4px 3px auto; height: 4px; border-top: 1px solid currentColor; border-bottom: 1px solid currentColor; }
 .tool-operation-group[data-kind='list'] .tool-operation-group-icon { height: 10px; margin-top: 3px; border-radius: 1px 2px 2px; }
 .tool-operation-group[data-kind='list'] .tool-operation-group-icon::after { inset: -4px auto auto -1px; width: 6px; height: 3px; border: 1px solid currentColor; border-bottom: 0; border-radius: 2px 2px 0 0; }
+.tool-operation-group[data-kind='search'] .tool-operation-group-icon { width: 11px; height: 11px; flex-basis: 11px; margin-right: 5px; border-radius: 50%; }
+.tool-operation-group[data-kind='search'] .tool-operation-group-icon::after { inset: auto auto -4px 8px; width: 5px; height: 1px; border: 0; background: currentColor; transform: rotate(45deg); transform-origin: left center; }
 .tool-operation-group[data-kind='command'] .tool-operation-group-icon { width: 16px; height: 13px; flex-basis: 16px; margin-right: 0; }
 .tool-operation-group[data-kind='command'] .tool-operation-group-icon::after { content: '›_'; inset: -2px 1px auto; height: auto; border: 0; font: 12px var(--mono, Consolas, monospace); }
 .tool-operation-group-label { min-width: 0; overflow-wrap: anywhere; }

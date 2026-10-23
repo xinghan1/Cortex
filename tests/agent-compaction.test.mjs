@@ -115,6 +115,7 @@ test('a real local HTTP provider summarizes a long completed tool result and con
   assert.deepEqual(events.filter(event => event.type === 'usage').at(-1), { type: 'usage', inputTokens: 60, outputTokens: 6 });
   assert.deepEqual(order, ['saved', 'notice']);
   assert.equal(events.filter(event => event.type === 'context-compacted').length, 1);
+  assert.equal(events.some(event => event.type === 'context-compaction-end'), false);
   assert.equal(events.some(event => event.type === 'text-delta' && /目标：/.test(event.text)), false);
   assert.equal(messages.filter(message => message.role === 'tool').length, 1);
   assert.ok(messages.find(message => message.role === 'tool').content.length > 180_000, 'The archive keeps the full tool output.');
@@ -200,6 +201,7 @@ test('cancelling a summary preserves history and checkpoint, records reported to
   assert.equal(records[0].reported, true);
   assert.equal(records[0].inputTokens, 70);
   assert.equal(records[0].outputTokens, 9);
+  assert.deepEqual(events.filter(event => event.type === 'context-compaction-end'), [{ type: 'context-compaction-end', status: 'stopped' }]);
 });
 
 test('invalid or failed summaries never execute tools, commit a checkpoint, leak partial summary, or automatically retry', async t => {
@@ -219,6 +221,7 @@ test('invalid or failed summaries never execute tools, commit a checkpoint, leak
     assert.deepEqual(checkpoint, {});
     assert.deepEqual(messages, original);
     assert.equal(records.length, 1);
+    assert.deepEqual(events.filter(event => event.type === 'context-compaction-end'), [{ type: 'context-compaction-end', status: 'failed' }]);
     assert.equal(events.some(event => event.type === 'context-compacted' || event.type === 'text-delta' || event.type === 'assistant-message'), false);
   });
 });
@@ -234,4 +237,31 @@ test('failure to persist a committed summary stops before the next model request
   assert.equal(saves, 1);
   assert.ok(checkpoint.throughIndex > 0, 'Do not roll back a successful in-memory summary on a storage error.');
   assert.equal(events.some(event => event.type === 'context-compacted'), false);
+  assert.deepEqual(events.filter(event => event.type === 'context-compaction-end'), [{ type: 'context-compaction-end', status: 'failed' }]);
+});
+
+test('switching to a larger context during summary reconnect closes the cancelled compaction before normal continuation', async () => {
+  const events = [], records = [], checkpoint = {}, messages = history(), original = structuredClone(messages);
+  let current = { ...config, modelCapabilities: { contextWindow: 32_000 }, permissionMode: 'request' }, requests = 0;
+  await runAgent(options({ config: current, messages, contextCheckpoint: checkpoint, getRequestConfig: async () => current,
+    onUsage: async record => records.push(record), emit: event => {
+      events.push(event);
+      if (event.type === 'reconnect' && event.status === 'waiting') current = { ...current, model: 'large', modelCapabilities: { contextWindow: 1_000_000 } };
+    }, requestModel: async request => {
+      if (++requests === 1) {
+        assert.ok(isSummary(request));
+        throw Object.assign(new Error('Temporary service failure'), { code: 'PROVIDER_HTTP_503', retryAfterMs: 0 });
+      }
+      assert.equal(isSummary(request), false); assert.equal(request.model, 'large');
+      assert.equal(events.at(-1).type === 'context-compaction-start', false);
+      assert.ok(events.some(event => event.type === 'context-compaction-end' && event.status === 'cancelled'));
+      return reply('Continued with the full history.');
+    } }));
+  assert.equal(requests, 2);
+  assert.deepEqual(events.filter(event => event.type === 'context-compaction-end'), [{ type: 'context-compaction-end', status: 'cancelled' }]);
+  assert.equal(events.filter(event => event.type === 'context-compaction-start').length, 1);
+  assert.equal(events.some(event => event.type === 'context-compacted'), false);
+  assert.deepEqual(checkpoint, {});
+  assert.deepEqual(messages.slice(0, original.length), original);
+  assert.deepEqual(records.map(record => [record.purpose, record.status]), [['context-compaction', 'failed'], [undefined, 'completed']]);
 });

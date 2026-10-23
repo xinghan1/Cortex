@@ -7,6 +7,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { withFileCommit } from './file-commit.mjs';
 import { taskUndoPlan } from './task-change-undo.mjs';
+import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.cjs';
+import { CommandOutputCapture } from './command-output.mjs';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -29,19 +31,19 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 const objectSchema = (properties, required = []) => ({
   type: 'object', properties, required, additionalProperties: false,
 });
-const relativePath = { type: 'string', description: '相对项目根目录的路径，使用正斜线。' };
+const relativePath = { type: 'string', description: '相对项目根目录的路径，或带完整盘符的本机绝对路径（如 G:/plugin/Server/src/main.java）。也支持 ../ 指向其他目录。' };
 
 export const TOOL_DEFINITIONS = [
   {
-    name: 'list_files', description: '列出项目目录中的文件与子目录，最多 500 项。',
+    name: 'list_files', description: '列出指定本机目录中的文件与子目录，默认当前项目，最多 500 项。',
     parameters: objectSchema({ path: relativePath }),
   },
   {
-    name: 'read_file', description: '读取项目中的 UTF-8 文本文件，最大 512 KB。凭据与密钥文件不可读取。',
+    name: 'read_file', description: '读取指定本机路径的 UTF-8 文本文件，最大 512 KB。凭据与密钥文件不可读取。',
     parameters: objectSchema({ path: relativePath }, ['path']),
   },
   {
-    name: 'search_files', description: '在项目文本文件中搜索字面文本，最多 100 处命中，跳过隐藏目录和构建产物。',
+    name: 'search_files', description: '在指定本机目录的文本文件中搜索字面文本，默认当前项目，最多 100 处命中，跳过隐藏目录和构建产物。',
     parameters: objectSchema({
       query: { type: 'string', description: '要搜索的字面文本，不是正则表达式。' },
       path: relativePath,
@@ -60,7 +62,7 @@ export const TOOL_DEFINITIONS = [
     }, ['path', 'old_text', 'new_text']),
   },
   {
-    name: 'run_command', description: '按当前权限模式审批后在项目目录运行 PowerShell 命令。命令没有系统沙箱；默认和最长均为 10 分钟，只有需要更短时才设置 timeout_ms，输出最多 64 KB。',
+    name: 'run_command', description: '按当前权限模式审批后在项目目录运行 PowerShell 命令。命令没有系统沙箱；默认和最长均为 10 分钟，只有需要更短时才设置 timeout_ms。标准输出和错误输出各保留最多 32 KB 首尾内容，超出只截断日志，不中止命令。',
     parameters: objectSchema({
       command: { type: 'string' },
       timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_COMMAND_TIMEOUT },
@@ -103,11 +105,20 @@ function decodeText(buffer) {
 export class WorkspaceTools {
   #observedFiles = new Map();
 
-  constructor(root, { approve, onEvent } = {}) {
+  constructor(root, { approve, onEvent, allowExternalPaths = false } = {}) {
     if (typeof root !== 'string' || !root) throw new Error('请选择项目根目录。');
     const original = path.resolve(root);
     const stat = fs.lstatSync(original);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('项目根目录必须是实际目录，不能是符号链接或联接。');
+    this.allowExternalPaths = allowExternalPaths === true;
+    if (this.allowExternalPaths) {
+      for (const component of normalizeWorkspaceReference(process.cwd(), root, { allowExternalPaths: true, allowRoot: true }).walks) {
+        const checked = fs.lstatSync(component);
+        if (checked.isSymbolicLink() || !checked.isDirectory() || !this.#samePath(fs.realpathSync.native(component), component)) {
+          throw new Error('项目路径包含符号链接、Windows 目录联接或重定向，请打开实际目录。');
+        }
+      }
+    }
     this.root = fs.realpathSync.native(original);
     this.approve = typeof approve === 'function' ? approve : async () => false;
     this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
@@ -115,6 +126,7 @@ export class WorkspaceTools {
   }
 
   #parts(input = '', allowRoot = false) {
+    if (this.allowExternalPaths) return this.#reference(input, allowRoot).parts;
     if (typeof input !== 'string') throw new Error('路径必须是字符串。');
     if (/[\x00-\x1f<>:"|?*]/.test(input) || /^[\\/]/.test(input) || path.win32.isAbsolute(input) || path.posix.isAbsolute(input)) {
       throw new Error('只允许项目内的相对路径，不允许绝对路径、设备路径或备用数据流。');
@@ -128,11 +140,34 @@ export class WorkspaceTools {
     return parts;
   }
 
+  #reference(input = '', allowRoot = false) {
+    return normalizeWorkspaceReference(this.root, input, { allowExternalPaths: this.allowExternalPaths, allowRoot });
+  }
+
   async #resolve(input = '', { allowRoot = false, allowMissing = false } = {}) {
-    const parts = this.#parts(input, allowRoot);
+    const reference = this.#reference(input, allowRoot);
+    const { parts } = reference;
     const rootStat = await fsp.lstat(this.root);
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory() || !this.#samePath(await fsp.realpath(this.root), this.root)) {
       throw new Error('项目根目录已变化，请重新打开项目。');
+    }
+    if (this.allowExternalPaths) {
+      for (let index = 0; index < reference.walks.length; index += 1) {
+        const component = reference.walks[index];
+        let stat;
+        try { stat = await fsp.lstat(component); }
+        catch (error) { if (allowMissing && error.code === 'ENOENT') continue; throw error; }
+        if (stat.isSymbolicLink()) throw new Error('不允许访问符号链接或 Windows 目录联接。');
+        if (index < reference.walks.length - 1 && !stat.isDirectory()) throw new Error('路径的父级不是目录。');
+        if (!this.#samePath(await fsp.realpath(component), component)) throw new Error('路径包含重定向。');
+      }
+      let stat;
+      try { stat = await fsp.lstat(reference.absolute); }
+      catch (error) {
+        if (allowMissing && error.code === 'ENOENT') return { ...reference, exists: false };
+        throw error;
+      }
+      return { ...reference, exists: true, stat };
     }
     let current = this.root;
     let lastStat = rootStat;
@@ -141,7 +176,7 @@ export class WorkspaceTools {
       try { lastStat = await fsp.lstat(current); }
       catch (error) {
         if (error.code === 'ENOENT' && allowMissing) {
-          return { absolute: path.join(this.root, ...parts), relative: parts.join('/'), exists: false, parts };
+          return { ...reference, exists: false };
         }
         throw error;
       }
@@ -150,11 +185,11 @@ export class WorkspaceTools {
       const canonical = await fsp.realpath(current);
       if (!this.#samePath(canonical, current) || !this.#inside(canonical)) throw new Error('路径超出项目目录或包含重定向。');
     }
-    return { absolute: current, relative: parts.join('/'), exists: true, stat: lastStat, parts };
+    return { ...reference, absolute: current, exists: true, stat: lastStat };
   }
 
   #samePath(left, right) {
-    return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+    return workspacePathKey(left) === workspacePathKey(right);
   }
 
   #inside(target) {
@@ -170,11 +205,11 @@ export class WorkspaceTools {
     const output = [];
     for (const entry of entries) {
       if (!safeName(entry.name) || entry.isSymbolicLink()) continue;
-      const child = target.relative ? `${target.relative}/${entry.name}` : entry.name;
+      const child = path.posix.join(target.relative, entry.name);
       try {
         const resolved = await this.#resolve(child);
         if (!resolved.stat.isDirectory() && !resolved.stat.isFile()) continue;
-        output.push({ name: entry.name, path: child, type: resolved.stat.isDirectory() ? 'directory' : 'file' });
+        output.push({ name: entry.name, path: resolved.relative, type: resolved.stat.isDirectory() ? 'directory' : 'file' });
       } catch { continue; }
       if (output.length >= MAX_LIST_ENTRIES) break;
     }
@@ -218,8 +253,7 @@ export class WorkspaceTools {
   }
 
   #observationKey(input) {
-    const relative = this.#parts(input).join('/');
-    return process.platform === 'win32' ? relative.toLowerCase() : relative;
+    return workspacePathKey(this.#reference(input).relative);
   }
 
   #rememberFile(input, content, stat) {
@@ -242,7 +276,9 @@ export class WorkspaceTools {
     if (typeof query !== 'string' || !query || query.length > 1000) throw new Error('搜索文本长度必须为 1 至 1000 个字符。');
     const limit = Math.min(100, Math.max(1, Number.isFinite(max_results) ? Math.floor(max_results) : 100));
     const start = await this.#resolve(input, { allowRoot: true });
-    if (start.parts.some(part => part.startsWith('.') || ['build', 'dist'].includes(part.toLowerCase()))) {
+    // An explicitly selected external project may itself live below a directory
+    // named build or .work. Only its descendants use the recursive skip rules.
+    if (!start.external && start.parts.some(part => part.startsWith('.') || ['build', 'dist'].includes(part.toLowerCase()))) {
       return { matches: [], truncated: false };
     }
     const needle = case_sensitive ? query : query.toLowerCase();
@@ -261,7 +297,7 @@ export class WorkspaceTools {
         entries.sort((a, b) => a.name.localeCompare(b.name));
         for (const entry of entries) {
           if (!safeName(entry.name) || entry.name.startsWith('.') || ['build', 'dist'].includes(entry.name.toLowerCase()) || entry.isSymbolicLink()) continue;
-          await visit(relative ? `${relative}/${entry.name}` : entry.name, depth + 1);
+          await visit(path.posix.join(relative, entry.name), depth + 1);
           if (matches.length >= limit || visited >= 5000) { truncated = true; break; }
         }
       } else if (target.stat.isFile()) {
@@ -298,7 +334,7 @@ export class WorkspaceTools {
     abortIfNeeded(signal);
     const approved = await this.approve({
       kind: 'write', title: title ?? `${target.exists ? '修改' : '创建'}文件：${target.relative}`,
-      detail: `将${target.exists ? '更新' : '创建'}项目文件 ${target.relative}（${buffer.length} 字节）。`,
+      detail: `将${target.exists ? '更新' : '创建'}文件 ${target.relative}（${buffer.length} 字节）。`,
       path: target.relative, before, after: content,
     });
     abortIfNeeded(signal);
@@ -315,7 +351,7 @@ export class WorkspaceTools {
       }
       // Create each parent separately and revalidate every existing component.
       for (let index = 1; index < target.parts.length; index += 1) {
-        const relative = target.parts.slice(0, index).join('/');
+        const relative = target.external ? path.join(target.base, ...target.parts.slice(0, index)) : target.parts.slice(0, index).join('/');
         const parent = await this.#resolve(relative, { allowMissing: true });
         if (!parent.exists) {
           try { await fsp.mkdir(parent.absolute); }
@@ -429,7 +465,7 @@ export class WorkspaceTools {
     try {
       abortIfNeeded(signal);
       if (!Array.isArray(changes)) throw new Error('本轮原始修改记录无效，无法撤销。');
-      plan = taskUndoPlan(changes.map(change => ({ ...change, path: this.#parts(change?.path).join('/') })));
+      plan = taskUndoPlan(changes.map(change => ({ ...change, path: this.#reference(change?.path).relative })));
       const snapshots = new Map();
       const inspect = async change => {
         const target = await this.#resolve(change.path, { allowMissing: true });
@@ -440,6 +476,9 @@ export class WorkspaceTools {
       };
       // Validate every path and every current file before asking to change one.
       await withFileCommit(async () => {
+        // Canonical identities coalesce aliases, but cannot erase the original
+        // traversal checks (for example an otherwise cancelled junction/..).
+        for (const change of changes) { abortIfNeeded(signal); await this.#resolve(change.path, { allowMissing: true }); }
         for (const change of plan) { abortIfNeeded(signal); this.#parts(change.path); snapshots.set(change.path, await inspect(change)); }
       });
       for (const change of plan) {
@@ -523,8 +562,10 @@ export class WorkspaceTools {
         cwd: this.root, env, shell: false, windowsHide: true,
         detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
       });
-      const output = { stdout: [], stderr: [] };
+      const output = { stdout: new CommandOutputCapture(), stderr: new CommandOutputCapture() };
+      const combinedOutput = new CommandOutputCapture();
       const outputDecoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+      const liveDecoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
       let outputBytes = 0;
       let terminated = null;
       let forceTimer;
@@ -550,19 +591,29 @@ export class WorkspaceTools {
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
       for (const stream of ['stdout', 'stderr']) {
+        let liveBytes = 0, liveTruncated = false;
         child[stream].on('data', chunk => {
-          const remaining = MAX_OUTPUT_BYTES - outputBytes;
+          outputBytes += chunk.length;
+          output[stream].append(chunk);
+          combinedOutput.append(Buffer.from(outputDecoders[stream].write(chunk), 'utf8'));
+          const remaining = MAX_OUTPUT_BYTES / 2 - liveBytes;
           if (remaining > 0) {
             const part = chunk.subarray(0, remaining);
-            output[stream].push(part);
-            outputBytes += part.length;
-            const text = outputDecoders[stream].write(part);
+            liveBytes += part.length;
+            const text = liveDecoders[stream].write(part);
             if (text) { try { this.onEvent({ type: 'command-output', stream, text }); } catch {} }
           }
-          if (chunk.length > remaining || outputBytes >= MAX_OUTPUT_BYTES) stop('output_limit');
+          if (chunk.length > remaining && !liveTruncated) {
+            liveTruncated = true;
+            try { this.onEvent({ type: 'command-output', stream, outputTruncated: true, outputBytes,
+              text: '\n[… 后续日志已折叠，命令继续运行，完成后显示首尾内容 …]\n' }); } catch {}
+          }
         });
         child[stream].once('end', () => {
-          const text = outputDecoders[stream].end();
+          combinedOutput.append(Buffer.from(outputDecoders[stream].end(), 'utf8'));
+          // A preview cut in the middle of UTF-8 must not emit a replacement
+          // character; the complete tail will be available in the final result.
+          const text = liveTruncated ? '' : liveDecoders[stream].end();
           if (text) { try { this.onEvent({ type: 'command-output', stream, text }); } catch {} }
         });
       }
@@ -571,10 +622,16 @@ export class WorkspaceTools {
         if (settled) return;
         settled = true;
         cleanup();
+        const stdout = output.stdout.snapshot(), stderr = output.stderr.snapshot(), combined = combinedOutput.snapshot();
+        const outputTruncated = stdout.truncated || stderr.truncated || combined.truncated;
         resolve({
           command, exitCode, signal: exitSignal, terminated,
-          stdout: Buffer.concat(output.stdout).toString('utf8'),
-          stderr: Buffer.concat(output.stderr).toString('utf8'),
+          stdout: stdout.text, stderr: stderr.text,
+          ...(outputTruncated ? { output: combined.text } : {}),
+          outputTruncated,
+          outputBytes, outputByteCounts: { stdout: stdout.bytes, stderr: stderr.bytes },
+          outputOmittedBytes: stdout.omittedBytes + stderr.omittedBytes,
+          outputPreviewOmittedBytes: combined.omittedBytes,
         });
       });
     });

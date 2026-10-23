@@ -19,6 +19,8 @@ const chatgptStorageMessages = {
   storage_encryption_unavailable: '系统安全存储暂不可用。原凭据已保留，请解锁系统密钥存储后重试读取。'
 };
 let appState = null;
+let promptCompletion = null;
+let appUpdateControls = null;
 let running = false;
 let selectedPath = null;
 let selectedRow = null;
@@ -93,6 +95,7 @@ let findRequestId = null;
 let findTimer = null;
 let selectedEntry = null;
 let editorVersion = null;
+let editorPickerOpen = false;
 let editorOriginal = '';
 let editorDirty = false;
 let editorSaving = false;
@@ -399,6 +402,13 @@ function activateWorkspace(state, session) {
     } : session;
     renderSessionSnapshot(snapshot);
   }
+  // Replay owns the chronological placement of pending compression. A state
+  // snapshot may already have restored a provisional notice at the tail.
+  if (live.length && activeTaskActivity?.compaction) {
+    activeTaskActivity.compaction.remove();
+    activeTaskActivity.compaction = null;
+    contextCompacting = false;
+  }
   restoringWorkspace = true;
   try {
     for (const event of state.terminalEvents || []) handleTerminalEvent(event);
@@ -407,7 +417,7 @@ function activateWorkspace(state, session) {
   } finally { restoringWorkspace = false; }
   syncComposerApprovals(state.pendingApprovals || []);
   if (active?.telemetry) updateTelemetry(active.telemetry);
-  if (state.activeTask?.compacting && !activeTaskActivity?.reconnect) setTaskActivityPhase('compacting', '正在压缩上下文…');
+  syncContextCompaction(state.activeTask);
   if (!state.activeTask?.running) {
     $('run-status').textContent = '准备就绪';
     $('run-status').classList.remove('running');
@@ -686,9 +696,10 @@ function handleTerminalEvent(event) {
   } else if (event.type === 'terminal-output') terminalSnapshot(event);
   else if (event.type === 'terminal-end') {
     const run = ensureTerminalRun(event.id);
+    if (event.result?.outputTruncated === true && typeof event.result.output === 'string') terminalSnapshot({ id: event.id, text: event.result.output });
     const labels = { completed: '已完成', failed: '执行失败', stopped: '已停止', denied: '未执行' };
     const message = typeof event.result?.message === 'string' ? event.result.message : typeof event.result?.error === 'string' ? event.result.error : '';
-    run.result.textContent = `${labels[event.status] || '已结束'}${event.exitCode !== null && event.exitCode !== undefined ? ` · 退出代码 ${event.exitCode}` : ''}${message ? ` · ${message}` : ''}`;
+    run.result.textContent = `${labels[event.status] || '已结束'}${event.exitCode !== null && event.exitCode !== undefined ? ` · 退出代码 ${event.exitCode}` : ''}${message ? ` · ${message}` : ''}${event.result?.outputTruncated === true ? ' · 输出已节选首尾' : ''}`;
     if (terminalCurrentId === event.id || !terminalCurrentId) {
       terminalRunning = false;
       terminalCurrentId = null;
@@ -1242,6 +1253,8 @@ function refreshControlLocks() {
   renderComposerApproval({ restoreFocus: false });
   $('task-input').disabled = terminalRunning || (running && taskKind === 'undo') || isChatGPTBusy();
   $('task-input').placeholder = running ? '可继续输入，发送后加入待发送列表…' : '描述需要完成的任务…';
+  promptCompletion?.sync();
+  appUpdateControls?.sync();
   $('send-button').hidden = false;
   $('send-button').disabled = draftAttachments.some((attachment) => attachment.loading) || projectSwitching || promptSubmitting || reasoningSaving || modelSaving || terminalRunning || (running && taskKind === 'undo') || isChatGPTBusy();
   $('send-button').title = running || promptQueue.items.length ? '加入待发送列表（Ctrl + Enter）' : '发送任务（Ctrl + Enter）';
@@ -1523,6 +1536,7 @@ function renderSessionMetrics(metrics) {
 }
 
 function resetTelemetry() {
+  activeTaskActivity?.compaction?.remove();
   contextCompacting = false;
   clearInterval(taskActivityTimer);
   taskActivityTimer = null;
@@ -1603,8 +1617,9 @@ function updateTelemetry(event) {
 
 function activityDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor((Number(milliseconds) || 0) / 1000));
-  const minutes = Math.floor(seconds / 60);
-  return `已处理${minutes ? `${minutes}分钟` : ''}${seconds % 60}秒`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  return `用时 ${hours ? `${hours}小时 ` : ''}${hours || minutes ? `${minutes}分钟 ` : ''}${seconds % 60}秒`;
 }
 
 function taskElapsed(activity) {
@@ -1615,12 +1630,7 @@ function taskElapsed(activity) {
 function renderTaskActivityElapsed(activity = activeTaskActivity) {
   if (!activity) return;
   if (activity === activeTaskActivity && activity.status === 'running' && activity.reconnect) renderTaskReconnect(activity);
-  const duration = taskElapsed(activity);
-  const seconds = Math.max(0, Math.floor(duration / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor(seconds / 60) % 60;
-  activity.elapsed.textContent = activity.status === 'running' ? activityDuration(duration)
-    : `用时${hours ? `${hours}h` : ''}${hours || minutes ? `${minutes}m` : ''}${seconds % 60}s`;
+  activity.elapsed.textContent = activityDuration(taskElapsed(activity));
 }
 
 function createTaskActivity(record = {}) {
@@ -1628,12 +1638,15 @@ function createTaskActivity(record = {}) {
   const summary = element('summary', 'task-activity-summary');
   const events = element('div', 'task-activity-events');
   const phaseLine = element('div', 'task-activity-phase-line');
+  phaseLine.setAttribute('role', 'status');
+  phaseLine.setAttribute('aria-live', 'polite');
+  phaseLine.setAttribute('aria-atomic', 'true');
   const marker = element('span', 'task-activity-marker', '◌');
   marker.setAttribute('aria-hidden', 'true');
   const phase = element('span', 'task-activity-phase', '等待模型');
   phaseLine.append(marker, phase);
   const meta = element('div', 'task-activity-meta');
-  const elapsed = element('span', 'task-activity-elapsed', '已处理0秒');
+  const elapsed = element('span', 'task-activity-elapsed', '用时 0秒');
   const separator = element('span', 'task-activity-separator', '·');
   const speed = element('span', 'generation-speed task-activity-speed');
   separator.hidden = true;
@@ -1641,8 +1654,10 @@ function createTaskActivity(record = {}) {
   const chevron = element('span', 'task-history-chevron');
   chevron.setAttribute('aria-hidden', 'true');
   meta.append(elapsed, separator, speed, chevron);
-  summary.append(phaseLine, meta);
-  block.append(summary, events);
+  summary.append(meta);
+  // The live status follows the process rather than the round heading. Keep
+  // it outside the event container so it cannot split adjacent tool groups.
+  block.append(summary, events, phaseLine);
   block.open = true;
   const runId = String(record.runId || record.id || '');
   if (runId) block.dataset.runId = runId;
@@ -1690,8 +1705,25 @@ function createCommandOutput(target = taskProcessTarget()) {
   return output;
 }
 
+function commandOutputForEvent(event, tools = pendingTools, target = taskProcessTarget(), fallback = null) {
+  const tool = tools.at(-1);
+  const ownsOutput = tool && String(tool.name || '').replace(/（模拟）$/u, '') === 'run_command'
+    && (!event.toolCallId || event.toolCallId === tool.toolCallId)
+    && (!event.runId || !tool.runId || event.runId === tool.runId);
+  // Output belongs to its command. A sibling output disclosure would split
+  // otherwise adjacent commands and leave logs outside their collapsed group.
+  if (ownsOutput) return tool.commandOutput ||= createCommandOutput(tool.details);
+  // Preserve orphaned output from older records without assigning it to an
+  // unrelated tool or moving it across a visible conversation boundary.
+  if (fallback?.parentElement?.parentElement === target && target.lastElementChild === fallback.parentElement) return fallback;
+  return createCommandOutput(target);
+}
+
 function moveTaskActivityToEnd() {
-  if (activeTaskActivity?.status === 'running' && activeTaskActivity.block.isConnected) $('messages').append(activeTaskActivity.block);
+  if (activeTaskActivity?.status === 'running' && activeTaskActivity.block.isConnected) {
+    $('messages').append(activeTaskActivity.block);
+    activeTaskActivity.compaction?.place();
+  }
 }
 
 function beginTaskActivity(record = {}) {
@@ -1726,8 +1758,11 @@ function beginTaskActivity(record = {}) {
 function setTaskActivityPhase(phase, label) {
   if (!running || !activeTaskActivity || activeTaskActivity.status !== 'running') return;
   activeTaskActivity.phase = phase;
-  activeTaskActivity.phaseNode.textContent = label;
+  if (activeTaskActivity.phaseNode.textContent !== label) activeTaskActivity.phaseNode.textContent = label;
   activeTaskActivity.block.dataset.phase = phase;
+  // Tool cards already describe their own progress, and compression has a
+  // dedicated notice (including reconnects). Avoid a second generic status.
+  activeTaskActivity.phaseLine.hidden = ['tool', 'completed', 'compacting'].includes(phase) || contextCompacting;
   activeTaskActivity.marker.textContent = phase === 'reconnecting' ? '↻' : '◌';
   if (phase !== 'reconnecting') activeTaskActivity.phaseNode.removeAttribute('title');
   $('run-status').textContent = label;
@@ -1737,12 +1772,14 @@ function setTaskActivityPhase(phase, label) {
 function clearTaskReconnect() {
   if (!activeTaskActivity) return;
   activeTaskActivity.reconnect = null;
+  activeTaskActivity.compaction?.reconnect(null);
   delete activeTaskActivity.block.dataset.reconnect;
 }
 
 function renderTaskReconnect(activity = activeTaskActivity) {
   if (activity !== activeTaskActivity || !activity?.reconnect || activity.status !== 'running') return;
   const state = activity.reconnect;
+  activity.compaction?.reconnect(state);
   const seconds = state.status === 'waiting' ? Math.max(0, Math.ceil((state.retryAt - Date.now()) / 1000)) : 0;
   setTaskActivityPhase('reconnecting', `正在重连 ${state.attempt}/${state.maxAttempts}${seconds ? ` · ${seconds}秒后重试` : ''}`);
   activity.phaseNode.title = '模型连接中断，将重新请求当前回复。';
@@ -1773,6 +1810,7 @@ function handleReconnect(event) {
     renderTaskReconnect(activity);
   } else if (event.status === 'recovered' || event.status === 'failed') {
     clearTaskReconnect();
+    if (event.status === 'failed' && contextCompacting) finishContextCompaction('failed');
     setTaskActivityPhase(event.status === 'failed' ? 'reconnect-failed' : contextCompacting ? 'compacting' : 'waiting',
       event.status === 'failed' ? '重连失败' : contextCompacting ? '正在压缩上下文…' : '连接已恢复');
   }
@@ -1784,6 +1822,7 @@ function finishTaskActivity(record = {}) {
   taskActivityTimer = null;
   const activity = activeTaskActivity;
   if (!activity || activity.status !== 'running') return;
+  finishContextCompaction(['failed', 'stopped'].includes(record.status) ? record.status : 'ended');
   clearTaskReconnect();
   const duration = Number.isFinite(record.elapsedMs) ? record.elapsedMs : record.durationMs;
   activity.finishedElapsed = Number.isFinite(duration) && duration >= 0 ? duration : taskElapsed(activity);
@@ -1818,6 +1857,7 @@ function restoreTaskActivityFromState() {
   for (const agent of active.subagents || []) renderSubagentUpdate({ agent });
   for (const request of appState?.pendingApprovals || []) if (request.reviewStatus === 'reviewing') renderApprovalReview({ ...request, status: 'reviewing' });
   if (active.telemetry) updateTelemetry(active.telemetry);
+  syncContextCompaction(active);
 }
 
 function historicalTaskRecords(session) {
@@ -1852,7 +1892,7 @@ function renderHistoricalTaskActivity(record, items = []) {
         appendGroupedToolCard(activity.events, tool, event); tools.push(tool);
       } else if (event.type === 'tool-result') {
         if (!tools.some(tool => event.toolCallId ? tool.toolCallId === event.toolCallId : tool.name === event.name)) {
-          const tool = createToolCard({ name: event.name, args: {}, toolCallId: event.toolCallId });
+          const tool = createToolCard({ name: event.name, args: {}, toolCallId: event.toolCallId, runId: event.runId });
           appendGroupedToolCard(activity.events, tool, event); tools.push(tool);
         }
         completeTool(event, { tools, updateActivity: false });
@@ -1861,7 +1901,7 @@ function renderHistoricalTaskActivity(record, items = []) {
       else if (event.type === 'approval-review') renderApprovalReview(event, { target: activity.events, historical: true });
       else if (event.type === 'context-compacted') appendContextCompactionNotice(event, activity.events);
       else if (event.type === 'command-output') {
-        if (!output) output = createCommandOutput(activity.events);
+        output = commandOutputForEvent(event, tools, activity.events, output);
         output.append(document.createTextNode(event.text || ''));
       }
     }
@@ -1909,7 +1949,10 @@ function xmlFileTool(name, args) {
 }
 
 function renderText(container, text) {
-  window.ForgeMarkdown.renderMarkdown(container, text, { onLink: url => browserController?.open({ url }).catch(() => {}) });
+  window.ForgeMarkdown.renderMarkdown(container, text, {
+    onLink: url => browserController?.open({ url }).catch(() => {}),
+    onCopy: value => bridge.copyText({ text: value }),
+  });
 }
 
 function addMessage(role, text, streaming = false, metadata = {}) {
@@ -2182,14 +2225,13 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   if (syncPendingQueue && state.promptQueue) syncPromptQueue(state.promptQueue);
   if (syncActiveTask && state.activeTask && !(promptSubmitting && !state.activeTask.running)) {
     const active = state.activeTask;
-    contextCompacting = active.compacting === true;
     taskKind = active.kind;
     taskDemo = active.demo === true;
     terminalRunning = active.running === true && active.kind === 'terminal';
     const agentRunning = active.running === true && ['agent', 'undo'].includes(active.kind);
     if (agentRunning !== running) setRunning(agentRunning, active);
-      if (agentRunning && active.kind !== 'undo') restoreTaskActivityFromState();
-    if (agentRunning && contextCompacting) setTaskActivityPhase('compacting', '正在压缩上下文…');
+    if (agentRunning && active.kind !== 'undo') restoreTaskActivityFromState();
+    else syncContextCompaction(active);
     if (terminalRunning) { setTerminalOpen(true); $('terminal-status').textContent = '终端执行中'; }
   }
   if (syncActiveTask && Array.isArray(state.pendingApprovals)) syncComposerApprovals(state.pendingApprovals);
@@ -2463,12 +2505,25 @@ function applyExplorerMove(result) {
     }
 }
 
+const externalEditorPath = path => typeof path === 'string' && (/^[a-z]:[\\/]/i.test(path) || path.startsWith('/'));
+
+async function openEditorFile() {
+  if (editorPickerOpen || fileOperationBusy() || !appState?.workspace) return;
+  const workspaceId = currentWorkspaceId();
+  editorPickerOpen = true;
+  try {
+    const file = await bridge.chooseEditorFile();
+    if (file?.path && currentWorkspaceId() === workspaceId) await previewFile(file.path);
+  } catch (error) { notice(errorText(error), true); }
+  finally { editorPickerOpen = false; }
+}
+
 async function previewFile(path, row, { allowNavigation = false } = {}) {
   if (fileOperationBusy({ allowNavigation })) return false;
   const workspaceId = currentWorkspaceId();
   const selectionRevision = explorerSelection?.revision;
   if (path === selectedPath) {
-    if (!row && !explorerSelection?.has(path)) selectFileEntry({ path, type: 'file', name: baseName(path) }, null);
+    if (!row && !externalEditorPath(path) && !explorerSelection?.has(path)) selectFileEntry({ path, type: 'file', name: baseName(path) }, null);
     if (!editorDirty) refreshSelectedFile(); setPreviewOpen(true); showPreviewTab('file'); return true;
   }
   if (!(await confirmEditorTransition())) return false;
@@ -2479,9 +2534,9 @@ async function previewFile(path, row, { allowNavigation = false } = {}) {
     if (request !== editorReadRequest) return false;
     selectedPath = file.path || path;
     resetEditorAutosave();
-    if (!row && explorerSelection?.revision === selectionRevision && !explorerSelection?.has(selectedPath))
+    if (!row && !externalEditorPath(selectedPath) && explorerSelection?.revision === selectionRevision && !explorerSelection?.has(selectedPath))
       selectFileEntry({ path: selectedPath, name: baseName(selectedPath), type: 'file' }, null);
-    $('preview-filename').textContent = baseName(selectedPath);
+    $('preview-filename').textContent = externalEditorPath(selectedPath) ? selectedPath : baseName(selectedPath);
     $('preview-filename').title = selectedPath;
     editorVersion = file.version;
     editorOriginal = file.content;
@@ -3180,6 +3235,7 @@ function renderRoundTokenUsage(record, { unanchored = false } = {}) {
 }
 
 function clearConversation() {
+  promptCompletion?.cancel();
   chatSelectionMenu?.close();
   cancelFileDisclosureReveal();
   fileDisclosureScrollPaused = false;
@@ -3262,14 +3318,42 @@ async function deleteSessionRecord(id) {
   return result;
 }
 
-function appendContextCompactionNotice(event, target = taskProcessTarget()) {
+function currentCompactionEvent(event = {}) {
+  return !event.agentId && running && activeTaskActivity?.status === 'running'
+    && (!event.runId || !activeTaskActivity.runId || event.runId === activeTaskActivity.runId);
+}
+
+function beginContextCompaction(event = {}) {
+  if (!currentCompactionEvent(event)) return;
+  contextCompacting = true;
+  finishStream();
+  const activity = activeTaskActivity;
+  if (!activity.compaction) activity.compaction = window.ForgeContextCompaction.createProgress({
+    target: activity.events, block: activity.block, runId: activity.runId,
+  });
+  if (activity.reconnect) renderTaskReconnect(activity);
+  else setTaskActivityPhase('compacting', '正在压缩上下文…');
+}
+
+function finishContextCompaction(status = 'completed') {
+  contextCompacting = false;
+  const progress = activeTaskActivity?.compaction;
+  if (!progress) return null;
+  activeTaskActivity.compaction = null;
+  return progress.finish(status);
+}
+
+function syncContextCompaction(active) {
+  if (active?.running && active.kind === 'agent' && active.compacting === true) beginContextCompaction(active);
+  else finishContextCompaction('ended');
+}
+
+function appendContextCompactionNotice(event, target = taskProcessTarget(), pendingNote = null) {
   const key = `${event.runId || ''}:${event.count || 0}:${event.throughIndex || 0}:${event.messageIndex || 0}`;
-  if (contextCompactionNotices.has(key)) return;
+  if (contextCompactionNotices.has(key)) { pendingNote?.remove(); return; }
   contextCompactionNotices.add(key);
-  const note = element('div', 'context-compaction-notice');
-  note.setAttribute('role', 'status');
+  const note = pendingNote || window.ForgeContextCompaction.createNotice();
   note.dataset.count = String(event.count || 1);
-  note.append(element('span', 'context-compaction-mark', '↻'), element('span', 'context-compaction-message', '上下文已自动压缩'));
   if (event.budgetMode === 'model-capacity' && Number.isFinite(event.contextLimit) && Number.isFinite(event.triggerTokens)) {
     const usage = Number.isFinite(event.estimatedBeforeTokens) && Number.isFinite(event.estimatedAfterTokens)
       ? `预算估算：≈${event.estimatedBeforeTokens.toLocaleString()} → ≈${event.estimatedAfterTokens.toLocaleString()} Token。` : '';
@@ -3280,7 +3364,7 @@ function appendContextCompactionNotice(event, target = taskProcessTarget()) {
   } else if (Number.isFinite(event.beforeChars) && Number.isFinite(event.afterChars)) {
     note.title = `${event.budgetMode === 'fallback-characters' ? '模型未提供有效容量，使用保守的本地字符阈值。' : ''}发送给模型的上下文：${event.beforeChars.toLocaleString()} → ${event.afterChars.toLocaleString()} 字符；完整聊天记录保留。`;
   }
-  target.append(note);
+  if (!pendingNote) target.append(note);
 }
 
 function renderSessionSnapshot(session) {
@@ -3438,7 +3522,7 @@ function createToolCard(event) {
   details.append(technical);
   card.append(summary, details);
   bindFileDisclosureVisibility(card, summary);
-  return { name: event.name, args: event.args, toolCallId: event.toolCallId, card, details, technical, commandView, badge, title };
+  return { name: event.name, args: event.args, toolCallId: event.toolCallId, runId: event.runId, card, details, technical, commandView, badge, title };
 }
 
 function completeTool(event, { tools = pendingTools, updateActivity = true } = {}) {
@@ -3449,6 +3533,10 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
   if (typeof result === 'string') { try { result = JSON.parse(result); } catch { /* Human-readable failures stay in the original tool detail. */ } }
   const denied = result?.denied === true || result?.canceled === true || (typeof result === 'string' && /^操作已停止，未执行/.test(result));
   const command = String(event.name || '').replace(/（模拟）/g, '') === 'run_command';
+  if (command && result?.outputTruncated === true && typeof result.output === 'string' && tool.commandOutput) {
+    tool.commandOutput.textContent = result.output;
+    tool.commandOutput.scrollTop = tool.commandOutput.scrollHeight;
+  }
   const commandResult = command && window.ForgeCommandResult ? window.ForgeCommandResult.describe(tool.args, event.result) : null;
   const failed = result?.error || (typeof result === 'string' && /^(?:错误|工具执行失败|Error)/i.test(result))
     || (commandResult ? ['failed', 'timeout', 'output-limit'].includes(commandResult.status)
@@ -3698,6 +3786,7 @@ function approvalRequest(event) {
 }
 
 async function runTask(demo = false, mode = 'queue') {
+  promptCompletion?.cancel();
   if (approvals.size || !$('composer-approval').hidden) return;
   if (projectSwitching) return;
   if (running && taskKind === 'undo') return;
@@ -3789,15 +3878,20 @@ function handleEvent(event) {
   if (['run-start', 'run-end', 'terminal-start', 'terminal-end'].includes(event.type)) ++taskStateVersion;
   switch (event.type) {
     case 'context-compaction-start':
-      contextCompacting = true;
-      finishStream();
-      setTaskActivityPhase('compacting', '正在压缩上下文…');
+      beginContextCompaction(event);
+      scrollBottom();
       break;
     case 'context-compacted':
-      contextCompacting = false;
-      appendContextCompactionNotice(event);
+      if (!currentCompactionEvent(event)) break;
+      appendContextCompactionNotice(event, taskProcessTarget(), finishContextCompaction());
       moveTaskActivityToEnd();
       setTaskActivityPhase('waiting', '等待模型继续');
+      scrollBottom();
+      break;
+    case 'context-compaction-end':
+      if (!currentCompactionEvent(event)) break;
+      finishContextCompaction(['failed', 'stopped', 'cancelled'].includes(event.status) ? event.status : 'ended');
+      if (!activeTaskActivity?.reconnect) setTaskActivityPhase('waiting', '等待模型继续');
       scrollBottom();
       break;
     case 'window-state':
@@ -3899,7 +3993,7 @@ function handleEvent(event) {
       break;
     }
     case 'command-output':
-      if (!commandOutput) commandOutput = createCommandOutput();
+      commandOutput = commandOutputForEvent(event, pendingTools, taskProcessTarget(), commandOutput);
       commandOutput.append(document.createTextNode(event.text || ''));
       commandOutput.scrollTop = commandOutput.scrollHeight;
       moveTaskActivityToEnd();
@@ -4265,12 +4359,23 @@ function bindUI() {
 }
 
 async function initialize() {
+  promptCompletion = window.ForgePromptCompletion.create({
+    input: $('task-input'), hint: $('prompt-completion-hint'),
+    getContext: () => appState?.workspace && sessionId && appState?.settings?.model && !projectSwitching && !promptSubmitting
+      && !modelSaving && !settingsSaving && !isChatGPTBusy() && !approvals.size ? {
+        sessionId, workspaceId: currentWorkspaceId(), model: appState.settings.model, provider: appState.settings.provider,
+        authMode: appState.settings.authMode, catalog: currentCatalogKey, reasoning: appState.settings.reasoningEffort,
+      } : null,
+    request: args => bridge.completePrompt(args), cancel: args => bridge.cancelPromptCompletion(args),
+  });
   bindUI();
   if (!bridge) {
     notice('桌面桥接未就绪，请通过 Synora code 桌面应用启动此界面。', true);
     document.querySelectorAll('button,input,select,textarea').forEach((node) => { node.disabled = true; });
     return;
   }
+  appUpdateControls = window.ForgeAppUpdate.create({ bridge, button: $('app-update-button'), label: $('app-update-label'), progress: $('app-update-progress'), notice, isBusy: () => contextBusy() || editorSaving || isChatGPTBusy() });
+  window.synoraAppUpdate = appUpdateControls;
   browserController = window.ForgeBrowser.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, showPanel: () => { if (!previewPinned) setPreviewPinned(true); setPreviewOpen(true); showPreviewTab('browser'); }, notice });
   chatSelectionMenu = window.ForgeChatSelectionMenu.create({ container: $('messages'), scrollContainer: $('message-scroll'), menu: $('chat-selection-menu'), copy: text => bridge.copyText({ text }), search: url => browserController.open({ url }), getContextKey: () => `${currentWorkspaceId() || ''}:${sessionId || ''}`, notice });
   permissionControls = window.ForgePermissions.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, notice, onOpen: () => fetchCurrentCatalog() });
@@ -4318,6 +4423,7 @@ window.aiCodeCommands = Object.freeze({
       case 'temporary-chat': return newSession({ temporary: true });
       case 'create-project': return createProject();
       case 'open-project': return openWorkspace();
+      case 'open-file': return openEditorFile();
       case 'close-window': return bridge.closeWindow();
       case 'logout': return runChatGPTAction('disconnect', () => bridge.chatgptDisconnect());
       case 'quit': return bridge.quitApp();
@@ -4344,6 +4450,7 @@ window.aiCodeCommands = Object.freeze({
       case 'zoom-reset': return requestTextScale(100);
       case 'fullscreen': return stateCall('toggleFullscreen');
       case 'guide': return bridge.openHelp({ topic: 'guide' });
+      case 'check-update': return appUpdateControls?.check();
       case 'about': return bridge.openHelp({ topic: 'about' });
       default: throw new Error('未识别的菜单操作。');
     }

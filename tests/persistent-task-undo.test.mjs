@@ -16,7 +16,7 @@ function cryptoFixture() {
       decipher.setAuthTag(bytes.subarray(-16)); return Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()]).toString('utf8'); },
   };
 }
-async function fixture(t, extra = {}) {
+async function fixture(t, extra = {}, workspaceOptions = {}) {
   const dir = await fs.mkdtemp(path.join(testTempRoot, 'synora-persistent-undo-')), root = path.join(dir, 'project'); await fs.mkdir(root);
   t.after(async () => {
     assert.equal(path.dirname(path.resolve(dir)).toLowerCase(), path.resolve(testTempRoot).toLowerCase());
@@ -25,7 +25,7 @@ async function fixture(t, extra = {}) {
   });
   const safeStorage = cryptoFixture(), session = { id: randomUUID(), workspace: root, messages: [], events: [] }, runId = randomUUID();
   const settings = { dataDir: dir, safeStorage, ...extra }, store = new PersistentTaskUndo(settings); await store.loadSession(session);
-  const tools = new WorkspaceTools(root, { approve: async () => true });
+  const tools = new WorkspaceTools(root, { approve: async () => true, ...workspaceOptions });
   const record = change => store.record({ runId, sessionId: session.id, workspace: root, change });
   const write = async (relative, content) => {
     let pending;
@@ -51,6 +51,46 @@ test('encrypted raw snapshots support undo, restart, redo and another restart wi
   assert.equal((await f.operate('redo', restarted)).status, 'completed'); assert.equal(await fs.readFile(path.join(f.root, 'a.txt'), 'utf8'), 'final');
   assert.equal(await fs.readFile(path.join(f.root, 'new.txt'), 'utf8'), 'new');
   const again = new PersistentTaskUndo(f.settings); await again.loadSession(f.session); assert.deepEqual(again.ids(f.session.id, f.root), [f.runId]);
+});
+
+test('external absolute paths retain encrypted restart undo and redo independently from same-named project files', async t => {
+  const f = await fixture(t, {}, { allowExternalPaths: true });
+  const sibling = path.join(f.dir, 'server'); await fs.mkdir(sibling);
+  const external = path.join(sibling, 'same.txt').replace(/\\/gu, '/'), created = path.join(sibling, 'new.txt').replace(/\\/gu, '/');
+  await fs.writeFile(path.join(f.root, 'same.txt'), 'CLIENT_ORIGINAL_PRIVATE\n');
+  await fs.writeFile(external, 'SERVER_ORIGINAL_PRIVATE\n');
+  assert.equal((await f.tools.readFile({ path: external })).content, 'SERVER_ORIGINAL_PRIVATE\n');
+  await f.write('same.txt', 'CLIENT_FINAL\n'); await f.write(external, 'SERVER_MIDDLE\n');
+  await f.write(external, 'SERVER_FINAL\n'); await f.write(created, 'NEW_EXTERNAL_PRIVATE\n'); await f.seal();
+  const encrypted = await fs.readFile(f.file, 'utf8');
+  for (const value of ['SERVER_ORIGINAL_PRIVATE', 'CLIENT_ORIGINAL_PRIVATE', 'NEW_EXTERNAL_PRIVATE', external]) assert.equal(encrypted.includes(value), false);
+  const restarted = new PersistentTaskUndo(f.settings); await restarted.loadSession(f.session);
+  assert.deepEqual(restarted.ids(f.session.id, f.root), [f.runId]);
+  assert.equal((await f.operate('undo', restarted)).status, 'completed');
+  assert.equal(await fs.readFile(external, 'utf8'), 'SERVER_ORIGINAL_PRIVATE\n');
+  assert.equal(await fs.readFile(path.join(f.root, 'same.txt'), 'utf8'), 'CLIENT_ORIGINAL_PRIVATE\n');
+  await assert.rejects(fs.stat(created), { code: 'ENOENT' });
+  const again = new PersistentTaskUndo(f.settings); await again.loadSession(f.session);
+  assert.deepEqual(again.ids(f.session.id, f.root, 'redo'), [f.runId]);
+  assert.equal((await f.operate('redo', again)).status, 'completed');
+  assert.equal(await fs.readFile(external, 'utf8'), 'SERVER_FINAL\n');
+  assert.equal(await fs.readFile(path.join(f.root, 'same.txt'), 'utf8'), 'CLIENT_FINAL\n');
+  assert.equal(await fs.readFile(created, 'utf8'), 'NEW_EXTERNAL_PRIVATE\n');
+});
+
+test('external user changes after restart fail undo preflight without touching internal or other external files', async t => {
+  const f = await fixture(t, {}, { allowExternalPaths: true });
+  const sibling = path.join(f.dir, 'server'); await fs.mkdir(sibling);
+  const external = path.join(sibling, 'same.txt').replace(/\\/gu, '/');
+  await fs.writeFile(external, 'server before'); await f.write('same.txt', 'client after'); await f.write(external, 'server after'); await f.seal();
+  const restarted = new PersistentTaskUndo(f.settings); await restarted.loadSession(f.session);
+  await fs.writeFile(external, 'user changed server');
+  const encrypted = await fs.readFile(f.file, 'utf8'), result = await f.operate('undo', restarted);
+  assert.equal(result.status, 'failed'); assert.deepEqual(result.completed, []);
+  assert.equal(await fs.readFile(external, 'utf8'), 'user changed server');
+  assert.equal(await fs.readFile(path.join(f.root, 'same.txt'), 'utf8'), 'client after');
+  assert.equal(await fs.readFile(f.file, 'utf8'), encrypted);
+  assert.deepEqual(restarted.ids(f.session.id, f.root), [f.runId]);
 });
 
 test('partial approval persists independent path directions, exposing undo and redo for exactly committed paths', async t => {
@@ -155,7 +195,9 @@ test('linked journal files are refused without overwriting their targets', async
 
 test('unsealed encrypted snapshots are fully validated before becoming writable or eligible for later sealing', async t => {
   for (const change of [{ path: '../outside.txt', before: null, after: 'bad' }, { path: 'a.txt', before: 1, after: 'bad' },
-    { path: 'a.txt', before: null, after: 'x'.repeat(512 * 1024 + 1) }]) {
+    { path: 'a.txt', before: null, after: 'x'.repeat(512 * 1024 + 1) },
+    ...['C:/outside/../bad.txt', 'C:/outside/file.txt:stream', '//server/share/bad.txt', 'C:/outside/.env', '/outside//bad.txt']
+      .map(filename => ({ path: filename, before: null, after: 'bad' }))]) {
     const f = await fixture(t), value = { version: 1, importedLegacy: true, sessionId: f.session.id, workspace: f.root,
       runs: [{ runId: f.runId, valid: true, sealed: false, changes: [change] }] };
     const contents = JSON.stringify({ version: 1, sessionId: f.session.id,

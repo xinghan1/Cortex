@@ -304,6 +304,10 @@ test('approved commands run in the selected workspace and return stdout, stderr 
   const result = await jsonResult(tools.execute('run_command', { command: "Write-Output 'forge-command-ok'; Write-Output (Get-Location).Path; [Console]::Error.WriteLine('diagnostic'); exit 3" }));
   assert.equal(result.exitCode, 3);
   assert.equal(result.terminated, null);
+  assert.equal(result.outputTruncated, false);
+  assert.equal(Object.hasOwn(result, 'output'), false, 'Ordinary command results do not duplicate their logs');
+  assert.equal(result.outputBytes, Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr));
+  assert.equal(result.outputOmittedBytes, 0);
   assert.match(result.stdout, /forge-command-ok/);
   assert.ok(result.stdout.toLowerCase().includes(root.toLowerCase()));
   assert.match(result.stderr, /diagnostic/);
@@ -312,11 +316,60 @@ test('approved commands run in the selected workspace and return stdout, stderr 
   assert.ok(events.some(event => event.type === 'command-output' && event.stream === 'stdout'));
 });
 
-test('command output is limited to 64 KB and the process is stopped', { skip: !hasPowerShell }, async t => {
+test('large command output preserves stdout and stderr heads and tails without stopping subsequent work', { skip: !hasPowerShell }, async t => {
+  const events = [];
+  const { root, tools } = await fixture(t, { approve: async () => true, onEvent: event => events.push(event) });
+  const result = await jsonResult(tools.execute('run_command', { command: "[Console]::Out.Write('STDOUT_START' + ('中🙂文' * 20000) + 'STDOUT_END'); [Console]::Error.Write('STDERR_START' + ('错误🙂' * 20000) + 'STDERR_END'); Set-Content -LiteralPath 'after-output.txt' -Value 'continued'; Write-Output 'COMMAND_FINISHED'; exit 7" }));
+  assert.equal(result.terminated, null);
+  assert.equal(result.exitCode, 7);
+  assert.match(await fs.readFile(path.join(root, 'after-output.txt'), 'utf8'), /continued/);
+  assert.match(result.stdout, /^STDOUT_START/);
+  assert.match(result.stdout, /STDOUT_ENDCOMMAND_FINISHED\r?\n$/);
+  assert.match(result.stderr, /^STDERR_START/);
+  assert.match(result.stderr, /STDERR_END$/);
+  assert.match(result.output, /COMMAND_FINISHED/);
+  assert.equal(result.outputTruncated, true);
+  assert.equal(result.outputBytes, result.outputByteCounts.stdout + result.outputByteCounts.stderr);
+  assert.ok(result.outputBytes > 350_000);
+  assert.ok(result.outputOmittedBytes > 250_000);
+  assert.ok(result.outputPreviewOmittedBytes > 250_000);
+  for (const value of [result.stdout, result.stderr, result.output, ...events.map(event => event.text)]) assert.doesNotMatch(value, /�/u);
+  assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) < 64 * 1024 + 256);
+  assert.ok(Buffer.byteLength(result.output) < 32 * 1024 + 128);
+  assert.ok(events.reduce((total, event) => total + Buffer.byteLength(event.text), 0) < 64 * 1024 + 512);
+  assert.equal(events.filter(event => event.outputTruncated).length, 2, 'Streaming emits one folding notice per stream instead of the entire log');
+});
+
+test('a combined output preview reports truncation even when each individual stream fits its limit', { skip: !hasPowerShell }, async t => {
   const { tools } = await fixture(t, { approve: async () => true });
-  const result = await jsonResult(tools.execute('run_command', { command: "[Console]::Out.Write(('x' * 100000)); Start-Sleep -Seconds 20" }));
-  assert.equal(result.terminated, 'output_limit');
-  assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= 64 * 1024);
+  const result = await jsonResult(tools.execute('run_command', { command: "[Console]::Out.Write(('a' * 20000)); [Console]::Out.Flush(); Start-Sleep -Milliseconds 100; [Console]::Error.Write(('b' * 20000)); [Console]::Error.Flush(); Start-Sleep -Milliseconds 100; [Console]::Out.Write('FINAL_MARKER'); exit 0" }));
+  assert.equal(result.terminated, null);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'a'.repeat(20000) + 'FINAL_MARKER');
+  assert.equal(result.stderr, 'b'.repeat(20000));
+  assert.equal(result.outputTruncated, true);
+  assert.equal(result.outputOmittedBytes, 0);
+  assert.ok(result.outputPreviewOmittedBytes > 0);
+  assert.match(result.output, /^a+/);
+  assert.match(result.output, /b+FINAL_MARKER$/);
+  assert.equal(result.outputBytes, 40_012);
+});
+
+test('truncating command output does not prevent cancellation or timeout from stopping the process', { skip: !hasPowerShell }, async t => {
+  for (const reason of ['cancelled', 'timeout']) {
+    const controller = new AbortController();
+    const { root, tools } = await fixture(t, {
+      approve: async () => true,
+      onEvent: event => { if (reason === 'cancelled' && event.outputTruncated) controller.abort(); },
+    });
+    const result = await jsonResult(tools.execute('run_command', {
+      command: "[Console]::Out.Write(('x' * 150000)); Start-Sleep -Seconds 20; Set-Content -LiteralPath 'must-not-run.txt' -Value 'late'",
+      timeout_ms: reason === 'timeout' ? 1500 : 10000,
+    }, { signal: controller.signal }));
+    assert.equal(result.outputTruncated, true);
+    assert.equal(result.terminated, reason);
+    await assert.rejects(fs.access(path.join(root, 'must-not-run.txt')));
+  }
 });
 
 test('AbortSignal stops a running command promptly', { skip: !hasPowerShell }, async t => {

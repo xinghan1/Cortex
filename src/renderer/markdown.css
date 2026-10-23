@@ -134,6 +134,47 @@
   max-width: 100%;
 }
 
+.markdown-body .message-code-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.markdown-body .message-code-language {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-body .message-code-copy {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius, 4px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.markdown-body .message-code-copy:is(:hover, :focus-visible) {
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.markdown-body .message-code-copy[data-state='copied'] {
+  color: var(--accent, currentColor);
+}
+
+html[data-selection-color='custom'] .markdown-body .message-code-copy[data-state='copied'] {
+  color: var(--custom-accent-text);
+}
+
 .markdown-body .message-code pre {
   overflow: auto;
   max-width: 100%;
