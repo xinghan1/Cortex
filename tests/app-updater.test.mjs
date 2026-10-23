@@ -8,6 +8,8 @@ import { createRequire } from 'node:module';
 const { AppUpdater } = createRequire(import.meta.url)('../src/core/app-updater.cjs');
 const testRoot = path.resolve('tests', '.tmp');
 const api = 'https://api.github.com/repos/xinghan1/Synora-code/releases/latest';
+const web = 'https://github.com/xinghan1/Synora-code/releases/latest';
+const tagURL = 'https://github.com/xinghan1/Synora-code/releases/tag/';
 const nextVersion = '0.18.4', name = `Synora-code-Setup-${nextVersion}-x64.exe`;
 const url = `https://github.com/xinghan1/Synora-code/releases/download/v${nextVersion}/${name}`;
 const bytes = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(8190, 65)]);
@@ -30,7 +32,7 @@ async function fixture(t, overrides = {}) {
     throw new Error('Unexpected network call');
   };
   const updater = new AppUpdater({ currentVersion: '0.18.3', dataDir: dir, enabled: true,
-    fetchImpl: (...args) => client.fetch(...args), onChange: state => states.push(state), ...overrides });
+    fetchImpl: (...args) => client.fetch(...args), onChange: state => states.push(state), checkCacheMs: 0, ...overrides });
   t.after(async () => {
     await updater.dispose();
     const target = path.resolve(dir);
@@ -39,6 +41,21 @@ async function fixture(t, overrides = {}) {
     await fs.rm(target, { recursive: true, force: true });
   });
   return { updater, dir, calls, states, client };
+}
+
+function fallbackClient(f, override = () => null) {
+  const requests = [];
+  f.client.fetch = async (address, options) => {
+    requests.push({ address, method: options.method });
+    const custom = await override(address, options);
+    if (custom) return custom;
+    if (address === api) return new Response(null, { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
+    if (address === web) return new Response(null, { status: 302, headers: { location: `${tagURL}v${nextVersion}` } });
+    if (address === `${url}.sha256`) return new Response(`${hash(bytes)}  ${name}\n`);
+    if (address === url) return options.method === 'HEAD' ? new Response(null, { headers: { 'content-length': String(bytes.length) } }) : binary();
+    assert.fail('Unexpected fallback request: ' + address);
+  };
+  return requests;
 }
 
 test('checking and downloading only expose public state and never execute the verified installer', async t => {
@@ -178,8 +195,8 @@ test('concurrent checks and downloads deduplicate; periodic checks preserve a do
 
 test('a failed later check retains a previously discovered, verified release for a download retry', async t => {
   const { updater, client } = await fixture(t); await updater.check();
-  client.fetch = async address => address === api ? new Response('limited', { status: 429 }) : binary();
-  await assert.rejects(updater.check(), /限流/u);
+  client.fetch = async address => address === api ? new Response('access denied', { status: 403 }) : binary();
+  await assert.rejects(updater.check(), /拒绝访问/u);
   assert.equal(updater.snapshot().version, nextVersion); await updater.download();
   assert.equal(updater.snapshot().status, 'downloaded');
 });
@@ -237,4 +254,189 @@ test('unsupported installs never access the network, and transport errors never 
     assert.equal(error.message.includes('secret'), false); assert.equal(error.message.includes(dir), false); return true;
   });
   assert.equal(JSON.stringify(updater.snapshot()).includes('private'), false);
+});
+
+test('network diagnostics distinguish proxy, TLS, DNS and interrupted streams without exposing raw errors', async t => {
+  for (const [raw, code, message] of [
+    ['net::ERR_PROXY_CONNECTION_FAILED', 'UPDATE_PROXY', /更新代理/u],
+    ['net::ERR_TUNNEL_CONNECTION_FAILED', 'UPDATE_PROXY', /更新代理/u],
+    ['net::ERR_CERT_AUTHORITY_INVALID', 'UPDATE_TLS', /安全证书/u],
+    ['net::ERR_NAME_NOT_RESOLVED', 'UPDATE_DNS', /解析更新服务器/u],
+    ['net::ERR_CONNECTION_TIMED_OUT', 'UPDATE_NETWORK_TIMEOUT', /超时/u],
+    ['net::ERR_CONNECTION_RESET', 'UPDATE_CONNECTION_LOST', /连接已中断/u],
+    ['net::ERR_INCOMPLETE_CHUNKED_ENCODING', 'UPDATE_CONNECTION_LOST', /连接已中断/u],
+  ]) {
+    const { updater, client } = await fixture(t);
+    client.fetch = async () => { throw new TypeError('fetch failed with private signed URL', { cause: new Error(raw + ' https://private.invalid/?token=secret') }); };
+    await assert.rejects(updater.check(), error => error.code === code && message.test(error.message));
+    assert.equal(JSON.stringify(updater.snapshot()).includes('private'), false);
+    assert.equal(JSON.stringify(updater.snapshot()).includes('secret'), false);
+  }
+  const { updater, client } = await fixture(t); await updater.check();
+  client.fetch = async () => new Response(new ReadableStream({ start(controller) { controller.error(new Error('net::ERR_CONNECTION_RESET secret')); } }));
+  await assert.rejects(updater.download(), { code: 'UPDATE_CONNECTION_LOST' });
+  assert.match(updater.snapshot().error, /连接已中断/u);
+});
+
+test('proxy authentication receives a specific safe error', async t => {
+  const { updater, client } = await fixture(t);
+  client.fetch = async () => new Response(null, { status: 407 });
+  await assert.rejects(updater.check(), { code: 'UPDATE_PROXY_AUTH' });
+  assert.match(updater.snapshot().error, /代理需要身份验证/u);
+});
+
+test('disk-full and permission errors do not tell users to change the network and can be retried', async t => {
+  for (const [code, expected, text] of [['ENOSPC', 'UPDATE_STORAGE_FULL', /空间不足/u], ['EACCES', 'UPDATE_STORAGE_ACCESS', /目录权限/u]]) {
+    const { updater, dir } = await fixture(t); await updater.check();
+    const originalOpen = fs.open.bind(fs);
+    const mocked = t.mock.method(fs, 'open', async (filename, flags, ...rest) => {
+      if (flags === 'wx') throw Object.assign(new Error('private path token=secret'), { code });
+      return originalOpen(filename, flags, ...rest);
+    });
+    await assert.rejects(updater.download(), error => error.code === expected && text.test(error.message));
+    assert.equal(/网络|private|secret/u.test(updater.snapshot().error), false);
+    assert.deepEqual(await fs.readdir(path.join(dir, 'updates')), []);
+    mocked.mock.restore();
+    await updater.download(); assert.equal(updater.snapshot().status, 'downloaded');
+  }
+});
+
+test('real API limits use the official stable tag, matching checksum and HEAD size before offering a download', async t => {
+  for (const [status, headers, body] of [
+    [429, {}, 'limited'], [403, { 'x-ratelimit-remaining': '0' }, 'limited'],
+    [403, { 'retry-after': '120' }, 'limited'],
+    [403, {}, JSON.stringify({ message: 'API rate limit exceeded for fixture.' })],
+    [403, {}, JSON.stringify({ message: 'You have exceeded a secondary rate limit. Please wait.' })],
+  ]) {
+    const f = await fixture(t), requests = fallbackClient(f, address => address === api ? new Response(body, { status, headers }) : null);
+    assert.equal((await f.updater.check()).status, 'available');
+    assert.deepEqual(requests, [
+      { address: api, method: 'GET' }, { address: web, method: 'GET' },
+      { address: `${url}.sha256`, method: 'GET' }, { address: url, method: 'HEAD' },
+    ]);
+    assert.equal(JSON.stringify(f.updater.snapshot()).includes('github'), false);
+    await f.updater.download(); assert.deepEqual(await fs.readFile(await f.updater.verifiedInstaller()), bytes);
+  }
+});
+
+test('plain forbidden responses, malformed metadata and rate-limited checksum assets never trigger the API fallback', async t => {
+  for (const body of ['Access denied', JSON.stringify({ message: 'Resource not accessible' }), JSON.stringify({ message: 'arbitrary rate limit suggestion' })]) {
+    const f = await fixture(t), requests = fallbackClient(f, address => address === api ? new Response(body, { status: 403 }) : null);
+    await assert.rejects(f.updater.check(), { code: 'UPDATE_ACCESS_DENIED' });
+    await assert.rejects(f.updater.check(), { code: 'UPDATE_ACCESS_DENIED' });
+    assert.deepEqual(requests.map(item => item.address), [api, api], 'Ordinary errors can retry immediately');
+  }
+  const malformed = await fixture(t), malformedCalls = fallbackClient(malformed, address => address === api ? new Response('{bad JSON') : null);
+  await assert.rejects(malformed.updater.check(), /格式无效/u); assert.equal(malformedCalls.length, 1);
+  const f = await fixture(t), metadata = release(); delete metadata.assets[0].digest;
+  metadata.assets.push({ name: `${name}.sha256`, state: 'uploaded', size: 100, browser_download_url: `${url}.sha256` });
+  const requests = fallbackClient(f, address => address === api ? json(metadata)
+    : address === `${url}.sha256` ? new Response(null, { status: 429 }) : null);
+  await assert.rejects(f.updater.check(), { code: 'UPDATE_RATE_LIMIT' });
+  assert.equal(requests.some(item => item.address === web), false);
+});
+
+test('web fallback rejects foreign, malformed, prerelease and automatic redirects before touching assets', async t => {
+  for (const location of [`${tagURL.replace('xinghan1', 'other')}v${nextVersion}`, `${tagURL}v${nextVersion}-beta`,
+    `${tagURL}v0.18.04`, `${tagURL}v${nextVersion}?secret=private`, `${tagURL}v${nextVersion}#part`,
+    `${tagURL.replace('https:', 'http:')}v${nextVersion}`, `${tagURL.replace('github.com', 'github.com.evil.invalid')}v${nextVersion}`,
+    `${tagURL.replace('github.com', 'user:pass@github.com')}v${nextVersion}`, `/xinghan1/Synora-code/releases/tag/v${nextVersion}`]) {
+    const f = await fixture(t), requests = fallbackClient(f, address => address === web ? new Response(null, { status: 302, headers: { location } }) : null);
+    await assert.rejects(f.updater.check()); assert.equal(requests.length, 2);
+    assert.equal(/private|pass|github/u.test(f.updater.snapshot().error), false);
+  }
+  const f = await fixture(t), requests = fallbackClient(f, address => {
+    if (address !== web) return null;
+    const response = new Response('already followed'); Object.defineProperty(response, 'redirected', { value: true }); return response;
+  });
+  await assert.rejects(f.updater.check(), /未经允许/u); assert.equal(requests.length, 2);
+  for (const tag of ['v0.18.3', '0.18.2']) {
+    const f = await fixture(t), requests = fallbackClient(f, address => address === web ? new Response(null, { status: 302, headers: { location: tagURL + tag } }) : null);
+    assert.equal((await f.updater.check()).status, 'current'); assert.equal(requests.length, 2);
+  }
+});
+
+test('fallback checksum files and HEAD sizes are mandatory, bounded and tied to the exact installer', async t => {
+  for (const response of [() => new Response(null, { status: 404 }), () => new Response(`${hash(bytes)}  another.exe\n`),
+    () => new Response('not a checksum'), () => new Response('a'.repeat(8193))]) {
+    const f = await fixture(t), requests = fallbackClient(f, address => address === `${url}.sha256` ? response() : null);
+    await assert.rejects(f.updater.check()); assert.equal(requests.length, 3);
+  }
+  for (const length of [null, '0', '63', '-1', '1.5', String(512 * 1024 * 1024 + 1), '9007199254740993', '8192, 8192']) {
+    const f = await fixture(t), requests = fallbackClient(f, (address, options) => address === url && options.method === 'HEAD'
+      ? new Response(null, { headers: length === null ? {} : { 'content-length': length } }) : null);
+    await assert.rejects(f.updater.check(), /大小/u); assert.equal(requests.length, 4);
+    await assert.rejects(f.updater.download(), /先检查/u);
+  }
+});
+
+test('fallback preserves GET versus HEAD across approved CDN hops and never follows rejected HEAD targets', async t => {
+  const checksumCDN = 'https://objects.githubusercontent.com/github-production-release-asset/123/checksum?sig=private';
+  const installerCDN = 'https://release-assets.githubusercontent.com/github-production-release-asset/123/installer?sig=private';
+  const f = await fixture(t), requests = fallbackClient(f, (address, options) => {
+    if (address === `${url}.sha256` || address === url) return new Response(null, { status: 302, headers: { location: address === url ? installerCDN : checksumCDN } });
+    if (address === checksumCDN) return new Response(`${hash(bytes)} *${name}\n`);
+    if (address === installerCDN) return options.method === 'HEAD' ? new Response(null, { headers: { 'content-length': String(bytes.length) } }) : binary();
+    return null;
+  });
+  await f.updater.check(); await f.updater.download(); await f.updater.verifiedInstaller();
+  assert.deepEqual(requests.map(item => [item.address, item.method]), [
+    [api, 'GET'], [web, 'GET'], [`${url}.sha256`, 'GET'], [checksumCDN, 'GET'], [url, 'HEAD'], [installerCDN, 'HEAD'], [url, 'GET'], [installerCDN, 'GET'],
+  ]);
+  for (const location of ['https://evil.invalid/installer.exe', 'http://objects.githubusercontent.com/github-production-release-asset/123/file',
+    'https://objects.githubusercontent.com/unexpected/file']) {
+    const rejected = await fixture(t), calls = fallbackClient(rejected, (address, options) => address === url && options.method === 'HEAD'
+      ? new Response(null, { status: 302, headers: { location } }) : null);
+    await assert.rejects(rejected.updater.check(), /非官方/u); assert.equal(calls.length, 4);
+  }
+});
+
+test('successful checks cache for sixty seconds and API limits use web checks until the server cooldown expires', async t => {
+  let now = 1800000000000, apiCalls = 0;
+  const f = await fixture(t, { now: () => now, checkCacheMs: undefined });
+  const requests = fallbackClient(f, address => {
+    if (address !== api) return null;
+    apiCalls++; return apiCalls === 1 ? new Response(null, { status: 429, headers: { 'retry-after': '120' } }) : json(release());
+  });
+  await f.updater.check(); assert.equal(requests.length, 4);
+  await f.updater.check(); assert.equal(requests.length, 4);
+  now += 61000; await f.updater.check(); assert.equal(apiCalls, 1); assert.equal(requests.length, 7);
+  now += 61000; await f.updater.check(); assert.equal(apiCalls, 2); assert.equal(requests.length, 8);
+  const current = await fixture(t, { now: () => now, checkCacheMs: undefined }); current.client.metadata = { ...release(), tag_name: '0.18.3' };
+  await current.updater.check(); await current.updater.check(); assert.equal(current.calls.length, 1);
+  now += 60001; await current.updater.check(); assert.equal(current.calls.length, 2);
+});
+
+test('API cooldown honors reset and date headers, bounds extreme values and uses five minutes without hints', async t => {
+  const start = 1800000000000;
+  for (const [headers, delay] of [[{}, 300000], [{ 'retry-after': '0' }, 60000], [{ 'retry-after': '99999999' }, 3600000],
+    [{ 'retry-after': new Date(start + 180000).toUTCString() }, 180000], [{ 'x-ratelimit-reset': String((start + 240000) / 1000) }, 240000]]) {
+    let now = start, apiCalls = 0;
+    const f = await fixture(t, { now: () => now });
+    fallbackClient(f, address => { if (address !== api) return null; apiCalls++; return new Response(null, { status: 429, headers }); });
+    await f.updater.check(); now += delay - 1; await f.updater.check(); assert.equal(apiCalls, 1);
+    now++; await f.updater.check(); assert.equal(apiCalls, 2);
+  }
+});
+
+test('failed web fallback is briefly cooled down without losing an earlier usable release', async t => {
+  let now = 1800000000000, failWeb = true;
+  const f = await fixture(t, { now: () => now }); await f.updater.check();
+  const requests = fallbackClient(f, address => address === web && failWeb ? new Response(null, { status: 503 }) : null);
+  await assert.rejects(f.updater.check(), /暂时不可用/u);
+  await assert.rejects(f.updater.check(), /暂时不可用/u); assert.equal(requests.length, 2);
+  assert.equal(f.updater.snapshot().version, nextVersion);
+  now += 60001; failWeb = false; await f.updater.check(); assert.equal(requests.length, 5);
+  await f.updater.download(); await f.updater.verifiedInstaller();
+});
+
+test('normal network failures retry immediately and fallback cancellation cannot make a later HEAD request', async t => {
+  const f = await fixture(t); let attempts = 0;
+  f.client.fetch = async () => { if (++attempts === 1) throw new Error('net::ERR_CONNECTION_RESET private'); return json(release()); };
+  await assert.rejects(f.updater.check(), { code: 'UPDATE_CONNECTION_LOST' }); await f.updater.check(); assert.equal(attempts, 2);
+  const stalled = await fixture(t, { timeoutMs: 30 }); let cancelled = false;
+  const requests = fallbackClient(stalled, address => address === `${url}.sha256` ? new Response(new ReadableStream({ cancel() { cancelled = true; } })) : null);
+  const first = stalled.updater.check(); assert.equal(first, stalled.updater.check());
+  await assert.rejects(first, { code: 'UPDATE_TIMEOUT' }); assert.equal(cancelled, true);
+  assert.equal(requests.some(item => item.method === 'HEAD'), false);
 });

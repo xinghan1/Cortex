@@ -25,6 +25,22 @@ function fixture(options = {}) {
   return { controller, snapshot, requests, usage, input };
 }
 
+test('an explicitly configured completion role authorizes its own account while follow-main still enforces session ownership', async () => {
+  const independent = fixture({ getConfig: () => ({ ...config, modelRole: 'completion', roleConnectionRevision: 1,
+    authMode: 'chatgpt', chatgptProfileId: 'completion-account' }) });
+  independent.snapshot.chatgptProfileId = 'main-account';
+  assert.equal((await independent.controller.complete(independent.input())).text, '继续完善，并补充边界条件测试。');
+  assert.equal(independent.requests[0].chatgptProfileId, 'completion-account');
+  assert.equal(independent.requests[0].reasoningEffort, 'max');
+  const following = fixture({ getConfig: () => ({ ...config, authMode: 'chatgpt', chatgptProfileId: 'completion-account' }) });
+  following.snapshot.chatgptProfileId = 'main-account';
+  await assert.rejects(following.controller.complete(following.input()), /账号已变化/);
+  assert.equal(following.requests.length, 0);
+  const incomplete = fixture({ getConfig: () => ({ ...config, modelRole: 'completion', authMode: 'chatgpt' }) });
+  await assert.rejects(incomplete.controller.complete(incomplete.input()), /账号信息不完整/);
+  assert.equal(incomplete.requests.length, 0);
+});
+
 test('completion preserves the exact draft and bills an independent request without mutating conversation or exposing private provider state', async () => {
   const data = fixture();
   data.snapshot.messages.push({ role: 'tool', content: 'PRIVATE_TOOL_RESULT' }, { role: 'system', content: 'PRIVATE_SYSTEM' },
@@ -223,7 +239,9 @@ test('empty chats can switch owners for a new draft, while official requests sti
 
 test('main-process completion config enforces real session ownership before dispatch and allows a fresh chat after account switching', async () => {
   const main = await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8');
-  const wiring = main.slice(main.indexOf('const promptCompletion = createPromptCompletionController('), main.indexOf('\nfunction publicSettings()'));
+  const wiringStart = main.indexOf('const promptCompletion = createPromptCompletionController(');
+  const sideChatStart = main.indexOf('\nconst sideChat =', wiringStart);
+  const wiring = main.slice(wiringStart, sideChatStart >= 0 ? sideChatStart : main.indexOf('\nfunction publicSettings()'));
   const configSource = main.slice(main.indexOf('async function currentRequestConfig('), main.indexOf('\nasync function recordRunUsage('));
   for (const [owner, authMode, profile, history, allowed] of [
     ['account-a', 'chatgpt', 'account-b', true, false], ['account-a', 'apiKey', null, true, false],
@@ -240,7 +258,7 @@ test('main-process completion config enforces real session ownership before disp
       win: { isDestroyed: () => false }, host: { active: context }, context, currentSession,
       workspaceId: 'workspace', configRevision: 1, publicSettings: () => selected, catalogContext: async () => connection,
       capabilitiesFor: () => ({ supportsTools: true }), resolvedReasoningEffort: () => 'default',
-      permissionMode: 'request', uiPreferences: null, store: { key: () => 'fake-key' },
+      permissionMode: 'request', uiPreferences: null, store: { key: () => 'fake-key' }, roleModels: { isEnabled: () => false },
       dispatchModelRequest: async request => { calls.push(request); return reply('，并验证边界。'); },
       recordRunUsage: async record => { usage.push(record); }, redact: value => value,
     });

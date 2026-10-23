@@ -18,7 +18,7 @@
     return text.trim() ? { text, range: range.cloneRange() } : null;
   }
 
-  function create({ container, scrollContainer, menu, copy, search, notice, getContextKey = () => '' }) {
+  function create({ container, scrollContainer, menu, copy, search, ask, notice, getContextKey = () => '' }) {
     let snapshot = null;
     const buttons = [...menu.querySelectorAll('button[data-chat-action]')];
     const positioning = [...document.styleSheets].flatMap(sheet => {
@@ -59,7 +59,8 @@
           const selection = window.getSelection();
           selection.removeAllRanges();
           selection.addRange(range);
-        } else if (action === 'copy' && text) await copy(text);
+        } else if (action === 'ask' && text) await ask?.(text);
+        else if (action === 'copy' && text) await copy(text);
         else if (action === 'search' && text) {
           const url = searchUrl(text);
           if (url) await search(url);

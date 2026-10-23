@@ -20,6 +20,7 @@
       ['settings', '设置…', 'Ctrl+,', locked]
     ],
     view: [
+      ['toggle-side-chat', '侧边临时问答', '', null, 'sideChatVisible'],
       ['toggle-sidebar', '侧边栏', 'Ctrl+Shift+S', null, 'sidebarVisible'], ['toggle-terminal', '终端面板', 'Ctrl+J', null, 'terminalVisible'], ['pin-summary', '固定摘要到右侧', '', null, 'previewPinned'], null,
       ['open-terminal', '打开终端', 'Ctrl+`', (state) => state.busy || !state.hasWorkspace], ['toggle-navigation', '文件导航面板', 'Ctrl+Shift+E', null, 'previewVisible'], ['switch-focus', '切换对话与标签', 'Ctrl+Alt+B'], ['browser', '浏览器', '', null, null, [['open-browser', '打开内置浏览器'], ['open-link', '打开链接…']]], null,
       ['find', '查找…', 'Ctrl+F'], ['back', '返回', 'Ctrl+[', (state) => locked(state) || !state.canBack], ['forward', '前进', 'Ctrl+]', (state) => locked(state) || !state.canForward],
@@ -29,6 +30,11 @@
     ],
     appearance: [
       ['import-background', '导入背景图…'], ['appearance-settings', '外观与背景…']
+    ],
+    settings: [
+      ['settings', '主模型设置…', 'Ctrl+,', locked], ['role-settings', '模型分工…', '', locked], null,
+      ['role-subagent-settings', '子智能体模型…', '', locked], ['role-approval-settings', '帮我批准模型…', '', locked],
+      ['role-completion-settings', 'TAB 提示词补齐模型…', '', locked], ['role-sidebar-settings', '侧边问答模型…', '', locked],
     ],
     help: [['guide', '使用说明'], ['check-update', '检查更新'], ['about', '关于 Synora code']]
   };

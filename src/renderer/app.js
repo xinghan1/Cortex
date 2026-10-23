@@ -46,6 +46,7 @@ let taskChangeUndoBusy = false;
 let imageViewSources = [];
 const renderedImageViews = new Set();
 let settingsSaving = false;
+let settingsRole = null;
 let chatgptBusy = false;
 let chatgptAction = null;
 let chatgptCancelling = false;
@@ -123,7 +124,7 @@ const approvals = new Map();
 let composerApprovalFocus = null;
 let composerApprovalEpoch = 0;
 let composerApprovalSequence = 0;
-let browserController, permissionControls, sessionControls, chatSelectionMenu;
+let browserController, permissionControls, sessionControls, chatSelectionMenu, sideChatControls;
 let contextCompacting = false;
 const contextCompactionNotices = new Set();
 const workspaceDrafts = new Map();
@@ -895,6 +896,25 @@ function currentAuthMode(settings = appState?.settings || {}) {
   return settings.provider === 'openai' && (settings.authMode || settings.providers?.openai?.authMode) === 'chatgpt' ? 'chatgpt' : 'apiKey';
 }
 
+function modelSettingsScope() { return window.ForgeRoleModels.scope(appState, settingsRole); }
+function modelSettingsConfig() { return modelSettingsScope().settings || {}; }
+function modelSettingsChatGPT() { return modelSettingsScope().chatgpt || {}; }
+function settingsModelSelectable(model) { return window.ForgeRoleModels.selectable(settingsRole, model); }
+function modelSettingsAction(action, input) { return window.ForgeRoleModels.invoke(bridge, settingsRole, action, input); }
+
+function renderModelSettingsScope() {
+  const role = window.ForgeRoleModels.roleInfo(settingsRole), entry = modelSettingsScope();
+  const legacy = settingsRole === 'approval' && !entry.enabled && appState?.approvalReviewer?.model;
+  $('settings-title').textContent = role ? `${role.name}模型设置` : '主模型设置';
+  $('settings-scope-hint').hidden = !role;
+  $('settings-scope-hint').textContent = role ? entry.enabled
+    ? `当前使用独立配置，仅用于${role.name}。账号和密钥独立保存。`
+    : legacy ? `当前连接使用审批模型 ${legacy}。保存下方配置后，审批将使用独立连接。`
+    : `当前跟随主模型。保存下方配置后，${role.name}将独立使用所选模型和账号。` : '';
+  $('settings-role-reset').hidden = !role;
+  $('settings-role-reset').disabled = !role || !(entry.enabled || legacy) || contextBusy() || settingsSaving || isChatGPTBusy();
+}
+
 function catalogIdentity(provider, authMode, state = appState) {
   const config = state?.settings?.providers?.[provider] || {};
   const account = provider === 'openai' && authMode === 'chatgpt';
@@ -930,10 +950,10 @@ function invalidateCatalogs() {
   invalidateSettingsCatalog();
 }
 
-function savedConnectionReady(provider, authMode) {
-  if (provider === 'openai' && authMode === 'chatgpt') return appState?.chatgpt?.session?.status === 'connected' && appState?.chatgpt?.session?.sharing === true;
+function savedConnectionReady(provider, authMode, state = appState) {
+  if (provider === 'openai' && authMode === 'chatgpt') return state?.chatgpt?.session?.status === 'connected' && state?.chatgpt?.session?.sharing === true;
   if (provider === 'ollama') return true;
-  return appState?.settings?.providers?.[provider]?.hasKey === true;
+  return state?.settings?.providers?.[provider]?.hasKey === true;
 }
 
 function modelSettingsDraft() {
@@ -953,8 +973,8 @@ function modelSettingsDraft() {
 
 function modelSettingsDraftSnapshot() {
   const draft = modelSettingsDraft();
-  const session = appState?.chatgpt?.session;
-  return { ...draft, profileId: draft.authMode === 'chatgpt' ? session?.profileId || '' : '', accountStatus: draft.authMode === 'chatgpt' ? session?.status || '' : '', sharing: draft.authMode === 'chatgpt' && session?.sharing === true };
+  const session = modelSettingsChatGPT().session;
+  return { ...draft, role: settingsRole, profileId: draft.authMode === 'chatgpt' ? session?.profileId || '' : '', accountStatus: draft.authMode === 'chatgpt' ? session?.status || '' : '', sharing: draft.authMode === 'chatgpt' && session?.sharing === true };
 }
 
 function settingsCatalogMatches() {
@@ -967,7 +987,7 @@ function settingsCatalogMatches() {
 }
 
 function selectedSettingsModel() {
-  return settingsCatalogMatches() ? settingsCatalog.models.find(model => model.id === $('chatgpt-model-select').value && model.compatible !== false && model.supportsTools !== false) : undefined;
+  return settingsCatalogMatches() ? settingsCatalog.models.find(model => model.id === $('chatgpt-model-select').value && settingsModelSelectable(model)) : undefined;
 }
 
 function selectedModelMetadata() {
@@ -1056,7 +1076,7 @@ function renderSettingsCatalog() {
   (catalog?.models || []).forEach((model) => {
     const option = element('option', '', model.displayName === model.id ? model.id : `${model.displayName} · ${model.id}`);
     option.value = model.id;
-    option.disabled = model.compatible === false || model.supportsTools === false;
+    option.disabled = !settingsModelSelectable(model);
     select.append(option);
   });
   select.value = catalog?.models.some((model) => model.id === current) ? current : '';
@@ -1064,7 +1084,7 @@ function renderSettingsCatalog() {
   if (settingsCatalogLoading) message = ollama ? '正在读取 Ollama 服务中已安装的模型…' : '正在获取当前连接配置的模型目录…';
   else if (settingsCatalogError) message = settingsCatalogError;
   else if (catalog && !catalog.models.length) message = ollama ? 'Ollama 服务中没有已安装的模型，请准备模型后刷新。' : '目录中没有可选择的模型，请检查连接配置后重新获取。';
-  else if (catalog) message = ollama ? `已读取 ${catalog.models.length} 个已安装模型；不支持编程工具的模型不可选作任务模型。` : `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
+  else if (catalog) message = ollama && window.ForgeRoleModels.requiresTools(settingsRole) ? `已读取 ${catalog.models.length} 个已安装模型；不支持编程工具的模型不可选作任务模型。` : `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
   $('settings-model-catalog-message').textContent = message;
   $('settings-model-catalog-message').hidden = !message;
   $('settings-model-refresh').disabled = contextBusy() || settingsSaving || settingsCatalogLoading || isChatGPTBusy();
@@ -1108,17 +1128,16 @@ async function fetchSettingsCatalog(force = true) {
   renderSettingsCatalog();
   refreshControlLocks();
   try {
-    if (authMode === 'chatgpt' && !savedConnectionReady(provider, authMode)) throw new Error('请先连接 ChatGPT 并同意使用套餐用量。');
+    if (authMode === 'chatgpt' && !savedConnectionReady(provider, authMode, modelSettingsScope())) throw new Error('请先连接 ChatGPT 并同意使用套餐用量。');
     if (provider === 'ollama' && (!Number.isInteger(draft.contextWindowTokens) || draft.contextWindowTokens < 4096 || draft.contextWindowTokens > 2097152)) throw new Error('模型上下文必须为 4096 至 2097152 之间的整数 Token。');
-    if (typeof bridge.previewModelCatalog !== 'function') throw new Error('当前版本不支持预览模型目录，请更新软件后重试。');
-    const result = await bridge.previewModelCatalog(draft);
+    const result = await modelSettingsAction('preview', draft);
     const current = modelSettingsDraftSnapshot();
     if (request !== settingsCatalogRequest || Object.keys(snapshot).some(key => snapshot[key] !== current[key]) || !$('settings-dialog').open) return;
     if (typeof result?.selectionToken !== 'string' || !result.selectionToken) throw new Error('模型目录验证失败，请重新获取。');
     settingsCatalog = normalizeCatalog({ ...result, provider: result.provider || provider, authMode: result.authMode || authMode }, provider, authMode);
     settingsCatalogDraft = snapshot;
     renderSettingsCatalog();
-    if (settingsCatalog.models.some(model => model.id === selected && model.compatible !== false && model.supportsTools !== false)) $('chatgpt-model-select').value = selected;
+    if (settingsCatalog.models.some(model => model.id === selected && settingsModelSelectable(model))) $('chatgpt-model-select').value = selected;
   } catch (error) { if (request === settingsCatalogRequest) settingsCatalogError = errorText(error); }
   finally { if (request === settingsCatalogRequest) { settingsCatalogLoading = false; renderSettingsCatalog(); refreshControlLocks(); } }
 }
@@ -1239,7 +1258,7 @@ function count(value) {
 }
 
 function isChatGPTBusy() {
-  return chatgptBusy || appState?.chatgpt?.session?.status === 'connecting';
+  return chatgptBusy || appState?.chatgpt?.session?.status === 'connecting' || !!settingsRole && modelSettingsChatGPT().session?.status === 'connecting';
 }
 
 function selectedAuthMode() {
@@ -1291,6 +1310,7 @@ function refreshControlLocks() {
   $('api-key-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
   $('settings-model-refresh').disabled = settingsLocked || settingsCatalogLoading;
   $('close-settings').disabled = settingsSaving;
+  renderModelSettingsScope();
   if (isChatGPTBusy()) {
     document.querySelectorAll('button,input,select,textarea').forEach((control) => {
       if (control.id === 'chatgpt-cancel-sign-in') return;
@@ -1353,7 +1373,7 @@ function chatgptErrorInfo(value) {
 }
 
 function chatgptStorageError() {
-  for (const value of [appState?.chatgpt?.session?.error, chatgptLocalError]) {
+  for (const value of [modelSettingsChatGPT().session?.error, chatgptLocalError]) {
     const error = chatgptErrorInfo(value);
     if (error && Object.hasOwn(chatgptStorageMessages, error.code)) return error;
   }
@@ -1379,7 +1399,7 @@ function chatgptDisplayMessages(values) {
 
 function renderChatGPTState() {
   restoreChatGPTControls();
-  const chatgpt = appState?.chatgpt || {};
+  const chatgpt = modelSettingsChatGPT();
   const session = chatgpt.session || { status: 'disconnected', sharing: false };
   const statuses = { disconnected: '未连接', connecting: '等待官方浏览器授权', connected: '已登录', reauth_required: '需要重新授权' };
   const storageError = chatgptStorageError();
@@ -1426,7 +1446,9 @@ function renderChatGPTState() {
 
 async function runChatGPTAction(action, callback) {
   if (contextBusy() || settingsSaving || reasoningSaving || isChatGPTBusy()) return;
-  if (['signin', 'profile', 'disconnect', 'retry'].includes(action)) invalidateCatalogs();
+  if (['signin', 'profile', 'disconnect', 'retry'].includes(action)) {
+    if (settingsRole) invalidateSettingsCatalog(); else invalidateCatalogs();
+  }
   chatgptLocalError = '';
   chatgptBusy = true;
   chatgptAction = action;
@@ -1449,11 +1471,11 @@ async function runChatGPTAction(action, callback) {
 
 async function signInChatGPT(options = {}) {
   if (chatgptStorageError()) { renderChatGPTState(); return; }
-  const session = appState?.chatgpt?.session || {};
+  const session = modelSettingsChatGPT().session || {};
   const input = { ...options };
   if (!input.newProfile && session.profileId) input.profileId = session.profileId;
   if (!input.newProfile && (session.status === 'reauth_required' || (session.status === 'connected' && !session.sharing))) input.reconsent = true;
-  await runChatGPTAction('signin', () => bridge.chatgptSignIn(input));
+  await runChatGPTAction('signin', () => modelSettingsAction('signin', input));
 }
 
 async function cancelChatGPTSignIn() {
@@ -1461,7 +1483,7 @@ async function cancelChatGPTSignIn() {
   chatgptCancelling = true;
   renderChatGPTState();
   try {
-    await bridge.chatgptCancelSignIn();
+    await modelSettingsAction('cancel');
     updateState(await bridge.getState());
   } catch (error) { chatgptLocalError = chatgptErrorInfo(error); }
   finally { chatgptCancelling = false; renderChatGPTState(); }
@@ -1472,7 +1494,7 @@ async function refreshChatGPTModels() {
 }
 
 async function retryChatGPTStorage() {
-  await runChatGPTAction('retry', () => bridge.chatgptRetryStorage());
+  await runChatGPTAction('retry', () => modelSettingsAction('retry'));
 }
 
 function renderUsageStats(stats) {
@@ -2226,6 +2248,8 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   const oldRoot = appState?.workspace?.root;
   const oldIdentity = activeCatalogIdentity();
   appState = state;
+  window.synoraRoleModels?.update(state);
+  sideChatControls?.update(state);
   permissionControls?.update(state);
   document.querySelector('.welcome-note').textContent = state.permissionMode === 'full' ? '当前为完全控制：操作将自动批准。' : state.permissionMode === 'assist' ? 'AI 自动审批，按任务范围允许或拒绝操作。' : '写入文件与执行命令前会请求你的确认。';
   if (state.browser) browserController?.apply(state.browser);
@@ -3885,6 +3909,9 @@ function handleEvent(event) {
   if (!belongsToCurrentWorkspace(event) && !['window-state', 'editor-close-request', 'find-result'].includes(event.type)) return;
   if (['run-start', 'run-end', 'terminal-start', 'terminal-end'].includes(event.type)) ++taskStateVersion;
   switch (event.type) {
+    case 'side-chat':
+      sideChatControls?.apply(event.sideChat, event.workspaceId);
+      break;
     case 'context-compaction-start':
       beginContextCompaction(event);
       scrollBottom();
@@ -4076,7 +4103,7 @@ function refreshSelectedFile() {
 
 function fillProvider(provider) {
   invalidateSettingsCatalog();
-  const settings = appState?.settings || {};
+  const settings = modelSettingsConfig();
   const config = settings.providers?.[provider] || {};
   const current = settings.provider === provider;
   $('openai-auth-mode').value = provider === 'openai' && (config.authMode || (current ? settings.authMode : '')) === 'chatgpt' ? 'chatgpt' : 'apiKey';
@@ -4093,12 +4120,14 @@ function fillProvider(provider) {
   renderChatGPTState();
 }
 
-function openSettings() {
+function openSettings(role = null) {
   if (contextBusy() || isChatGPTBusy()) return;
+  settingsRole = window.ForgeRoleModels.roleInfo(role) ? role : null;
+  $('settings-dialog').classList.toggle('role-model-settings', !!settingsRole);
   closeReasoningPopup();
   ++catalogRequest;
   catalogLoading = false;
-  const provider = appState?.settings?.provider || 'openai';
+  const provider = modelSettingsConfig().provider || 'openai';
   $('provider-select').value = provider;
   fillProvider(provider);
   if (!$('settings-dialog').open) $('settings-dialog').showModal();
@@ -4118,11 +4147,12 @@ async function saveSettings(event) {
   settingsSaving = true;
   refreshControlLocks();
   try {
-    const state = await bridge.saveModelSettings(input);
+    const role = settingsRole;
+    const state = await modelSettingsAction('save', input);
     updateState(state);
     $('api-key-input').value = '';
     $('settings-dialog').close();
-    notice('模型配置已保存。发送任务时将使用所选模型。');
+    notice(role ? `${window.ForgeRoleModels.roleInfo(role).name}独立模型配置已保存。` : '模型配置已保存。发送任务时将使用所选模型。');
   } catch (error) { $('settings-error').textContent = errorText(error); $('settings-error').hidden = false; }
   finally { settingsSaving = false; renderChatGPTState(); }
 }
@@ -4274,10 +4304,21 @@ function bindUI() {
   $('model-search').addEventListener('input', renderModelList);
   $('model-list-refresh').addEventListener('click', () => fetchCurrentCatalog(true));
   $('model-list-retry').addEventListener('click', () => fetchCurrentCatalog(true));
-  $('model-open-settings').addEventListener('click', openSettings);
-  $('reasoning-open-settings').addEventListener('click', openSettings);
+  $('model-open-settings').addEventListener('click', () => openSettings());
+  $('reasoning-open-settings').addEventListener('click', () => openSettings());
   $('settings-model-refresh').addEventListener('click', () => fetchSettingsCatalog(true));
-  $('settings-dialog').addEventListener('close', () => { invalidateSettingsCatalog(); $('api-key-input').value = ''; ++catalogRequest; catalogLoading = false; });
+  $('settings-dialog').addEventListener('close', () => {
+    if ($('settings-dialog').open) return;
+    invalidateSettingsCatalog(); $('api-key-input').value = ''; settingsRole = null; chatgptLocalError = ''; ++catalogRequest; catalogLoading = false;
+  });
+  $('settings-role-reset').addEventListener('click', async () => {
+    const role = settingsRole;
+    if (!role || contextBusy() || settingsSaving || isChatGPTBusy()) return;
+    settingsSaving = true; refreshControlLocks();
+    try { updateState(await bridge.resetRoleModel({ role })); $('api-key-input').value = ''; $('settings-dialog').close(); notice(`${window.ForgeRoleModels.roleInfo(role).name}已恢复跟随主模型。`); }
+    catch (error) { $('settings-error').textContent = errorText(error); $('settings-error').hidden = false; }
+    finally { settingsSaving = false; renderChatGPTState(); }
+  });
   $('close-settings').addEventListener('click', () => { if (isChatGPTBusy() || settingsSaving) return; $('api-key-input').value = ''; $('settings-dialog').close(); });
   $('settings-dialog').addEventListener('cancel', (event) => { if (isChatGPTBusy() || settingsSaving) { event.preventDefault(); return; } $('api-key-input').value = ''; });
   $('provider-select').addEventListener('change', (event) => fillProvider(event.target.value));
@@ -4295,11 +4336,11 @@ function bindUI() {
   $('chatgpt-cancel-sign-in').addEventListener('click', cancelChatGPTSignIn);
   $('chatgpt-profile-select').addEventListener('change', () => {
     const id = $('chatgpt-profile-select').value;
-    if (id) runChatGPTAction('profile', () => bridge.chatgptSelectProfile({ id }));
+    if (id) runChatGPTAction('profile', () => modelSettingsAction('profile', { id }));
   });
-  $('chatgpt-disconnect').addEventListener('click', () => runChatGPTAction('disconnect', () => bridge.chatgptDisconnect()));
+  $('chatgpt-disconnect').addEventListener('click', () => runChatGPTAction('disconnect', () => modelSettingsAction('disconnect')));
   $('chatgpt-refresh-models').addEventListener('click', refreshChatGPTModels);
-  $('chatgpt-open-usage').addEventListener('click', () => runChatGPTAction('usage', () => bridge.chatgptOpenUsage()));
+  $('chatgpt-open-usage').addEventListener('click', () => runChatGPTAction('usage', () => modelSettingsAction('usage')));
   $('chatgpt-model-select').addEventListener('change', () => {
     $('settings-error').hidden = true;
     refreshControlLocks();
@@ -4384,8 +4425,14 @@ async function initialize() {
   }
   appUpdateControls = window.ForgeAppUpdate.create({ bridge, button: $('app-update-button'), label: $('app-update-label'), progress: $('app-update-progress'), notice, isBusy: () => contextBusy() || editorSaving || isChatGPTBusy() });
   window.synoraAppUpdate = appUpdateControls;
+  window.synoraRoleModels = window.ForgeRoleModels.create({ document, bridge, onConfigure: openSettings,
+    onState: updateState, notice, isBusy: () => contextBusy() || settingsSaving || isChatGPTBusy() });
+  sideChatControls = window.ForgeSideChat.create({ bridge, getWorkspaceId: currentWorkspaceId, notice,
+    onOpen: () => { if (!$('preview-panel').hidden) setPreviewOpen(false); },
+    onLink: url => browserController?.open({ url }).catch(() => {}) });
+  window.synoraSideChat = sideChatControls;
   browserController = window.ForgeBrowser.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, showPanel: () => { if (!previewPinned) setPreviewPinned(true); setPreviewOpen(true); showPreviewTab('browser'); }, notice });
-  chatSelectionMenu = window.ForgeChatSelectionMenu.create({ container: $('messages'), scrollContainer: $('message-scroll'), menu: $('chat-selection-menu'), copy: text => bridge.copyText({ text }), search: url => browserController.open({ url }), getContextKey: () => `${currentWorkspaceId() || ''}:${sessionId || ''}`, notice });
+  chatSelectionMenu = window.ForgeChatSelectionMenu.create({ container: $('messages'), scrollContainer: $('message-scroll'), menu: $('chat-selection-menu'), copy: text => bridge.copyText({ text }), search: url => browserController.open({ url }), ask: text => sideChatControls.open(text), getContextKey: () => `${currentWorkspaceId() || ''}:${sessionId || ''}`, notice });
   permissionControls = window.ForgePermissions.create({ bridge, getWorkspaceId: currentWorkspaceId, isCurrentWorkspace: belongsToCurrentWorkspace, notice, onOpen: () => fetchCurrentCatalog() });
   sessionControls = window.ForgeSessions.create({ bridge, onSelect: loadSession, onNew: () => newSession(), onDelete: deleteSessionRecord, notice });
   bridge.onEvent(handleEvent);
@@ -4409,6 +4456,7 @@ window.aiCodeCommands = Object.freeze({
     hasWorkspace: !!appState?.workspace,
     hasChatGPTAccount: !!appState?.chatgpt?.session?.profileId || ['connected', 'reauth_required'].includes(appState?.chatgpt?.session?.status),
     sidebarVisible: !document.documentElement.classList.contains('sidebar-hidden'),
+    sideChatVisible: document.documentElement.classList.contains('side-chat-open'),
     terminalVisible: !$('terminal-panel').hidden,
     previewVisible: !$('preview-panel').hidden,
     previewPinned,
@@ -4436,9 +4484,15 @@ window.aiCodeCommands = Object.freeze({
       case 'logout': return runChatGPTAction('disconnect', () => bridge.chatgptDisconnect());
       case 'quit': return bridge.quitApp();
       case 'settings': return openSettings();
+      case 'role-settings': return window.synoraRoleModels?.openList();
+      case 'role-subagent-settings': return window.synoraRoleModels?.open('subagent');
+      case 'role-approval-settings': return window.synoraRoleModels?.open('approval');
+      case 'role-completion-settings': return window.synoraRoleModels?.open('completion');
+      case 'role-sidebar-settings': return window.synoraRoleModels?.open('sidebar');
       case 'import-background': return window.synoraAppearance?.importBackground();
       case 'appearance-settings': return window.synoraAppearance?.open();
       case 'toggle-sidebar': return toggleSidebar();
+      case 'toggle-side-chat': return sideChatControls.toggle();
       case 'toggle-terminal': return setTerminalOpen($('terminal-panel').hidden);
       case 'pin-summary': return setPreviewPinned(!previewPinned);
       case 'open-terminal': return setTerminalOpen(true, true);

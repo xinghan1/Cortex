@@ -4,7 +4,9 @@ const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { AppUpdater } = require('./core/app-updater.cjs');
+const { createUpdateFetch } = require('./core/update-transport.cjs');
 const { Store } = require('./core/store.cjs');
+const { RoleModels, ROLE_KEYS } = require('./core/role-models.cjs');
 const { makePendingContextUsage } = require('./core/session-metrics.cjs');
 const { createTurnUsage } = require('./core/turn-usage.cjs');
 const { installEditorContextMenu } = require('./core/editor-context-menu.cjs');
@@ -49,7 +51,9 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
+let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
+const roleAccounts = new Map();
+const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
@@ -105,11 +109,12 @@ function installAppUpdate() {
       requireUpdateIdle();
       const contexts = [...windows.values()].flatMap(host => [...host.contexts]);
       for (const context of contexts) context.cancelPromptCompletion();
-      await Promise.all([...contexts.map(context => context.settlePromptCompletion()), sessionRestore?.flush(), persistentTaskUndo?.flush(), permissionPreferences?.settled(),
-        approvalReviewerPreferences?.settled(), sharedQueue]);
+      await Promise.all([...contexts.map(context => context.settlePromptCompletion()), ...contexts.map(context => context.settleSideChat()),
+        sessionRestore?.flush(), persistentTaskUndo?.flush(), permissionPreferences?.settled(),
+        approvalReviewerPreferences?.settled(), roleModels?.settled(), sharedQueue]);
       requireUpdateIdle();
       await launchInstaller(filename);
-      chatgpt?.cancelSignIn();
+      cancelAccountSignIns();
       quitForUpdate();
       return appUpdateSnapshot();
     } finally {
@@ -125,15 +130,43 @@ function startUpdateChecks() {
   updateTimer = setTimeout(check, 15000); updateTimer.unref();
   updateInterval = setInterval(check, 4 * 60 * 60 * 1000); updateInterval.unref();
 }
-function redact(value) { return chatgpt ? chatgpt.redact(store.redact(value)) : store.redact(value); }
+function redact(value) {
+  let clean = store.redact(value);
+  if (chatgpt) clean = chatgpt.redact(clean);
+  if (roleModels) clean = roleModels.redact(clean);
+  for (const account of roleAccounts.values()) clean = account.redact(clean);
+  return clean;
+}
 function requireGlobalIdle() {
   if ([...windows.values()].some(context => context.busy || context.hasPendingPrompts)) throw new Error('请先停止所有窗口的任务，并发送或移除待发送消息，再更改共享配置。');
 }
 function requireSharedReady() { if (sharedMutations) throw new Error('共享配置或账号正在更新，请稍后启动任务。'); }
+function roleAccount(role) {
+  if (!ROLE_KEYS.includes(role) || !roleAccounts.has(role)) throw new Error('模型用途无效。');
+  return roleAccounts.get(role);
+}
+function cancelAccountSignIns() {
+  chatgpt?.cancelSignIn();
+  for (const account of roleAccounts.values()) account.cancelSignIn();
+}
+async function publishRoleAccount(role) {
+  const state = await roleAccount(role).publicState();
+  const identity = JSON.stringify([state.session.status, state.session.profileId, state.session.sharing]);
+  const previous = roleAccountIdentities.get(role);
+  roleAccountIdentities.set(role, identity);
+  if (previous !== undefined && previous !== identity) roleRuntime?.invalidate(role);
+  await broadcastAllStates();
+}
 function mutateShared(operation) {
   requireGlobalIdle();
   sharedMutations++;
-  const pending = sharedQueue.then(async () => { requireGlobalIdle(); return operation(); });
+  const pending = sharedQueue.then(async () => {
+    requireGlobalIdle();
+    const contexts = [...windows.values()].flatMap(host => [...host.contexts]);
+    for (const context of contexts) context.cancelPromptCompletion();
+    await Promise.allSettled(contexts.map(context => context.settlePromptCompletion()));
+    requireGlobalIdle(); return operation();
+  });
   sharedQueue = pending.catch(() => {});
   return pending.finally(() => { sharedMutations--; });
 }
@@ -288,6 +321,7 @@ const promptCompletion = createPromptCompletionController({
     && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId,
   async getConfig(snapshot, signal) {
     signal.throwIfAborted();
+    if (roleModels.isEnabled('completion')) return roleRequestConfig('completion', { controller: { signal } });
     const connection = await catalogContext();
     signal.throwIfAborted();
     const profileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
@@ -299,6 +333,13 @@ const promptCompletion = createPromptCompletionController({
   },
   async validateConfig(config, snapshot, signal) {
     signal.throwIfAborted();
+    if (config.modelRole === 'completion') {
+      const current = await roleRequestConfig('completion', { controller: { signal } });
+      if (current.connectionKey !== config.connectionKey || current.modelRole !== 'completion')
+        throw new DOMException('补全模型连接已变化。', 'AbortError');
+      return;
+    }
+    if (roleModels.isEnabled('completion')) throw new DOMException('补全模型配置已变化。', 'AbortError');
     const connection = await catalogContext();
     signal.throwIfAborted();
     if (connection.key !== config.connectionKey || configRevision !== snapshot.configRevision
@@ -307,6 +348,19 @@ const promptCompletion = createPromptCompletionController({
       throw new DOMException('模型连接已变化，提示词补全已取消。', 'AbortError');
   },
   requestModel: dispatchModelRequest, onUsage: recordRunUsage, redact,
+});
+const sideChat = createSideChatController({
+  getConfig: ({ signal }) => {
+    requireSharedReady();
+    if (shuttingDown || quitting) throw new DOMException('窗口正在关闭。', 'AbortError');
+    return roleRequestConfig('sidebar', { controller: { signal } }, publicSettings().model);
+  },
+  requestModel: dispatchModelRequest, redact, onUsage: recordRunUsage,
+  emit: event => {
+    // Temporary questions never enter the main run's replay or session archive.
+    if (win && !win.isDestroyed() && host.active === context)
+      win.webContents.send('forge:event', { ...event, workspaceId });
+  },
 });
 function publicSettings() {
   const settings = store.publicSettings();
@@ -651,7 +705,13 @@ async function approve(request, { signal } = {}) {
   return approved;
 }
 function dispatchModelRequest(config) {
+  if (config.modelRole) return roleRuntime.dispatch(config);
   return config.authMode === 'chatgpt' ? chatgpt.requestModel({ ...config, requestModel }) : requestModel(config);
+}
+async function roleRequestConfig(role, run, modelOverride) {
+  if (!roleModels.isEnabled(role)) return currentRequestConfig(run, modelOverride);
+  const config = await roleRuntime.config(role, { signal: run.controller.signal, permissionMode });
+  return { ...config, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
 }
 async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
@@ -690,7 +750,7 @@ async function reviewOperation(request, { signal, runId }) {
   if (!run || run.id !== runId || signal.aborted) throw new DOMException('审批已取消。', 'AbortError');
   const sessionId = currentSession.id;
   restoreApprovalReviewer(await catalogContext());
-  const config = await currentRequestConfig(run, approvalReviewerModel || undefined);
+  const config = await roleRequestConfig('approval', { ...run, controller: { signal } }, approvalReviewerModel || undefined);
   signal.throwIfAborted();
   const userIntent = currentSession.messages.filter(message => message.role === 'user' && typeof message.content === 'string').map(message => message.content);
   if (run.command) userIntent.push('用户在终端提交的完整命令：' + run.command);
@@ -699,8 +759,10 @@ async function reviewOperation(request, { signal, runId }) {
 }
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
+  const roleState = await roleRuntime.publicState(publicSettings());
   const context = await catalogContext({}, account);
   restoreApprovalReviewer(context);
+  if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
   reconcileReasoningSelection(context);
   const sessions = (await store.listSessions()).filter(session => !recentProjects?.isHidden(session.workspace));
@@ -713,7 +775,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -1013,7 +1075,7 @@ async function startTask(input) {
             return browser.execute(name, args, { ...options, approve });
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);
@@ -1301,6 +1363,50 @@ function buildHandlers() {
     saveSettings: async arg => { await saveProjectSettings(arg); await broadcastAllStates(); return state(); },
     previewModelCatalog: previewModelSettingsCatalog,
     saveModelSettings: commitModelSettings,
+    previewRoleModelCatalog: async arg => {
+      requireGlobalIdle(); requireSharedReady();
+      return roleRuntime.preview(arg?.role, arg);
+    },
+    saveRoleModelSettings: arg => mutateShared(async () => {
+      await roleRuntime.save(arg?.role, arg);
+      await broadcastAllStates(); return state();
+    }),
+    resetRoleModel: arg => mutateShared(async () => {
+      await roleRuntime.reset(arg?.role);
+      if (arg.role === 'approval') {
+        const connection = restoreApprovalReviewer(await catalogContext());
+        if (connection) await approvalReviewerPreferences.set(tools?.root || null, connection, null);
+        approvalReviewerModel = null; approvalController.reconcile();
+      }
+      await broadcastAllStates(); return state();
+    }),
+    roleChatgptSignIn: arg => mutateShared(async () => {
+      const account = roleAccount(arg?.role);
+      const options = {};
+      for (const key of ['newProfile', 'reconsent', 'profileId']) if (Object.hasOwn(arg, key)) options[key] = arg[key];
+      await account.signIn(options); await broadcastAllStates(); return state();
+    }),
+    roleChatgptCancelSignIn: arg => { roleAccount(arg?.role).cancelSignIn(); return null; },
+    roleChatgptSelectProfile: arg => mutateShared(async () => {
+      await roleAccount(arg?.role).selectProfile(arg?.id); await broadcastAllStates(); return state();
+    }),
+    roleChatgptDisconnect: arg => mutateShared(async () => {
+      await roleAccount(arg?.role).disconnect(); await broadcastAllStates(); return state();
+    }),
+    roleChatgptRetryStorage: arg => mutateShared(async () => {
+      await roleAccount(arg?.role).retryLocalRead(); await broadcastAllStates(); return state();
+    }),
+    roleChatgptOpenUsage: async arg => {
+      roleAccount(arg?.role); await shell.openExternal('https://chatgpt.com/settings/usage'); return null;
+    },
+    sideChatOpen: () => { requireSharedReady(); return sideChat.open(); },
+    sideChatSend: arg => {
+      requireSharedReady();
+      if (shuttingDown || quitting || host.active !== context) throw new Error('窗口正在切换或关闭。');
+      return sideChat.send(arg);
+    },
+    sideChatStop: () => sideChat.stop(),
+    sideChatClose: () => sideChat.hide(),
     getDeepSeekBalance: async () => {
       const { fetchDeepSeekBalance, isOfficialDeepSeekURL } = await import('./core/deepseek-account.mjs');
       const baseUrl = store.settings.providers.deepseek.baseUrl;
@@ -1622,6 +1728,7 @@ async function shutdown() {
   ++stopGeneration;
   shuttingDown = true;
   promptCompletion.abort();
+  sideChat.close();
   pauseQueue('窗口正在关闭。');
   const run = activeRun;
   run?.controller.abort(); terminal?.stop();
@@ -1629,8 +1736,10 @@ async function shutdown() {
   if (run?.done) await run.done;
   if (fileOperationDone) await fileOperationDone;
   await promptCompletion.settled();
+  await sideChat.settled();
   await permissionPreferences.settled();
   await approvalReviewerPreferences.settled();
+  await roleModels.settled();
 }
 function initializeBrowser() {
   browser = new BrowserPanel({ window: win, externalLifecycle: true, isForeground: () => host.active === context,
@@ -1669,9 +1778,10 @@ const context = {
   cancelEditorClose() { editorCloseRequest?.resolve(true); editorCloseRequest = null; },
   cancelPromptCompletion: () => promptCompletion.abort(),
   settlePromptCompletion: () => promptCompletion.settled(),
-  dispose: () => { promptCompletion.abort(); browser?.destroy(); },
-  abort() { ++stopGeneration; promptCompletion.abort(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
-  get activeRun() { return activeRun; }, get busy() { return Boolean(activeRun || localOperation || promptPreflights || fileOperationDone); },
+  settleSideChat: () => sideChat.settled(),
+  dispose: () => { promptCompletion.abort(); sideChat.close(); browser?.destroy(); },
+  abort() { ++stopGeneration; promptCompletion.abort(); sideChat.close(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
+  get activeRun() { return activeRun; }, get busy() { return Boolean(activeRun || localOperation || promptPreflights || fileOperationDone || sideChat.snapshot().running); },
   get hasPendingPrompts() { return pendingPrompts.length > 0; },
   get editorDirty() { return editorDirty; },
   get hasFileOperation() { return !!fileOperationDone; },
@@ -1714,7 +1824,7 @@ const context = {
     win.on('close', event => {
       if (updateInstalling && quitting !== true) { event.preventDefault(); return; }
       if (closeAllowed || quitting === true) return;
-      if (!host.activeRun && !host.editorDirty && !host.hasFileOperation) { host.abortAll(); shuttingDown = true; return; }
+      if (!host.busy && !host.editorDirty && !host.hasFileOperation) { host.abortAll(); shuttingDown = true; return; }
       event.preventDefault();
       if (closing) return;
       closing = true;
@@ -1763,6 +1873,7 @@ async function boot() {
   ({ reviewApproval } = await import('./core/approval-review.mjs'));
   ({ createApprovalController } = await import('./core/approval-controller.mjs'));
   ({ createPromptCompletionController } = await import('./core/prompt-completion.mjs'));
+  ({ createSideChatController } = await import('./core/side-chat.mjs'));
   ({ runAgent, runDemo } = await import('./core/agent.mjs'));
   ({ requestModel } = await import('./core/providers.mjs'));
   ({ TerminalSession } = await import('./core/terminal.mjs'));
@@ -1800,8 +1911,21 @@ async function boot() {
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await chatgpt.init();
+  roleModels = await new RoleModels(dataDir, safeStorage).init();
+  for (const role of ROLE_KEYS) {
+    const account = new ChatGPTConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage,
+      openExternal: url => shell.openExternal(url), onChange: () => {
+        publishRoleAccount(role).catch(() => {});
+      } });
+    roleAccounts.set(role, account); await account.init();
+  }
+  const { RoleModelRuntime } = await import('./core/role-model-runtime.mjs');
+  roleRuntime = new RoleModelRuntime({ configs: roleModels, accounts: roleAccounts, catalog: modelCatalog,
+    deriveCapabilities: deriveModelCapabilities, requestModel, redact });
   updateEnabled = !smoke && app.isPackaged && isInstalledBuild && process.platform === 'win32' && process.arch === 'x64';
-  appUpdater = new AppUpdater({ currentVersion: app.getVersion(), dataDir, enabled: updateEnabled, onChange: publishAppUpdate });
+  const updateSession = electronSession.fromPartition('synora-updates', { cache: false });
+  appUpdater = new AppUpdater({ currentVersion: app.getVersion(), dataDir, enabled: updateEnabled,
+    fetchImpl: createUpdateFetch({ net, session: updateSession }), onChange: publishAppUpdate });
   Menu.setApplicationMenu(null);
   electronSession.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   electronSession.defaultSession.setPermissionCheckHandler(() => false);
@@ -1819,6 +1943,13 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'role-models') {
+    const result = { version: app.getVersion(), roleModels: await require('./core/smoke-role-models.cjs')({ win, output, dataDir }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_ROLE_MODELS_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'command-stop') {
     const result = { version: app.getVersion(), commandStop: await require('./core/smoke-command-stop.cjs')({
       win, output, dataDir, configureWorkspaceTools: decorate => { WorkspaceTools = decorate(WorkspaceTools); },
@@ -1829,6 +1960,7 @@ async function smokeTest() {
     app.quit(); return;
   }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'updater') {
+    const transport = await require('./core/smoke-update-transport.cjs')({ output, dataDir, net, electronSession });
     const configureUpdater = async options => {
       await appUpdater.dispose();
       updateEnabled = true;
@@ -1837,7 +1969,7 @@ async function smokeTest() {
       publishAppUpdate();
       return appUpdater;
     };
-    const result = { version: app.getVersion(), updater: await require('./core/smoke-updater.cjs')({
+    const result = { version: app.getVersion(), transport, updater: await require('./core/smoke-updater.cjs')({
       win, output, dataDir, configureUpdater, getHost: () => windows.get(win.webContents.id),
     }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -2187,11 +2319,11 @@ app.on('before-quit', event => {
   if (updateInstalling && quitting !== true) { event.preventDefault(); return; }
   if (quitting === true) return;
   if (quitting === 'pending') { event.preventDefault(); return; }
-  if (![...windows.values()].some(context => context.activeRun || context.editorDirty || context.hasFileOperation)) {
-    chatgpt?.cancelSignIn();
-    if (sessionRestore?.pending || persistentTaskUndo?.pending) {
+  if (![...windows.values()].some(context => context.busy || context.editorDirty || context.hasFileOperation)) {
+    cancelAccountSignIns();
+    if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations) {
       event.preventDefault(); quitting = 'pending';
-      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush()]).finally(() => { quitting = true; app.quit(); });
+      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
     }
     return;
   }
@@ -2203,7 +2335,7 @@ app.on('before-quit', event => {
       for (const context of contexts) context.scheduleNextPrompt();
       return;
     }
-    chatgpt?.cancelSignIn();
+    cancelAccountSignIns();
     await Promise.allSettled(contexts.map(context => context.shutdown()));
     await sessionRestore?.flush();
     await persistentTaskUndo?.flush();

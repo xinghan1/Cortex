@@ -21,7 +21,7 @@
       popup.setAttribute('role', 'menu'); popup.setAttribute('aria-label', '操作权限');
       popup.append(el('div', 'permission-heading', '如何批准 Synora code 操作？'));
       let mode = 'request', busy = false, saving = false;
-      let reviewerModel = '', reviewerOptions = [];
+      let reviewerModel = '', reviewerOptions = [], independentReviewer = null;
       const close = () => { popup.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };
       const dialog = el('dialog', 'permission-danger-dialog'); dialog.id = 'permission-danger-dialog';
       const heading = el('h2', '', '启用完全控制？'); heading.id = 'permission-danger-title';
@@ -38,6 +38,7 @@
       const reviewerField = el('label', 'approval-reviewer-field', '审批模型');
       const reviewerSelect = el('select'); reviewerSelect.id = 'approval-review-model';
       reviewerSelect.setAttribute('aria-label', '独立 AI 审批模型'); reviewerField.append(reviewerSelect);
+      const reviewerConfigure = el('button', 'text-button', '配置审批模型…'); reviewerConfigure.type = 'button'; reviewerConfigure.id = 'approval-review-configure';
       const render = () => {
         trigger.textContent = options.find(option => option[0] === mode)?.[1] || '请求批准';
         trigger.dataset.mode = mode; trigger.disabled = busy || saving;
@@ -48,21 +49,23 @@
           button.disabled = busy || saving;
         }
         confirm.disabled = busy || saving;
-        const signature = JSON.stringify([reviewerModel, reviewerOptions]);
+        const signature = JSON.stringify([reviewerModel, reviewerOptions, independentReviewer]);
         if (reviewerSelect.dataset.options !== signature) {
           reviewerSelect.replaceChildren();
-          const follow = el('option', '', '跟随当前模型（独立 AI）'); follow.value = ''; reviewerSelect.append(follow);
-          for (const model of reviewerOptions) {
+          const follow = el('option', '', independentReviewer ? `独立配置 · ${independentReviewer.provider} · ${independentReviewer.model}` : '跟随当前模型（独立 AI）');
+          follow.value = independentReviewer?.model || ''; reviewerSelect.append(follow);
+          for (const model of independentReviewer ? [] : reviewerOptions) {
             const option = el('option', '', model.displayName || model.id); option.value = model.id;
             option.disabled = model.textCompatible === false || model.compatible === false && model.textCompatible !== true;
             reviewerSelect.append(option);
           }
-          if (reviewerModel && !reviewerOptions.some(model => model.id === reviewerModel)) {
+          if (!independentReviewer && reviewerModel && !reviewerOptions.some(model => model.id === reviewerModel)) {
             const option = el('option', '', reviewerModel); option.value = reviewerModel; reviewerSelect.append(option);
           }
-          reviewerSelect.dataset.options = signature; reviewerSelect.value = reviewerModel;
+          reviewerSelect.dataset.options = signature; reviewerSelect.value = independentReviewer?.model || reviewerModel;
         }
-        reviewerSelect.disabled = busy || saving;
+        reviewerSelect.disabled = busy || saving || !!independentReviewer;
+        reviewerConfigure.disabled = busy || saving;
       };
       const save = async (next, confirmed = false) => {
         if (busy || saving) return;
@@ -87,9 +90,10 @@
         });
         buttons.push(button); popup.append(button);
       }
-      popup.append(reviewerField);
+      popup.append(reviewerField, reviewerConfigure);
+      reviewerConfigure.addEventListener('click', () => { if (busy || saving) return; close(); window.synoraRoleModels?.open('approval'); });
       reviewerSelect.addEventListener('change', async () => {
-        if (busy || saving) return;
+        if (busy || saving || independentReviewer) return;
         const workspaceId = getWorkspaceId();
         saving = true; render();
         try {
@@ -124,6 +128,8 @@
         mode = options.some(option => option[0] === state.permissionMode) ? state.permissionMode : 'request';
         busy = state.chatgpt?.session?.status === 'connecting';
         reviewerModel = state.approvalReviewer?.model || '';
+        const role = state.roleModels?.approval;
+        independentReviewer = role?.enabled ? role.effective || role.settings || {} : null;
         reviewerOptions = Array.isArray(state.modelCatalog?.models) ? state.modelCatalog.models.map(({ id, displayName, compatible, textCompatible }) => ({ id, displayName, compatible, textCompatible })) : [];
         if (busy) close(); render();
       } };

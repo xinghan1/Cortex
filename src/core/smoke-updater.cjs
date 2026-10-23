@@ -20,7 +20,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
   const pieces = currentVersion.split('.').map(Number), nextVersion = [pieces[0], pieces[1], pieces[2] + 1].join('.');
   const bytes = Buffer.alloc(1024, 0x41); bytes.write('MZ_SYNORA_TEST_BYTES_NOT_AN_EXECUTABLE');
   const digest = createHash('sha256').update(bytes).digest('hex');
-  const requests = [], launches = [], screenshots = [];
+  const requests = [], launches = [], screenshots = [], paletteChecks = [];
   const control = { version: currentVersion, failCheck: true, holdCheck: false, corruptDownload: true, holdDownload: false, failLaunch: true, quitCalls: 0 };
   let releaseCheck, releaseDownload, releaseLaunch, updater, originalAppearance, launchAttempts = 0;
   const fakeFetch = async (url, options) => {
@@ -53,19 +53,60 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
   const inspect = () => js(`(() => {
     const button=document.getElementById('app-update-button'),label=document.getElementById('app-update-label'),progress=document.getElementById('app-update-progress');
     const box=button.getBoundingClientRect(),menus=document.getElementById('app-menu-bar').getBoundingClientRect();
+    const help=document.getElementById('menu-help').getBoundingClientRect(),style=getComputedStyle(button),labelStyle=getComputedStyle(label),labelBox=label.getBoundingClientRect();
+    const svg=button.querySelector('.app-update-icon'),svgBox=svg?.getBoundingClientRect(),svgStyle=svg&&getComputedStyle(svg);
+    const ring=button.querySelector('.app-update-ring'),ringValue=button.querySelector('.app-update-ring-value');
+    const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const ctx=canvas.getContext('2d',{willReadFrequently:true});
+    const rgba=color=>{ctx.clearRect(0,0,1,1);ctx.fillStyle=color;ctx.fillRect(0,0,1,1);return [...ctx.getImageData(0,0,1,1).data];};
+    const root=getComputedStyle(document.documentElement);
     const area=navigator.windowControlsOverlay?.getTitlebarAreaRect?.();
     const point={x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)};
     return {hidden:button.hidden,disabled:button.disabled,status:button.dataset.status,text:label.textContent,title:button.title,
-      region:getComputedStyle(button).getPropertyValue('-webkit-app-region'),progressHidden:progress.hidden,progress:progress.value,
+      region:style.getPropertyValue('-webkit-app-region'),progressHidden:progress.hidden,progress:progress.value,
       ariaProgress:progress.getAttribute('aria-valuenow'),busy:button.getAttribute('aria-busy'),
+      ariaLabel:button.getAttribute('aria-label'),labelHidden:label.hidden||labelStyle.display==='none'||labelStyle.visibility==='hidden'||Number(labelStyle.opacity)===0
+        ||labelBox.width<=1&&labelBox.height<=1&&(labelStyle.clipPath!=='none'||labelStyle.clip!=='auto'),
+      textOutsideLabel:[...button.childNodes].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('').trim(),
+      svg:!!svg,svgVisible:!!svg&&svg.checkVisibility({visibilityProperty:true,opacityProperty:true}),svgShape:!!svg?.querySelector('path,polyline,line'),
+      svgSize:svgBox?{width:svgBox.width,height:svgBox.height}:null,svgPointerEvents:svgStyle?.pointerEvents,
+      ringVisible:!!ring&&ring.checkVisibility({visibilityProperty:true,opacityProperty:true}),ringOffset:ringValue?.getAttribute('stroke-dashoffset'),
+      radius:style.borderTopLeftRadius,background:rgba(style.backgroundColor),ink:rgba(style.color),accent:rgba((root.getPropertyValue('--ui-accent')||root.getPropertyValue('--accent')).trim()),
+      style:document.documentElement.dataset.uiStyle,palette:document.documentElement.dataset.selectionColor,
       box:{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height},
+      helpRight:help.right,helpCenterY:help.top+help.height/2,
       menuRight:menus.right,captionRight:area?.width?area.right:innerWidth,visible:button.checkVisibility({visibilityProperty:true,opacityProperty:true}),
       hit:button.contains(document.elementFromPoint(point.x,point.y)),...point};
   })()`);
+  const assertIcon = rendered => {
+    assert.equal(rendered.hidden, false); assert.equal(rendered.visible, true); assert.equal(rendered.region, 'no-drag');
+    assert.equal(rendered.labelHidden, true, 'Update button must not display status text'); assert.equal(rendered.textOutsideLabel, '');
+    assert.ok(rendered.ariaLabel && rendered.title, 'Icon-only updates need an accessible description and tooltip');
+    assert.equal(rendered.svg, true); assert.equal(rendered.svgVisible, true); assert.equal(rendered.svgShape, true);
+    assert.equal(rendered.ringVisible, rendered.status === 'downloading', 'The circular progress ring must only appear while downloading');
+    assert.equal(rendered.svgPointerEvents, 'none', 'The decorative SVG must not intercept the button');
+    assert.ok(rendered.svgSize.width >= 12 && rendered.svgSize.height >= 12);
+    assert.ok(Math.abs(rendered.box.width - rendered.box.height) <= 0.5, 'Update control must be circular');
+    assert.ok(rendered.box.width >= 24 && rendered.box.width <= 40, 'Update icon must fit the title bar');
+    const radius = parseFloat(rendered.radius);
+    assert.ok(rendered.radius.endsWith('%') ? radius >= 50 : radius >= rendered.box.width / 2, 'Update circle lost its rounded corners');
+    assert.ok(rendered.box.top >= 0 && rendered.box.bottom <= 44.5);
+    assert.ok(Math.abs(rendered.box.top + rendered.box.height / 2 - rendered.helpCenterY) <= 4, 'Update icon is not vertically aligned with Help');
+    assert.ok(rendered.helpRight <= rendered.box.left && rendered.box.left - rendered.helpRight <= 24, 'Update icon must sit directly to the right of Help');
+    assert.ok(rendered.menuRight <= rendered.box.left && rendered.box.right <= rendered.captionRight + 1, 'Update button overlaps menus or native caption controls');
+  };
   const expectState = status => until('update ' + status, async () => {
     const snapshot = await call('getAppUpdate'), rendered = await inspect();
     return snapshot.status === status && rendered.status === status && { snapshot, rendered };
   });
+  const appearance = async patch => {
+    await call('setAppearance', patch); await js('window.synoraAppearance.settled()');
+    // Settings persistence finishes before the shared 150ms button color
+    // transition. Observe its final computed color instead of the first frame.
+    return until('update background color transition', async () => {
+      const rendered = await inspect();
+      return rendered.background.every((channel, index) => channel === rendered.accent[index]) && rendered;
+    });
+  };
   const click = async () => {
     const point = await until('clickable update button', async () => {
       const value = await inspect(); return value.visible && value.hit && !value.disabled && value;
@@ -88,7 +129,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
   try {
     originalAppearance = await call('getAppearance');
     updater = await configureUpdater({
-      createUpdater: onChange => new AppUpdater({ currentVersion, dataDir, enabled: true, fetchImpl: fakeFetch, onChange }),
+      createUpdater: onChange => new AppUpdater({ currentVersion, dataDir, enabled: true, fetchImpl: fakeFetch, onChange, checkCacheMs: 0 }),
       launchInstaller: async installer => {
         launchAttempts++;
         const target = path.resolve(installer), base = path.resolve(dataDir);
@@ -114,27 +155,39 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
 
     control.version = nextVersion; await check(); await expectState('available');
     for (const style of ['glass', 'black', 'white', 'industrial']) {
-      await call('setAppearance', { uiStyle: style }); await js('window.synoraAppearance.settled()');
-      const rendered = await inspect();
+      const rendered = await appearance({ uiStyle: style, selectionColor: null });
       assert.equal(rendered.text, '更新'); assert.equal(rendered.hidden, false); assert.equal(rendered.disabled, false);
-      assert.equal(rendered.visible, true); assert.equal(rendered.hit, true); assert.equal(rendered.region, 'no-drag');
-      assert.ok(rendered.box.top >= 0 && rendered.box.bottom <= 44.5 && rendered.box.height > 0);
-      assert.ok(rendered.menuRight <= rendered.box.left && rendered.box.right <= rendered.captionRight + 1, 'Update button overlaps menus or native caption controls');
+      assertIcon(rendered); assert.equal(rendered.hit, true);
+      assert.deepEqual(rendered.background, rendered.accent, 'Default update background must follow the theme accent');
       await capture('updater-' + style + '.png');
+      for (const color of ['#6b9eff', '#e69a5c']) {
+        const custom = await appearance({ selectionColor: color }); assertIcon(custom); assert.equal(custom.palette, 'custom');
+        const expected = [...color.slice(1).match(/../g).map(hex => parseInt(hex, 16)), 255];
+        assert.deepEqual(custom.background, expected, 'Update background did not follow the saved color style');
+        assert.deepEqual(custom.background, custom.accent); assert.notDeepEqual(custom.background, custom.ink);
+        assert.equal(custom.box.width, rendered.box.width); assert.equal(custom.box.height, rendered.box.height);
+        paletteChecks.push({ style, color, background: custom.background });
+        if (style === 'white' && color === '#e69a5c') await capture('updater-white-custom-color.png');
+      }
+      const reset = await appearance({ selectionColor: null });
+      assert.deepEqual(reset.background, rendered.background, 'Reset must restore the theme background');
     }
     await click(); await expectState('error');
+    assertIcon(await inspect());
     assert.equal(launches.length, 0); assert.equal(control.quitCalls, 0);
     assert.match((await inspect()).text, /重试/u);
     await capture('updater-hash-error.png');
     control.corruptDownload = false; control.holdDownload = true;
     await click(); await expectState('downloading');
     await until('half-download progress', async () => {
-      const view = await inspect(); return view.progress === 50 && view.ariaProgress === '50';
+      const view = await inspect(); return view.progress === 50 && view.ariaProgress === '50' && view.ringOffset === '50';
     });
     assert.equal((await inspect()).disabled, true); assert.equal((await inspect()).progressHidden, false);
+    assertIcon(await inspect());
     await capture('updater-progress.png');
     control.holdDownload = false; releaseDownload(); releaseDownload = null;
     await expectState('downloaded'); assert.match((await inspect()).text, /重启更新/u);
+    assertIcon(await inspect());
     assert.equal(launches.length, 0, 'Download triggered automatic installation');
     await call('setEditorDirty', { dirty: true }); await rejectInstall(/保存|修改/u);
     await call('setEditorDirty', { dirty: false });
@@ -146,6 +199,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     await click();
     await until('held fake installer launcher', () => releaseLaunch);
     await expectState('installing');
+    assertIcon(await inspect());
     assert.equal(win.isEnabled(), false, 'The update transaction did not lock its native window');
     assert.match(await js("(async()=>{try{await window.forge.runTask({demo:true});return '';}catch(error){return error.message;}})()"), /重启|更新/u);
     releaseLaunch(); releaseLaunch = null;
@@ -156,7 +210,8 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     await until('fake installer and quit called once', () => launches.length === 1 && control.quitCalls === 1);
     assert.equal(win.isDestroyed(), false, 'Fixture must not actually close the test app');
     return { status: 'completed', actualGitHubRequests: 0, executableLaunched: false, networkCalls: requests.length,
-      nativeTitlebarButton: true, themes: ['glass','black','white','industrial'], currentHidden: true,
+      nativeTitlebarButton: true, circularDownloadSvg: true, nextToHelp: true, noVisibleButtonText: true,
+      themes: ['glass','black','white','industrial'], customColorStyleAndReset: true, paletteChecks, currentHidden: true,
       checkFailureRetry: true, checksumFailureRetry: true, liveDownloadProgress: 50, explicitRestartOnly: true,
       unsavedInstallBlocked: true, activeTaskInstallBlocked: true, launchFailureRetry: true, fakeLaunches: launches.length,
       fakeQuitCalls: control.quitCalls, installTransactionLocked: true, screenshots };
@@ -172,7 +227,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     if (!win.isDestroyed()) {
       await call('setEditorDirty', { dirty: false }).catch(() => {});
       await call('stopTask').catch(() => {});
-      if (originalAppearance) await call('setAppearance', { uiStyle: originalAppearance.uiStyle }).catch(() => {});
+      if (originalAppearance) await call('setAppearance', { uiStyle: originalAppearance.uiStyle, selectionColor: originalAppearance.selectionColor ?? null }).catch(() => {});
     }
   }
 };

@@ -26,6 +26,7 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
       win: { isEnabled: () => windowEnabled, setEnabled: value => { windowEnabled = value; }, isDestroyed: () => false,
         webContents: { isDestroyed: () => false, send: (channel, event) => calls.push(`publish:${event.update.status}`) } },
       contexts: new Set([{ cancelPromptCompletion: () => calls.push(`cancel:${index}`),
+        settleSideChat: async () => calls.push(`settle-sidebar:${index}`),
         settlePromptCompletion: () => { calls.push(`settle:${index}`); return completions[index] ?? Promise.resolve(); } }]),
     };
     windows.set(index, host);
@@ -40,7 +41,9 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
     persistentTaskUndo: { flush: async () => { calls.push('flush:undo'); } },
     permissionPreferences: { settled: async () => { calls.push('flush:permissions'); } },
     approvalReviewerPreferences: { settled: async () => { calls.push('flush:reviewer'); } },
+    roleModels: { settled: async () => { calls.push('flush:roles'); } },
     chatgpt: { cancelSignIn: () => calls.push('cancel-signin') },
+    roleAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-signin') }]]),
     spawn(filename, args, options) {
       spawns.push({ filename, args: [...args], options: { ...options } }); calls.push('spawn');
       const child = new EventEmitter(); child.unref = () => calls.push('unref');
@@ -49,7 +52,7 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
       return child;
     },
   });
-  for (const name of ['appUpdateSnapshot', 'publishAppUpdate', 'launchUpdateInstaller', 'requireUpdateIdle', 'installAppUpdate'])
+  for (const name of ['appUpdateSnapshot', 'publishAppUpdate', 'launchUpdateInstaller', 'requireUpdateIdle', 'installAppUpdate', 'cancelAccountSignIns'])
     vm.runInContext(mainFunction(name), context);
   vm.runInContext('let launchInstaller = launchUpdateInstaller; let quitForUpdate = () => { quitting = true; app.quit(); };', context);
   return { context, calls, spawns, windows, install: (...args) => context.installAppUpdate(...args) };
@@ -64,11 +67,13 @@ test('installation waits for every cancelled completion and storage flush before
   await tick();
   assert.ok(f.calls.includes('cancel:0') && f.calls.includes('cancel:1'));
   assert.ok(f.calls.includes('settle:0') && f.calls.includes('settle:1'));
+  assert.ok(f.calls.includes('settle-sidebar:0') && f.calls.includes('settle-sidebar:1') && f.calls.includes('flush:roles'));
   assert.ok(f.calls.includes('flush:restore') && f.calls.includes('flush:undo') && f.calls.includes('flush:permissions') && f.calls.includes('flush:reviewer'));
   assert.equal(f.spawns.length, 0); assert.equal(f.calls.includes('quit'), false);
   first.resolve(); storage.resolve(); await tick();
   assert.equal(f.spawns.length, 0, 'A different window can still be recording its cancelled completion usage');
   second.resolve(); await install;
+  assert.ok(f.calls.includes('cancel-signin') && f.calls.includes('cancel-role-signin'));
   assert.equal(f.spawns.length, 1); assert.equal(f.spawns[0].filename, verifiedPath);
   assert.ok(f.calls.indexOf('verify') < f.calls.indexOf('spawn'));
   assert.ok(f.calls.indexOf('spawn') < f.calls.indexOf('quit'));

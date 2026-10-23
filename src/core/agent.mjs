@@ -51,8 +51,9 @@ function nativeStateMatches(state, config) {
   return true;
 }
 
-export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, contextMeasurement, previousContextUsage }) {
+export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage }) {
   if (getRequestConfig !== undefined && typeof getRequestConfig !== 'function') throw new Error('实时模型配置读取器无效。');
+  if (getSubagentRequestConfig !== undefined && typeof getSubagentRequestConfig !== 'function') throw new Error('子智能体模型配置读取器无效。');
   if (subagentFactory || getRequestConfig) config = freezeConfig(config);
   const childPrompt = delegatedTask ? `\n你是独立子智能体 ${delegatedTask.name}。只处理分配的子任务，不能创建其他子智能体。${delegatedTask.writePaths.length ? `文件工具写入范围：${delegatedTask.writePaths.join('、')}。命令并非系统沙箱，必须遵守当前审批规则，不可借命令修改范围外文件。` : '只读任务：不能修改文件、运行命令或使用浏览器。'}完成后清楚报告实际发现、改动、验证和未完成事项；不要推测其他智能体的进度。` : '';
   const coordinationResults = [], nativeOrigins = new WeakMap(), viewedImages = new Set();
@@ -138,7 +139,8 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
         signal: child.signal, emit: event => {
           if (event.type === 'request-config-applied') emit({ ...event, agentId: child.id });
           else child.emit(event);
-        }, redact, runId, sessionId, takeSteering: child.takeSteering, getRequestConfig,
+        }, redact, runId, sessionId, takeSteering: child.takeSteering,
+        getRequestConfig: getSubagentRequestConfig ? () => getSubagentRequestConfig({ signal: child.signal, agentId: child.id }) : getRequestConfig,
         permissionMode, contextCheckpoint: {}, delegatedTask: { id: child.id, name: child.name, writePaths: child.writePaths },
         onUsage: async record => {
           childInputTokens += record.inputTokens || 0;

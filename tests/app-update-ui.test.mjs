@@ -19,14 +19,15 @@ function deferred() {
 const initial = { status: 'idle', enabled: true, currentVersion: '0.18.2', version: '', progress: 0 };
 function fixture(methods = {}, initialValue = initial) {
   const context = vm.createContext({}); vm.runInContext(source, context);
-  const button = new Element(), label = new Element(), progress = new Element(), notices = [], calls = [];
+  const button = new Element(), label = new Element(), progress = new Element(), ring = new Element(), notices = [], calls = [];
+  button.querySelector = selector => selector === '.app-update-ring-value' ? ring : null;
   let callback, busy = false, unsubscribed = false;
   const bridge = { onEvent: listener => { callback = listener; return () => { unsubscribed = true; }; } };
   for (const method of ['getAppUpdate', 'checkAppUpdate', 'downloadAppUpdate', 'installAppUpdate']) {
     bridge[method] = (...args) => { calls.push({ method, args }); return methods[method]?.(...args) ?? initialValue; };
   }
   const ui = context.ForgeAppUpdate.create({ bridge, button, label, progress, notice: (...args) => notices.push(args), isBusy: () => busy });
-  return { ui, button, label, progress, notices, calls,
+  return { ui, button, label, progress, ring, notices, calls,
     emit: update => callback({ type: 'app-update', update, workspaceId: 'another-project' }),
     emitOther: event => callback(event),
     setBusy(value) { busy = value; ui.sync(); },
@@ -58,11 +59,15 @@ test('download progress and a second explicit click drive download then install 
   assert.equal(f.button.disabled, true); await f.button.click();
   f.emit({ ...initial, status: 'downloading', version: '0.18.3', progress: 37.8 });
   assert.match(f.label.textContent, /37%/u); assert.equal(f.progress.value, 37); assert.equal(f.progress.hidden, false);
+  assert.equal(f.ring.attributes['stroke-dashoffset'], '63');
+  assert.equal(f.button.attributes['aria-label'], '下载更新 37%');
+  assert.equal(f.progress.attributes['aria-valuenow'], '37');
   assert.equal(f.button.attributes['aria-busy'], 'true');
   f.emit({ ...initial, status: 'downloaded', version: '0.18.3', progress: 100 });
   download.resolve({ ...initial, status: 'downloading', version: '0.18.3', progress: 0 }); await downloading;
   assert.equal(f.button.dataset.status, 'downloaded', 'A late IPC result cannot rewind newer progress events');
   assert.equal(f.label.textContent, '重启更新'); assert.equal(f.progress.hidden, true); assert.equal(f.button.disabled, false);
+  assert.equal(f.ring.attributes['stroke-dashoffset'], '0');
   assert.equal(f.calls.filter(call => call.method === 'installAppUpdate').length, 0, 'Finishing the download never starts installation automatically');
   const installing = f.button.click();
   f.emit({ ...initial, status: 'installing', version: '0.18.3' });
@@ -150,6 +155,6 @@ test('download errors show the readable reason and retry progress replaces the o
   const downloading = f.button.click();
   assert.equal(f.notices.at(-1)[0], '正在重新下载更新…'); assert.equal(f.notices.at(-1)[1], undefined);
   retry.resolve({ ...initial, status: 'downloaded', version: '0.18.3', progress: 100 }); await downloading;
-  assert.equal(f.notices.at(-1)[0], '更新已下载，点击顶部“重启更新”。');
+  assert.equal(f.notices.at(-1)[0], '更新已下载，点击“帮助”右侧的下载图标重启更新。');
   assert.equal(f.label.textContent, '重启更新');
 });

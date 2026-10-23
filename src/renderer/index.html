@@ -34,8 +34,10 @@
   <link rel="stylesheet" href="./round-navigator.css">
   <link rel="stylesheet" href="./explorer-selection.css">
   <link rel="stylesheet" href="./chat-selection-menu.css">
+  <link rel="stylesheet" href="./side-chat.css">
   <link rel="stylesheet" href="./app-update.css">
   <link rel="stylesheet" href="./deepseek-effort.css">
+  <link rel="stylesheet" href="./role-models.css">
   <script src="./syntax-highlight.js" defer></script>
   <script src="./editor-highlight.js" defer></script>
   <script src="./code-completion.js" defer></script>
@@ -59,8 +61,10 @@
   <script src="./command-result.js" defer></script>
   <script src="./explorer-selection.js" defer></script>
   <script src="./chat-selection-menu.js" defer></script>
+  <script src="./side-chat.js" defer></script>
   <script src="./app-update.js" defer></script>
   <script src="./deepseek-effort.js" defer></script>
+  <script src="./role-models.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
@@ -83,9 +87,15 @@
         <button id="menu-edit" class="app-menu-trigger" data-menu="edit" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">编辑</button>
         <button id="menu-view" class="app-menu-trigger" data-menu="view" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">视图</button>
         <button id="menu-appearance" class="app-menu-trigger" data-menu="appearance" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">外观</button>
+        <button id="menu-settings" class="app-menu-trigger" data-menu="settings" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">设置</button>
         <button id="menu-help" class="app-menu-trigger" data-menu="help" role="menuitem" aria-haspopup="menu" aria-expanded="false" type="button">帮助</button>
       </nav>
-      <button id="app-update-button" class="app-update-button" type="button" aria-busy="false" hidden><span id="app-update-label" role="status" aria-live="polite" aria-atomic="true">更新</span><progress id="app-update-progress" class="app-update-progress" max="100" value="0" aria-label="更新下载进度" hidden></progress></button>
+      <button id="app-update-button" class="app-update-button" type="button" aria-busy="false" hidden>
+        <svg class="app-update-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 4v11m-4-4 4 4 4-4M5 16v4h14v-4"/></svg>
+        <svg class="app-update-ring" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><circle class="app-update-ring-track" cx="16" cy="16" r="13.5"/><circle class="app-update-ring-value" cx="16" cy="16" r="13.5" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/></svg>
+        <span id="app-update-label" class="sr-only" role="status" aria-live="polite" aria-atomic="true">更新</span>
+        <progress id="app-update-progress" class="sr-only" max="100" value="0" aria-label="更新下载进度" hidden></progress>
+      </button>
     </header>
 
     <div class="workspace-layout">
@@ -273,9 +283,14 @@
     </div>
     <p id="appearance-status" class="appearance-status" role="status" hidden></p>
   </dialog>
-  <dialog id="settings-dialog" class="settings-dialog">
+  <dialog id="role-models-dialog" class="settings-dialog role-models-dialog" aria-labelledby="role-models-title">
+    <div class="dialog-header"><h2 id="role-models-title">模型分工</h2><button id="role-models-close" class="icon-button" type="button" aria-label="关闭模型分工">×</button></div>
+    <div id="role-models-list"></div>
+  </dialog>
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
     <form id="settings-form">
-      <div class="dialog-header"><h2>模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
+      <div class="dialog-header"><h2 id="settings-title">主模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
+      <p id="settings-scope-hint" class="settings-scope-hint" hidden></p>
       <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
       <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">ChatGPT 账号 · 个人本机预览</option></select></label>
       <label id="api-protocol-field" class="form-field" hidden><span>接口协议</span><select id="api-protocol-select" name="apiProtocol"><option value="chat-completions">Chat Completions · 兼容接口</option><option value="responses">Responses</option></select><small id="api-protocol-help">按服务商文档选择调用协议。</small></label>
@@ -299,7 +314,7 @@
       <label id="api-key-field" class="form-field"><span><span id="api-key-label">API Key</span> <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"></label>
       <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message" role="status" hidden></small></div>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
-      <div class="dialog-footer"><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>
+      <div class="dialog-footer"><button id="settings-role-reset" class="text-button settings-role-reset" type="button" hidden>恢复跟随主模型</button><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>
     </form>
   </dialog>
   <dialog id="link-dialog" class="link-dialog"><form id="link-form"><div class="dialog-header"><h2>在内置浏览器中打开链接</h2><button id="link-close" class="icon-button" type="button" aria-label="关闭链接输入">×</button></div><label class="form-field"><span>HTTP / HTTPS 地址</span><input id="link-input" type="url" placeholder="https://example.com" autocomplete="off" required></label><p id="link-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><span>在右侧内置浏览器中打开</span><button class="button solid" type="submit">打开链接</button></div></form></dialog>
@@ -310,6 +325,7 @@
     <button class="app-menu-item" data-chat-action="copy" role="menuitem" type="button">复制</button>
     <button class="app-menu-item" data-chat-action="select-all" role="menuitem" type="button">选择全部</button>
     <button class="app-menu-item" data-chat-action="search" role="menuitem" type="button">搜索浏览器</button>
+    <button class="app-menu-item" data-chat-action="ask" role="menuitem" type="button">在侧边栏中提问</button>
   </div>
   <dialog id="file-name-dialog" class="file-name-dialog"><form id="file-name-form"><div class="dialog-header"><h2 id="file-name-title">新建文件</h2><button id="file-name-close" class="icon-button" type="button" aria-label="关闭">×</button></div><label class="form-field"><span>名称</span><input id="file-name-input" type="text" autocomplete="off" required maxlength="255"></label><p id="file-name-parent" class="file-name-parent"></p><p id="file-name-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="file-name-cancel" class="button" type="button">取消</button><button id="file-name-confirm" class="button solid" type="submit">确定</button></div></form></dialog>
   <dialog id="editor-unsaved-dialog" class="editor-unsaved-dialog"><div class="dialog-header"><h2>保存文件更改？</h2></div><p id="editor-unsaved-message"></p><p class="unsaved-hint">放弃后，尚未保存的编辑将丢失。</p><div class="unsaved-actions"><button id="editor-unsaved-cancel" class="button" type="button">取消</button><button id="editor-unsaved-discard" class="button" type="button">放弃更改</button><button id="editor-unsaved-save" class="button solid" type="button">保存</button></div></dialog>

@@ -1,0 +1,11 @@
+.role-models-dialog { width: min(620px, calc(100vw - 40px)); }
+.settings-scope-hint { color: var(--muted); line-height: 1.6; margin: 0 0 16px; }
+.role-model-row { display: flex; align-items: center; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
+.role-model-copy { flex: 1; min-width: 0; }
+.role-model-copy h3 { margin: 0 0 6px; font-size: 14px; color: var(--text); }
+.role-model-copy p { margin: 5px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.role-model-copy .role-model-summary { color: var(--text); }
+.role-model-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.role-model-actions button { white-space: nowrap; }
+.settings-role-reset { margin-right: auto; }
+@media (max-width: 560px) { .role-model-row { gap: 10px; } .role-model-actions .button { padding-inline: 12px; } }

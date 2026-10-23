@@ -3,6 +3,7 @@
   const statuses = new Set(['idle', 'checking', 'current', 'available', 'downloading', 'downloaded', 'installing', 'error']);
   const unsupported = '此版本请从 GitHub Releases 下载新版；安装版支持应用内更新。';
   function create({ bridge, button, label, progress, notice = () => {}, isBusy = () => false }) {
+    const ring = button.querySelector?.('.app-update-ring-value');
     let snapshot = { enabled: false, status: 'idle', currentVersion: '', version: '', progress: 0, error: '' };
     let pending = null, disposed = false, eventRevision = 0;
     const cleanText = (value, limit = 500) => typeof value === 'string' ? value.slice(0, limit) : '';
@@ -39,13 +40,14 @@
       progress.value = snapshot.progress;
       progress.setAttribute('aria-valuenow', String(snapshot.progress));
       progress.setAttribute('aria-valuetext', `${snapshot.progress}%`);
+      ring?.setAttribute('stroke-dashoffset', String(100 - snapshot.progress));
     }
     function reportCheck() {
       if (!snapshot.enabled) { notice(unsupported); return; }
       const { status, version, currentVersion, error } = snapshot;
       if (status === 'error') { notice(`检查更新失败${error ? '：' + error : '，请稍后重试。'}`, true); return; }
-      notice(status === 'available' ? `发现新版本${version ? ' v' + version : ''}，点击顶部“更新”下载。`
-        : status === 'downloaded' ? '更新已下载，点击顶部“重启更新”。'
+      notice(status === 'available' ? `发现新版本${version ? ' v' + version : ''}，点击“帮助”右侧的下载图标下载更新。`
+        : status === 'downloaded' ? '更新已下载，点击“帮助”右侧的下载图标重启更新。'
         : status === 'downloading' ? '正在下载更新，请稍候。'
         : status === 'installing' ? '正在准备重启更新…'
         : status === 'checking' ? '正在检查更新…'
@@ -69,7 +71,7 @@
         if (eventRevision === revision) update(value);
         if (manual) reportCheck();
         else if (snapshot.error) notice(`${action === 'install' ? '重启更新失败' : '下载更新失败'}：${snapshot.error}`, true);
-        else if (action === 'download' && snapshot.status === 'downloaded') notice('更新已下载，点击顶部“重启更新”。');
+        else if (action === 'download' && snapshot.status === 'downloaded') notice('更新已下载，点击“帮助”右侧的下载图标重启更新。');
       } catch (error) {
         if (!disposed) notice(`${action === 'install' ? '重启更新失败' : action === 'download' ? '下载更新失败' : '检查更新失败'}：${errorReason(error) || '请稍后重试。'}`, true);
       } finally {

@@ -18,6 +18,9 @@ const validToken = value => Number.isSafeInteger(value) && value >= 0;
 function assertSessionOwner(snapshot, config) {
   const profile = config.authMode === 'chatgpt' ? config.chatgptProfileId || null : null;
   if (config.authMode === 'chatgpt' && !profile) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
+  // Only the main process can designate an explicitly configured completion
+  // connection. Choosing that role authorizes its own account for this request.
+  if (config.modelRole === 'completion') return;
   // Match startTask's history boundary in both directions: official account
   // A cannot disclose its history to B or API mode; unowned/API history must
   // likewise not be transferred to an official account by a Tab request.
@@ -96,7 +99,7 @@ export function createPromptCompletionController({ getSnapshot, getConfig, valid
       await wait(() => validateConfig(config, snapshot, signal));
       response = await wait(() => {
         started = true;
-        return requestModel({ ...config, reasoningEffort: 'default', tools: [], signal,
+        return requestModel({ ...config, reasoningEffort: config.modelRole === 'completion' ? config.reasoningEffort || 'default' : 'default', tools: [], signal,
           timeoutMs, maxOutputTokens: PROMPT_COMPLETION_LIMITS.outputTokens, maxResponseBytes: 1024 * 1024,
           maxModelPayloadBytes: 64 * 1024,
           messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: payload }],
