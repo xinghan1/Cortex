@@ -1,6 +1,9 @@
 import { apiError, ChatGPTError, fetchRemote, isObject, jsonResponse } from "./errors.js";
 import type { ChatGPTModel } from "./types.js";
 
+// Synora code modification: retain validated capacity metadata for context
+// budgeting; all other upstream response fields remain outside the model view.
+
 export async function listModels(accessToken: string, signal: AbortSignal): Promise<ChatGPTModel[]> {
   const response = await fetchRemote("https://api.openai.com/v1/models", {
     headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
@@ -18,7 +21,21 @@ export async function listModels(accessToken: string, signal: AbortSignal): Prom
         typeof model.display_name !== "string" || !model.display_name.trim() || model.display_name.length > 200) {
       throw new ChatGPTError("invalid_model_catalog", "ChatGPT returned an incomplete model listing. Try again.", true, response.status);
     }
-    result.push({ slug: model.slug, displayName: model.display_name });
+    const entry: ChatGPTModel = { slug: model.slug, displayName: model.display_name };
+    // Forward only validated capacity facts. Account limits may be narrower
+    // than the public model page; unrelated response fields and credentials
+    // must not become part of the local/public model catalog.
+    for (const source of [model, model.capabilities].filter(isObject)) {
+      const total = source.contextWindow ?? source.context_window ?? source.context_length;
+      const input = source.max_input_tokens;
+      const capacity = total ?? input;
+      if (typeof capacity === 'number' && Number.isSafeInteger(capacity) && capacity > 0) {
+        entry.contextWindow = capacity;
+        entry.contextWindowKind = total !== undefined && source.contextWindowKind !== 'input' ? 'total' : 'input';
+        break;
+      }
+    }
+    result.push(entry);
   }
   return result;
 }

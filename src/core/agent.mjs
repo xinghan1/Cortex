@@ -243,8 +243,14 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
         mergeActual(reply?.contextUsage ?? (hasUsage && reply ? usage : null));
         if (requestStatus === 'completed' && reply && reply.contextUsage?.complete !== false
             && realCount(actual.inputTokens) && realCount(actual.outputTokens)) {
+          // An input-only measurement describes the request that was sent.
+          // Its newly generated assistant/native state becomes future input,
+          // so leave it outside the anchor and count it once as later growth.
+          // Total-window counters already include the completed response.
+          const measuredMessages = currentConfig.modelCapabilities?.contextWindowKind === 'input' ? requestMessages
+            : [...requestMessages, { ...reply.message, content: redact(reply.message?.content || '') }];
           const captured = captureContextMeasurement({ config: currentConfig,
-            messages: [...requestMessages, { ...reply.message, content: redact(reply.message?.content || '') }], tools,
+            messages: measuredMessages, tools,
             inputTokens: actual.inputTokens, outputTokens: actual.outputTokens });
           if (captured) measurement = captured;
         }

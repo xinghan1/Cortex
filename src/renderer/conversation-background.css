@@ -15,3 +15,4 @@
 }
 html.custom-background:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial'], [data-ui-style='deepseek'], [data-ui-style='codex']) #conversation-background { display: block; }
 html.custom-background:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial'], [data-ui-style='deepseek'], [data-ui-style='codex']) .conversation > .composer-area { background: transparent; }
+html.custom-background:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial'], [data-ui-style='deepseek'], [data-ui-style='codex']) .conversation :is(.tool-card, .subagent-card, .tool-operation-group, .tool-summary, .subagent-header, .tool-operation-group-summary) { background: transparent; }

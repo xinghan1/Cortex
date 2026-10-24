@@ -6,6 +6,17 @@ const roleName = role => {
   if (!MODEL_ROLES.includes(role)) throw new Error('模型用途无效。');
   return role;
 };
+const changed = () => new DOMException('模型配置已变化。', 'AbortError');
+function waitForCatalog(pending, signal) {
+  if (!signal) return pending;
+  signal.throwIfAborted();
+  let onAbort;
+  return Promise.race([pending, new Promise((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  })]).finally(() => signal.removeEventListener('abort', onAbort));
+}
 
 /** Independent connections share validation/catalog code, never the main credentials. */
 export class RoleModelRuntime {
@@ -100,6 +111,33 @@ export class RoleModelRuntime {
     const model = saved.model;
     if (!model) throw new Error('请先为此用途选择模型。');
     let snapshot = this.snapshots.get(role);
+    if (saved.authMode === 'chatgpt' && snapshot?.connection !== draft.connection) {
+      const account = this.accounts.get(role);
+      let models;
+      try {
+        // The account controller shares its bounded, profile-scoped catalog
+        // cache. A cancelled caller must not abort another caller's refresh.
+        const listed = await waitForCatalog(Promise.resolve().then(() => account.listModels()), signal);
+        models = listed.map(value => ({ ...value, id: value.slug,
+          ...this.deriveCapabilities('openai', value.slug, { ...value, officialSource: true }) }));
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        // A failed refresh does not prove the account has the public model's
+        // full capacity. Continue with an unknown budget and retry next time.
+      }
+      signal?.throwIfAborted();
+      if (revision !== this.revisions[role] || !this.configs.isEnabled(role)) throw changed();
+      const current = await account.publicState();
+      signal?.throwIfAborted();
+      if (revision !== this.revisions[role] || !this.configs.isEnabled(role)
+          || current.session?.status !== 'connected' || !current.session.sharing
+          || current.session.profileId !== draft.account.session.profileId) throw changed();
+      if (models) {
+        snapshot = { connection: draft.connection, models };
+        this.snapshots.set(role, snapshot);
+      }
+    }
     if (saved.provider === 'ollama' && snapshot?.connection !== draft.connection) {
       const listed = await this.catalog.list({ provider: saved.provider, baseUrl: saved.baseUrl,
         apiKey: draft.apiKey, contextWindowTokens: saved.contextWindowTokens });
@@ -107,10 +145,10 @@ export class RoleModelRuntime {
       snapshot = { connection: draft.connection, models: listed.models };
       this.snapshots.set(role, snapshot);
     }
-    const metadata = snapshot?.connection === draft.connection ? snapshot.models.find(value => value.id === model) || {} : {};
+    const metadata = snapshot?.connection === draft.connection ? snapshot.models.find(value => value.id === model) : undefined;
     const modelCapabilities = this.deriveCapabilities(saved.provider, model, { ...metadata,
       ...(saved.provider === 'ollama' ? { contextWindowTokens: saved.contextWindowTokens } : {}),
-      ...(saved.authMode === 'chatgpt' ? { officialSource: true } : {}) });
+      ...(saved.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
     if (role === 'subagent' && modelCapabilities.supportsTools === false) throw new Error('此子智能体模型不支持编程工具。');
     const key = createHash('sha256').update(JSON.stringify([draft.connection, model, saved.reasoningEffort, revision])).digest('hex');
     signal?.throwIfAborted();

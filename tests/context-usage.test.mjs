@@ -47,3 +47,21 @@ test('configuration bindings invalidate different accounts, models, endpoints, p
   assert.equal(captureContextMeasurement({ config, messages, tools, inputTokens: 1 }), null);
   assert.equal(getContextMeasurementTokens(messages, tools, { ...measurement, measuredTokens: -1 }).basis, 'estimated-request-input');
 });
+
+test('input-only capacity calibrates input without adding output, while old ambiguous anchors are discarded', () => {
+  const inputConfig = { ...config, modelCapabilities: { contextWindow: 20000, contextWindowKind: 'input' } };
+  const inputOnly = captureContextMeasurement({ config: inputConfig, messages, tools, inputTokens: 5000, outputTokens: 8000 });
+  assert.equal(getContextMeasurementTokens(messages, tools, inputOnly).tokens, 5000);
+  assert.equal(contextMeasurementMatchesConfig(inputOnly, inputConfig), true);
+  assert.equal(contextMeasurementMatchesConfig({ ...inputOnly, version: 1, measuredTokens: 13000 }, inputConfig), false);
+  assert.equal(getContextMeasurementTokens(messages, tools, { ...inputOnly, version: 1 }).basis, 'estimated-request-input');
+  const total = captureContextMeasurement({ config, messages, tools, inputTokens: 5000, outputTokens: 8000 });
+  assert.equal(getContextMeasurementTokens(messages, tools, total).tokens, 13000);
+  const generated = [...messages, { role: 'assistant', content: 'Visible reply.', toolCalls: [],
+    providerState: { provider: 'anthropic', content: [{ type: 'thinking', signature: 'SIGNED_NATIVE_STATE', thinking: 'N'.repeat(40000) }] } }];
+  const expectedGrowth = estimateRequestTokens(generated, tools) - estimateRequestTokens(messages, tools);
+  assert.ok(expectedGrowth > 10000);
+  const nextInput = getContextMeasurementTokens(generated, tools, inputOnly);
+  assert.equal(nextInput.tokens, 5000 + expectedGrowth);
+  assert.equal(nextInput.estimatedDeltaTokens, expectedGrowth);
+});

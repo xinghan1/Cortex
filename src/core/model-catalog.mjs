@@ -7,6 +7,22 @@ import { ollamaEndpoint } from './ollama-endpoint.mjs';
 // https://platform.claude.com/docs/en/api/models/list
 const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+// Verified against each exact official model page on 2026-10-24. Account
+// catalogs can contain only an ID/name, so a missing optional directory field
+// must not downgrade these known models to the unknown-model 45k guard.
+// Explicit valid service metadata still wins, including smaller account limits.
+// https://developers.openai.com/api/docs/models/gpt-6.1-sol
+// https://developers.openai.com/api/docs/models/gpt-6-astra
+// https://developers.openai.com/api/docs/models/gpt-6-sol
+// https://developers.openai.com/api/docs/models/gpt-6-luna
+// https://developers.openai.com/api/docs/models/gpt-5.6-sol
+const OFFICIAL_OPENAI_CONTEXT_WINDOWS = Object.freeze({
+  'gpt-6.1-sol': 1_050_000,
+  'gpt-6-astra': 1_050_000,
+  'gpt-6-sol': 1_050_000,
+  'gpt-6-luna': 1_050_000,
+  'gpt-5.6-sol': 1_050_000,
+});
 
 class CatalogError extends Error {
   constructor(code, message, status) {
@@ -99,6 +115,11 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
   if (typeof metadata.compatibilityReason === 'string' && metadata.compatibilityReason.length <= 500) result.compatibilityReason = metadata.compatibilityReason;
 
   if (metadata.officialSource === true) {
+    if (provider === 'openai' && metadata.allowPublishedContextWindow !== false
+        && result.contextWindow === undefined && Object.hasOwn(OFFICIAL_OPENAI_CONTEXT_WINDOWS, id)) {
+      result.contextWindow = OFFICIAL_OPENAI_CONTEXT_WINDOWS[id];
+      result.contextWindowKind = 'total';
+    }
     // Exact published IDs only; no guessed capabilities for future model families.
     // https://developers.openai.com/api/docs/models/gpt-6.1-sol
     // https://developers.openai.com/api/docs/models/gpt-6-astra

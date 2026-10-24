@@ -784,6 +784,10 @@ async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
   const settings = publicSettings(), context = await catalogContext();
   if (settings.provider === 'ollama' && !catalogSnapshots.has(context.key)) await fetchModelCatalog();
+  if (settings.authMode === 'chatgpt' && !catalogSnapshots.has(context.key)) {
+    try { await fetchModelCatalog(); } catch { /* Keep a connected account usable with the unknown-capacity guard. */ }
+    if ((await catalogContext()).key !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
+  }
   run.controller.signal.throwIfAborted();
   if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
   const account = isAccountMode(settings.authMode);
@@ -888,7 +892,7 @@ function restoreApprovalReviewer(connection) {
 }
 function capabilitiesFor(context, model) {
   const metadata = catalogSnapshots.get(context.key)?.models.find(item => item.id === model);
-  return deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true } : {}) });
+  return deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
 }
 function resolvedReasoningEffort(capabilities, selected = 'default') {
   if (selected === 'default' || !Array.isArray(capabilities.reasoningEfforts)) return selected;
@@ -1075,6 +1079,12 @@ async function startTask(input) {
   const useDeepSeekAccount = provider === 'deepseek' && settings.authMode === 'deepseek-account';
   const modelContext = await catalogContext();
   if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
+  if (!demo && useChatGPT && !catalogSnapshots.has(modelContext.key)) {
+    try { await fetchModelCatalog(); } catch { /* Missing catalog capacity stays conservative until discovery succeeds. */ }
+    if ((await catalogContext()).key !== modelContext.key) throw new Error('模型连接已变更，请重新开始任务。');
+  }
+  if (shuttingDown || win?.isDestroyed()) throw new Error('窗口已关闭，任务未启动。');
+  if (stopGeneration !== startingGeneration) throw new Error('任务启动已取消，消息仍保留在待发送列表。');
   metricsConnectionKey = modelContext.key;
   const modelCapabilities = capabilitiesFor(modelContext, settings.model);
   // Unknown models accept the user's generic choice. Advertised capabilities

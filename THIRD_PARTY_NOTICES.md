@@ -10,7 +10,7 @@
 
 该组件采用 **SIGN-IN WITH CHATGPT DEVKIT NONCOMMERCIAL LICENSE, Version 1.0**，仅许可非商业用途。原文见 [SDK 许可证](vendor/siwc-devkit/LICENSE)，依赖声明见 [SDK 第三方声明](vendor/siwc-devkit/THIRD_PARTY_NOTICES.md)。此许可不授予 OpenAI 品牌、商标或服务访问权。
 
-本项目修改了 `packages/local/src/index.ts` 和 `packages/local/src/types.ts`，增加仅在 Electron 主进程内使用的 `withAccessToken` 回调；两个文件均保留修改说明。对该 SDK 的修改按同一非商业许可证分发。OAuth 校验、权限检查、凭据轮换和取消流程仍使用原组件实现。Synora code 当前将此接入用于本机个人实验；商业使用该组件需要另行获得许可。
+本项目修改了 `packages/local/src/index.ts`、`packages/local/src/types.ts` 和 `packages/local/src/models.ts`，增加仅在 Electron 主进程内使用的 `withAccessToken` 回调，并保留经校验的模型上下文容量供本地预算使用；修改文件均保留说明。对该 SDK 的修改按同一非商业许可证分发。OAuth 校验、权限检查、凭据轮换和取消流程仍使用原组件实现。Synora code 当前将此接入用于本机个人实验；商业使用该组件需要另行获得许可。
 
 ## dsh-pet 桌面宠物素材
 

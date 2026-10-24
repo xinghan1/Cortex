@@ -28,7 +28,7 @@ function bindingHash(config) {
     contextWindowKind: config.modelCapabilities?.contextWindowKind ?? 'total' });
 }
 function valid(measurement) {
-  return measurement?.version === 1 && /^[a-f\d]{64}$/u.test(measurement.bindingHash ?? '')
+  return measurement?.version === 2 && /^[a-f\d]{64}$/u.test(measurement.bindingHash ?? '')
     && /^[a-f\d]{64}$/u.test(measurement.prefixHash ?? '') && count(measurement.messageCount)
     && count(measurement.estimatedTokens) && count(measurement.measuredTokens);
 }
@@ -43,8 +43,14 @@ export function estimateRequestTokens(messages, tools = []) {
 
 export function captureContextMeasurement({ config, messages, tools = [], inputTokens, outputTokens }) {
   if (!count(inputTokens) || !count(outputTokens) || !Number.isSafeInteger(inputTokens + outputTokens)) return null;
-  return { version: 1, bindingHash: bindingHash(config), prefixHash: prefixHash(messages, tools), messageCount: messages.length,
-    estimatedTokens: estimateRequestTokens(messages, tools), measuredTokens: inputTokens + outputTokens };
+  const inputOnly = config.modelCapabilities?.contextWindowKind === 'input';
+  // Input-only callers pass the measured request prefix WITHOUT its response;
+  // the generated response is future input and will be estimated as growth.
+  // Total-window callers include that response, covered by input + output.
+  // V1 used a completed prefix for both kinds. Discard those old calibration
+  // anchors; the transcript/checkpoint remains intact and is remeasured.
+  return { version: 2, bindingHash: bindingHash(config), prefixHash: prefixHash(messages, tools), messageCount: messages.length,
+    estimatedTokens: estimateRequestTokens(messages, tools), measuredTokens: inputOnly ? inputTokens : inputTokens + outputTokens };
 }
 
 export function contextMeasurementMatchesConfig(measurement, config) {

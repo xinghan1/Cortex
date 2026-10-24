@@ -45,8 +45,8 @@ async function fixture(t) {
     async list(config) { catalogs.push(config); return { source: config.provider, models: structuredClone(this.models) }; },
   };
   const requestModel = async config => { requests.push(config); return { route: 'api', model: config.model }; };
-  const create = () => new RoleModelRuntime({ configs, accounts, catalog, requestModel,
-    deriveCapabilities: deriveModelCapabilities, redact: value => configs.redact(main.redact(value)) });
+  const create = (overrides = {}) => new RoleModelRuntime({ configs, accounts, catalog, requestModel,
+    deriveCapabilities: deriveModelCapabilities, redact: value => configs.redact(main.redact(value)), ...overrides });
   return { dir, configs, accounts, requests, catalogs, catalog, main, create, runtime: create() };
 }
 
@@ -249,4 +249,97 @@ test('a revision change while ChatGPT dispatch awaits account state prevents the
   runtime.invalidate('approval'); release.resolve();
   await assert.rejects(pending, { name: 'AbortError' });
   assert.equal(account.calls.length, 0);
+});
+
+test('restarted account roles reload their own narrower catalog before budgeting and reuse the current snapshot', async t => {
+  const { dir, runtime, accounts, create } = await fixture(t);
+  const input = { provider: 'openai', authMode: 'chatgpt' };
+  for (const [index, role] of MODEL_ROLES.entries()) {
+    const account = accounts.get(role);
+    account.state.session = { status: 'connected', sharing: true, profileId: `${role}-account` };
+    account.models = [{ slug: 'gpt-6.1-sol', displayName: 'Account model', contextWindow: 128000 + index * 1000,
+      contextWindowKind: index === 1 ? 'input' : 'total' }];
+    await select(runtime, role, input, 'gpt-6.1-sol');
+  }
+  const restored = await new RoleModels(dir, crypto).init(), fresh = create({ configs: restored });
+  assert.equal(fresh.snapshots.size, 0);
+  for (const [index, role] of MODEL_ROLES.entries()) {
+    const account = accounts.get(role); let listings = 0;
+    account.listModels = async (options = {}) => {
+      listings++; assert.notEqual(options.force, true);
+      return structuredClone(account.models);
+    };
+    account.signIn = () => assert.fail('Restoring a role must never start browser login');
+    const config = await fresh.config(role);
+    assert.equal(config.modelCapabilities.contextWindow, 128000 + index * 1000);
+    assert.equal(config.modelCapabilities.contextWindowKind, index === 1 ? 'input' : 'total');
+    assert.equal(config.chatgptProfileId, `${role}-account`);
+    await fresh.config(role);
+    assert.equal(listings, 1);
+  }
+});
+
+test('failed cold account catalogs remain unknown instead of borrowing published capacity and can recover', async t => {
+  const { runtime, accounts, create } = await fixture(t), account = accounts.get('subagent');
+  account.state.session = { status: 'connected', sharing: true, profileId: 'own-account' };
+  await select(runtime, 'subagent', { provider: 'openai', authMode: 'chatgpt' }, 'gpt-6.1-sol');
+  const fresh = create(); let failed = true, listings = 0;
+  account.listModels = async () => {
+    listings++;
+    if (failed) throw new Error('Synthetic network failure');
+    return [{ slug: 'gpt-6.1-sol', displayName: 'Account model', contextWindow: 128000, contextWindowKind: 'total' }];
+  };
+  const unknown = await fresh.config('subagent');
+  assert.equal(unknown.modelCapabilities.contextWindow, undefined);
+  assert.equal(unknown.modelCapabilities.contextWindowKind, undefined);
+  assert.equal(unknown.modelCapabilities.supportsTools, true);
+  assert.deepEqual(unknown.modelCapabilities.reasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.equal(fresh.snapshots.size, 0);
+  failed = false;
+  assert.equal((await fresh.config('subagent')).modelCapabilities.contextWindow, 128000);
+  assert.equal(listings, 2);
+  const missing = create(); account.listModels = async () => [{ slug: 'other-model', displayName: 'Other' }];
+  assert.equal((await missing.config('subagent')).modelCapabilities.contextWindow, undefined);
+});
+
+test('a role or account change during a cold catalog load cannot publish or use the stale snapshot', async t => {
+  const { runtime, accounts, create } = await fixture(t), account = accounts.get('subagent');
+  account.state.session = { status: 'connected', sharing: true, profileId: 'old-account' };
+  await select(runtime, 'subagent', { provider: 'openai', authMode: 'chatgpt' }, 'gpt-6.1-sol');
+  for (const change of ['revision', 'profile', 'sharing']) {
+    account.state.session = { status: 'connected', sharing: true, profileId: 'old-account' };
+    const fresh = create(), entered = deferred(), release = deferred();
+    account.listModels = async () => {
+      entered.resolve(); await release.promise;
+      return [{ slug: 'gpt-6.1-sol', displayName: 'Old', contextWindow: 128000 }];
+    };
+    const pending = fresh.config('subagent');
+    await entered.promise;
+    if (change === 'revision') fresh.invalidate('subagent');
+    else if (change === 'profile') account.state.session.profileId = 'new-account';
+    else account.state.session.sharing = false;
+    release.resolve();
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(fresh.snapshots.size, 0);
+  }
+});
+
+test('cancelling one cold catalog caller does not cancel another role caller or write after cancellation', async t => {
+  const { runtime, accounts, create } = await fixture(t), account = accounts.get('subagent');
+  account.state.session = { status: 'connected', sharing: true, profileId: 'own-account' };
+  await select(runtime, 'subagent', { provider: 'openai', authMode: 'chatgpt' }, 'gpt-6.1-sol');
+  const fresh = create(), entered = deferred(), release = deferred(), controller = new AbortController();
+  account.listModels = async (options = {}) => {
+    assert.equal(options.signal, undefined);
+    entered.resolve(); await release.promise;
+    return [{ slug: 'gpt-6.1-sol', displayName: 'Account model', contextWindow: 128000 }];
+  };
+  const cancelled = fresh.config('subagent', { signal: controller.signal });
+  await entered.promise;
+  const current = fresh.config('subagent');
+  controller.abort();
+  await assert.rejects(cancelled, { name: 'AbortError' });
+  assert.equal(fresh.snapshots.size, 0);
+  release.resolve();
+  assert.equal((await current).modelCapabilities.contextWindow, 128000);
 });

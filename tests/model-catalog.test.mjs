@@ -7,8 +7,8 @@ const entry = (id, extra = {}) => ({ id, object: 'model', ...extra });
 const args = overrides => ({ provider: 'openai', baseUrl: 'https://models.example/v1', apiKey: 'private-test-key', ...overrides });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-test('context capacity comes only from explicit valid directory metadata and distinguishes input limits', () => {
-  assert.equal(deriveModelCapabilities('openai', 'gpt-6-astra', { officialSource: true }).contextWindow, undefined);
+test('context capacity follows valid directory metadata and verified exact official models while distinguishing input limits', () => {
+  assert.equal(deriveModelCapabilities('openai', 'gpt-6-astra', { officialSource: true }).contextWindow, 1050000);
   assert.deepEqual(deriveModelCapabilities('deepseek', 'opaque-id', { context_window: 131072 }), { contextWindow: 131072, contextWindowKind: 'total' });
   assert.deepEqual(deriveModelCapabilities('anthropic', 'opaque-id', { max_input_tokens: 200000, max_tokens: 64000 }), { contextWindow: 200000, contextWindowKind: 'input' });
   assert.deepEqual(deriveModelCapabilities('relay', 'opaque-id', { capabilities: { context_length: 32000 } }), { contextWindow: 32000, contextWindowKind: 'total' });

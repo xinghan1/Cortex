@@ -40,6 +40,10 @@ export interface LoginProfile {
 export interface ChatGPTModel {
   slug: string;
   displayName: string;
+  /** Explicit valid capacity advertised by the official account catalog. */
+  contextWindow?: number;
+  /** A max_input_tokens-only field limits input, not input plus output. */
+  contextWindowKind?: 'total' | 'input';
 }
 
 /** Implement in the trusted local process with an OS-backed secret store. Never use plaintext or a hardcoded key. */

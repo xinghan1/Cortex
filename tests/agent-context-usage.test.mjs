@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { runAgent } from '../src/core/agent.mjs';
 import { requestModel } from '../src/core/providers.mjs';
 import { contextMeasurementMatchesConfig } from '../src/core/context-usage.mjs';
+import { estimateRequestTokens } from '../src/core/context-usage.mjs';
 
 const config = { provider: 'ollama', model: 'fixture', modelCapabilities: { contextWindow: 100000 }, permissionMode: 'request' };
 const options = overrides => ({ config, messages: [{ role: 'user', content: 'Inspect.' }], toolDefinitions: [],
@@ -56,6 +57,36 @@ test('input-only and output-only reports remain partial; absent and invalid coun
     assert.equal(samples.at(-1).measurement, undefined);
     assert.equal(samples.filter(sample => sample.status === 'pending' && sample.phase === 'requesting').length, 1);
   }
+});
+
+test('input-only reports display current input while generated replies count as input at the next planning boundary', async () => {
+  const modelCapabilities = { contextWindow: 20000, contextWindowKind: 'input' };
+  const messages = [{ role: 'user', content: 'GOAL：修复文件并保留原有要求。\n' + 'Q'.repeat(30000) }];
+  const samples = [], calls = []; let normal = 0, summaries = 0, firstInput;
+  await runAgent(options({ config: { ...config, modelCapabilities }, messages,
+    toolDefinitions: [{ name: 'read_file', description: 'Read', parameters: { type: 'object' } }],
+    onContextUsage: value => samples.push(value), requestModel: async request => {
+      calls.push(request);
+      if (request.messages[0].content.startsWith('[CONTEXT_COMPACTION]')) {
+        summaries++;
+        return reply(100, 20);
+      }
+      const inputTokens = estimateRequestTokens(request.messages, request.tools);
+      if (++normal === 1) {
+        firstInput = inputTokens;
+        assert.ok(inputTokens < 16000);
+        return { ...reply(inputTokens, 12000, [call]), message: {
+          role: 'assistant', content: 'R'.repeat(48000), toolCalls: [call] } };
+      }
+      assert.ok(inputTokens < 16000, 'A near-limit next input must be compacted before inference');
+      return reply(inputTokens, 20);
+    } }));
+  assert.equal(summaries, 1); assert.equal(normal, 2);
+  const reported = samples.filter(value => value.status === 'reported');
+  assert.equal(reported[0].usedTokens, firstInput);
+  assert.equal(reported[0].inputTokens, firstInput); assert.equal(reported[0].outputTokens, 12000);
+  assert.equal(reported[0].measurement.messageCount, calls[0].messages.length);
+  assert.equal(messages[1].content.length, 48000, 'The archived assistant remains intact');
 });
 
 test('failure and cancellation retain actual partial counters and never claim complete usage', async () => {

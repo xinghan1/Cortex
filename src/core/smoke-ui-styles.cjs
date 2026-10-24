@@ -370,6 +370,49 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       return [...bytes.subarray(offset, offset + 3)];
     };
     const distance = (left, right) => Math.max(...left.map((value, index) => Math.abs(value - right[index])));
+    const photoOperations = async (style, expectedPixel) => {
+      await js(`(() => {
+        $('photo-operation-fixture')?.remove();cancelFileDisclosureReveal();followOutput=false;
+        const target=element('div');target.id='photo-operation-fixture';
+        for(const [kind,name,args] of [['search','search_text',{path:'src',query:'display-only'}],['list','list_files',{path:'src'}],
+          ['spawn','spawn_agent',{name:'界面检查',task:'只读显示样例'}],['browser','browser_navigate',{url:'https://example.invalid/display-only'}]]){
+          const event={name,args,toolCallId:'photo-'+kind,runId:'photo-display-only'},tool=createToolCard(event);tool.card.id='photo-operation-'+kind;
+          completeTool({...event,result:JSON.stringify({content:'PHOTO_OPERATION_LITERAL_'+kind,files:[]})},{tools:[tool],updateActivity:false});target.append(tool.card);
+        }
+        const agent=window.ForgeSubagents.render({id:'photo-subagent',name:'界面检查子智能体',status:'completed',task:'PHOTO_OPERATION_LITERAL_agent',summary:'只读显示样例已完成。',elapsedMs:800,
+          activity:[{type:'command-output',text:'PHOTO_OPERATION_OUTPUT_agent'}]},{historical:true});agent.id='photo-operation-agent';target.append(agent);
+        document.querySelector('.message.assistant .message-body').append(target);$('message-scroll').scrollTop=0;return true;
+      })()`);
+      const states = [];
+      const inspectOperation = id => js(`(() => {const n=$(${JSON.stringify(id)}),s=n.querySelector(':scope > summary'),r=s.getBoundingClientRect();
+        return {id:n.id,open:n.open,outer:getComputedStyle(n).backgroundColor,summary:getComputedStyle(s).backgroundColor,
+          probe:{x:Math.floor(r.left+r.width*.55),y:Math.floor(r.top+r.height/2)}};})()`);
+      for (const kind of ['search','list','spawn','browser','agent']) {
+        const id = 'photo-operation-' + kind;
+        child.webContents.sendInputEvent({type:'mouseMove',x:1400,y:200}); await settle();
+        const normal = await inspectOperation(id);
+        assert.equal(normal.open,false); assert.equal(rgb(normal.outer).a,0,style+' collapsed operation outer material'); assert.equal(rgb(normal.summary).a,0,style+' operation summary material');
+        await js(`$(${JSON.stringify(id)}).scrollIntoView({block:'nearest',behavior:'instant'});true`);
+        const point = (await inspectOperation(id)).probe;
+        child.webContents.sendInputEvent({type:'mouseMove',...point}); await settle();
+        const hover = await inspectOperation(id); assert.equal(rgb(hover.outer).a,0); assert.equal(rgb(hover.summary).a,0,style+' hovered operation summary');
+        child.webContents.invalidate(); await wait(30); const hoverImage=await child.webContents.capturePage();
+        assert.ok(distance(pixel(hoverImage,hover.probe.x,hover.probe.y),expectedPixel)<=2,'Operation summary blank space must reveal the photo in '+style+' '+kind);
+        await js(`$(${JSON.stringify(id)}).querySelector(':scope > summary').addEventListener('click',event=>window.__photoOperationTrusted=event.isTrusted,{once:true});true`);
+        await click('#'+id+' > summary'); await until('photo operation opens',()=>js(`$(${JSON.stringify(id)}).open&&!fileDisclosureReveal`)); await settle();
+        const opened = await inspectOperation(id); assert.equal(rgb(opened.outer).a,0); assert.equal(rgb(opened.summary).a,0); assert.equal(await js('window.__photoOperationTrusted'),true);
+        const detailSelector = '#'+id+(kind==='agent'?' .subagent-raw > summary':' .tool-technical-details > summary');
+        await click(detailSelector); await settle();
+        const literal = await js(`(() => {const n=$(${JSON.stringify(id)}),p=[...n.querySelectorAll('pre')].find(p=>p.textContent.includes(${JSON.stringify(kind==='agent'?'PHOTO_OPERATION_OUTPUT_agent':'PHOTO_OPERATION_LITERAL_'+kind)}));
+          return {text:p?.textContent,visible:p?.checkVisibility({visibilityProperty:true,opacityProperty:true}),background:p&&getComputedStyle(p).backgroundColor};})()`);
+        assert.equal(literal.visible,true,'Original tool/subagent output must remain accessible'); assert.ok(literal.text); assert.equal(rgb(literal.background).a,1,'Expanded literal output must retain its opaque material');
+        await click('#'+id+' > summary'); await until('photo operation closes',()=>js(`!$(${JSON.stringify(id)}).open&&!fileDisclosureReveal`)); await settle();
+        states.push({kind,normal,hover,opened,literal});
+      }
+      await js("cancelFileDisclosureReveal();$('message-scroll').scrollTop=0;true"); await settle();
+      await capture('ui-style-'+style+'-transparent-operations.png');
+      return states;
+    };
     for (const style of allStyles) {
       stage = 'native imported conversation background ' + style;
       await call('resetBackground'); await settle();
@@ -417,6 +460,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
           assert.ok(distance(pixel(image, point.x, point.y), pixel(image, inside.x, inside.y)) <= 2, 'The solid fixture photo must continue uninterrupted behind the composer/footer surround in ' + style);
         }
       }
+      const operationSamples = style === 'glass' ? [] : await photoOperations(style,pixel(image,inside.x,inside.y));
       await js("window.__materialSendClick=null;$('send-button').addEventListener('click',event=>{window.__materialSendClick={trusted:event.isTrusted,empty:!$('task-input').value.trim()};},{once:true});true");
       await click('#send-button');
       const sendClick = await js('window.__materialSendClick');
@@ -428,7 +472,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
         assert.match(restored.surfaces['#conversation-background'].image, /data:image\/png;base64,/u);
         assert.notEqual(restored.surfaces['#conversation-background'].display, 'none');
       }
-      backgroundSamples[style] = { conversation: layer, global, composerArea, composer, nativeSendClick: sendClick, commonControlsVisible: controls, sourceDeletedAfterImport: true };
+      backgroundSamples[style] = { conversation: layer, global, composerArea, composer, nativeSendClick: sendClick, operationSamples, commonControlsVisible: controls, sourceDeletedAfterImport: true };
       await call('resetBackground'); await settle();
       assert.equal((await inspect()).surfaces['#conversation-background'].display, 'none');
     }
@@ -440,6 +484,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       softenedWhiteGrayLayers: true, nativePaletteSelectionAcrossSixMaterials: true, selectionTextAndIconsContrast: true,
       importedImageOnlyInsideFiveSolidConversations: true, glassRetainsGlobalImage: true, backgroundSamples,
       importedPhotoContinuesBehindComposerAndFooter: true, inputFormKeepsItsOpaqueMaterial: true, nativeSendHitTargetsPreserved: true,
+      toolAndSubagentOuterMaterialsTransparent: true, nativeOperationDisclosureTogglesPreserved: true, expandedLiteralOutputKeepsOpaqueMaterial: true,
       customColorInputPersistsAcrossReload: true, crossWindowPaletteSync: true, nativePaletteReset: true, paletteSamples,
       rendererReloadRestoresIndustrial: true, crossWindowNativeSelectionAndEvents: true,
       solidPanelsMenusDialogsHaveNoBlur: true, whiteAndDarkTextContrast: true, sixOrMoreSyntaxColours: true,

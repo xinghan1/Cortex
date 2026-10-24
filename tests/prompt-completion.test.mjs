@@ -287,6 +287,7 @@ test('main-process completion config enforces real session ownership before disp
       requireSharedReady() {}, shuttingDown: false, quitting: false, localOperation: false, promptPreflights: 0,
       win: { isDestroyed: () => false }, host: { active: context }, context, currentSession,
       workspaceId: 'workspace', configRevision: 1, publicSettings: () => selected, catalogContext: async () => connection,
+      catalogSnapshots: new Map(), fetchModelCatalog: async () => {},
       capabilitiesFor: () => ({ supportsTools: true }), resolvedReasoningEffort: () => 'default',
       isAccountMode: mode => mode === 'chatgpt' || mode === 'deepseek-account',
       accountLabel: mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT',

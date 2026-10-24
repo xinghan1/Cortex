@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { isUnreadableChatGPTStorage, preserveUnreadableChatGPTCredentials } from './chatgpt-storage-recovery.mjs';
+import { deriveModelCapabilities } from './model-catalog.mjs';
 
 const AUTH_ORIGIN = 'https://auth.openai.com';
 const AUTH_PATH = '/api/accounts/authorize';
@@ -92,7 +93,10 @@ function safeModels(models, redact) {
     }
     if (seen.has(model.slug)) continue;
     seen.add(model.slug);
-    result.push({ slug: redact(model.slug), displayName: redact(model.displayName) });
+    const capacity = deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true });
+    result.push({ slug: redact(model.slug), displayName: redact(model.displayName),
+      ...(Number.isSafeInteger(capacity.contextWindow) && capacity.contextWindow > 0
+        ? { contextWindow: capacity.contextWindow, contextWindowKind: capacity.contextWindowKind } : {}) });
   }
   return result;
 }

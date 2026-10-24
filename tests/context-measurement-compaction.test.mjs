@@ -55,3 +55,16 @@ test('changed history and tool schemas invalidate measured prefixes instead of r
     assert.equal(Object.hasOwn(value.metadata, 'reportedContextTokens'), false);
   }
 });
+
+test('an input-only window does not compact because of output tokens outside its input limit', async () => {
+  const old = transcript(), messages = [...old, { role: 'user', content: '继续检查。' }];
+  const inputConfig = { ...config, modelCapabilities: { contextWindow: 20000, contextWindowKind: 'input' } };
+  const contextMeasurement = captureContextMeasurement({ config: inputConfig, messages: [...systemMessages, ...old], tools,
+    inputTokens: 5000, outputTokens: 8000 });
+  const value = await prepareContext({ messages, systemMessages, tools, modelCapabilities: inputConfig.modelCapabilities,
+    contextCompressionTriggerTokens: 10000, contextMeasurement,
+    summarize: () => assert.fail('Input is below the input-only limit even when output was large') });
+  assert.equal(value.compacted, false);
+  assert.equal(value.metadata.reportedContextTokens, 5000);
+  assert.ok(value.metadata.estimatedBeforeTokens < 10000);
+});
