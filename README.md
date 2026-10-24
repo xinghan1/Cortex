@@ -2,14 +2,16 @@
 
 Synora code 是本地运行的 AI 编程桌面基础版。支持 OpenAI GPT、DeepSeek 和 Anthropic Claude 的官方 API，也提供独立“中转站”选项，支持 Chat Completions 与 Responses 两种接口协议。
 
+开发者：[兴汉1](https://github.com/xinghan1)。AI 编程协作：ChatGPT。
+
 ## 下载与安装
 
 打开 [GitHub Releases 下载页](https://github.com/xinghan1/Synora-code/releases/latest)，在 Assets 中选择 Windows x64 版本：
 
 | 版本 | 下载文件 | 使用方式 | 本机数据位置 |
 | --- | --- | --- | --- |
-| 安装版 | `Synora-code-Setup-0.20.1-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
-| 便携版 | `Synora-code-0.20.1-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
+| 安装版 | `Synora-code-Setup-0.21.0-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
+| 便携版 | `Synora-code-0.21.0-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
 
 两种版本均无需安装 Node.js。安装版按当前 Windows 用户安装，更新后继续使用固定数据目录，卸载默认保留本机数据；便携版需保留整个解压目录，移动时一并保留 `data\`。安装版与便携版使用各自的数据目录。
 
@@ -29,9 +31,9 @@ npm.cmd run build
 npm.cmd run build:installer
 ```
 
-`npm run build` 生成便携版 `dist/Synora-code-0.20.1-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
+`npm run build` 生成便携版 `dist/Synora-code-0.21.0-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
 
-`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.20.1-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
+`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.21.0-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
 
 `npm ci` 按锁文件安装依赖，首次运行或构建会下载 Electron 运行时，因此需要联网，且不能省略开发依赖。`prepare:sdk` 从仓库内的 TypeScript 源码生成 ChatGPT 登录组件，无需另外克隆第三方仓库。运行开发界面使用 `npm.cmd start`。
 
@@ -71,7 +73,9 @@ Windows x64 安装版每次启动约 5 秒后检查本仓库的 GitHub Releases�
 
 重新启动时，主窗口恢复上次选中的持久会话、项目和聊天标题，包括手动选中的较早历史会话。临时会话不覆盖恢复记录；项目或记录失效时安全回退到可用历史或新会话。恢复只打开已保存界面，不会自动继续模型、命令或待批准操作；另外新开的窗口仍从新会话开始。
 
-通过左上角 **外观 → 导入背景图…** 选择本机 PNG、JPEG 或 WebP 图片（最大 12 MB），背景统一应用于左侧栏、中间会话和右侧窗口。**外观 → 外观与背景…** 可实时调整背景透明度，数值越大，背景越淡；设置自动保存，重启后保留。默认极光背景采用矢量图，适配高分辨率屏幕；自定义图片的清晰度取决于原图。背景仅用于本机界面，不会作为附件或项目内容发送给模型。
+在 **外观 → 外观与背景…** 中选择玻璃风、纯黑、纯白、工业风、DeepSeek 风或 Codex 风。后两种参考炭灰静蓝与中性柔和的材质、间距和圆角，保留 Synora code 的布局与功能。
+
+通过 **外观 → 导入背景图…** 选择本机 PNG、JPEG 或 WebP 图片（最大 12 MB）。玻璃风应用于整个工作空间；纯黑、纯白、工业风、DeepSeek 风和 Codex 风只在中间会话区域显示图片，其他面板保留各自材质。背景透明度实时调整，数值越大越淡；图片和设置自动保存，切换风格或重启后仍会保留。背景仅用于本机界面，不会作为附件或项目内容发送给模型。
 
 同一设置内可直接选择蓝紫极光、玫瑰红、暖金、森林绿、海蓝、霜白、深夜黑、橙色、紫色、橄榄绿、粉色、品红、青色共十三种内置背景，无需导入图片。选择内置风格会切换掉当前导入图片，文字颜色、磨砂强度和透明度分别保留；这些渐变背景可适配不同屏幕尺寸。
 
@@ -273,6 +277,14 @@ DeepSeek 的发布名称（例如 `DeepSeek-V4.1-Flash-1017`）与 API 模型 ID
 0.8 调整了长推理、代码生成时的流式接收限制：SSE 默认传输预算为 64 MiB，单个事件为 8 MiB，实际模型内容与原生状态合计为 16 MiB；普通 JSON 响应仍为 8 MiB。流式协议元数据和保活消息不会重复占用模型内容预算。触及保护上限时会停止接收并提示分步生成，不会自动重试或降低推理强度。旧版因接收大小失败的任务，升级后需重新发送。
 
 0.10 将模型请求的固定 120 秒超时改为网络无数据超时。默认连续 10 分钟没有收到响应数据才停止；思考数据、正文、工具参数和保活数据都会刷新等待时间，持续返回数据的请求不再受固定总时长限制。等待响应头也使用相同预算；停止按钮可随时取消。此调整不改变 PowerShell 命令自身的执行时限，也不会自动重试请求。
+
+## 使用 DeepSeek 账号
+
+在模型设置中选择 DeepSeek，将连接方式切换为“DeepSeek 账号”，点击登录后在系统浏览器的官方页面完成授权，再获取账号模型目录、选择模型并保存。账号模型目录以官方实际返回的 Messages 接口能力为准；登录失败、取消、失效和本机保存错误会分别显示，可重新连接或退出账号。
+
+授权使用官方公开的浏览器 PKCE 流程，凭据由 Windows 加密后保存到本机数据目录的 `deepseek-account.json`。主模型与各项模型分工可分别登录，互不共享凭据；API Key 方式独立保留。登录、目录与模型请求沿用系统代理，仅连接固定官方授权及推理地址。切换账号或重新授权后会取消旧账号的补全和目录选择，下次任务建立新的会话，避免把旧账号会话发送给新账号。
+
+接入协议依据 [DeepSeek Harness 官方实现](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/deepseek-account-platform)，相关来源与 MIT 许可随程序保留。可访问模型、权限、额度及计费由 DeepSeek 官方账号决定。
 
 ## 使用 ChatGPT 账号
 
