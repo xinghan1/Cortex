@@ -73,7 +73,7 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       return values;
     })()`);
     for (const [status, value] of Object.entries(unmeasured)) {
-      assert.equal(value.text, '0%', status + ' must use the requested empty-state placeholder');
+      assert.equal(value.text, '—', status + ' must distinguish unknown usage from a measured zero');
       assert.equal(value.aria, null); assert.equal(value.progress, '0 100'); assert.equal(value.unknown, true);
       assert.match(value.title, /尚未完整回报/u); assert.doesNotMatch(value.title, /最近完整请求实测/u);
       assert.doesNotMatch(value.title, /当前请求[：:]\s*32,000/u, 'A previous measurement must not be called the current request');
@@ -117,7 +117,7 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
       assert.match(value.title, /当前新增内容待回报/u); assert.doesNotMatch(value.title, /暂无完整实测数据/u);
     }
     for (const name of ['otherModel', 'otherConnection']) {
-      assert.equal(official[name].text, '0%'); assert.equal(official[name].aria, null);
+      assert.equal(official[name].text, '—'); assert.equal(official[name].aria, null);
       assert.equal(official[name].unknown, true); assert.equal(official[name].pending, false);
       assert.doesNotMatch(official[name].title, /35,662|35,870/u, 'Another model/account cannot inherit this report');
     }
@@ -213,7 +213,7 @@ module.exports = async function smokeSessionMetrics({ win, output }) {
     assert.equal(isolation.rounds, '0 轮对话');
     assert.equal(isolation.cache, '0');
     assert.equal(isolation.total, '0');
-    assert.equal(isolation.context, '0%');
+    assert.equal(isolation.context, '—');
     assert.equal(isolation.ariaValue, null);
     assert.equal(isolation.unknownRing, true);
     assert.match(isolation.contextTitle, /未提供上下文容量/);

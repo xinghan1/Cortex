@@ -254,7 +254,10 @@ test('idle eye following receives in-window and desktop cursor positions and pau
   f.emit({ type: 'tool-result', toolCallId: 'a' }); assert.equal(f.gaze.active, true);
   f.emit({ type: 'approval-request', id: 'a' }); assert.equal(f.gaze.active, false);
   f.emit({ type: 'approval-resolved', id: 'a' }); assert.equal(f.gaze.active, true);
-  f.view.emit('blur'); assert.equal(f.gaze.active, false); f.view.emit('focus'); assert.equal(f.gaze.active, true);
+  f.view.emit('blur'); assert.equal(f.gaze.active, true, 'A visible idle pet keeps following desktop cursor positions while unfocused');
+  f.document.emit('mouseleave'); f.emit({ type: 'pet-pointer', x: -500, y: -100, inside: false });
+  assert.deepEqual(f.gaze.points.at(-1), { type: 'pet-pointer', x: -500, y: -100, inside: false });
+  assert.equal(f.gaze.active, true); f.view.emit('focus'); assert.equal(f.gaze.active, true);
   f.document.hidden = true; f.document.emit('visibilitychange'); assert.equal(f.gaze.active, false);
   f.document.hidden = false; f.document.emit('visibilitychange'); assert.equal(f.gaze.active, true);
   f.motion.matches = true; f.motion.emit('change'); assert.equal(f.gaze.active, false);
@@ -263,8 +266,7 @@ test('idle eye following receives in-window and desktop cursor positions and pau
   f.emit({ type: 'pet-state', pet: state() }); assert.equal(f.gaze.active, true);
   f.node('pet-overlay-video').emit('error'); assert.equal(f.gaze.active, false);
   f.ui.destroy(); assert.equal(f.gaze.destroyed, true);
-  assert.equal(f.document.listeners.get('pointermove').size, 0); assert.equal(f.document.listeners.get('mouseleave').size, 0);
-  assert.equal(f.view.listeners.get('blur').size, 0); assert.equal(f.view.listeners.get('focus').size, 0);
+  assert.equal(f.document.listeners.get('pointermove').size, 0);
 });
 
 test('imported pets never use the bundled character eye geometry and a hidden pet does no gaze work', async () => {

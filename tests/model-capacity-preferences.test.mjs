@@ -100,7 +100,9 @@ test('malformed saved preferences are preserved during startup and cannot advert
 test('manual unknown capacities become total windows and real catalog limits remain authoritative', () => {
   const unknown = applyModelCapacity({ capabilities: { supportsImages: true }, manualTokens: 128000 });
   assert.deepEqual(unknown.modelCapacity, { capacityTokens: 128000, advertisedTokens: null, manualTokens: 128000,
-    source: 'manual', limitKind: 'total', compressionTriggerTokens: 102400, manualClamped: false });
+    source: 'manual', limitKind: 'total', capacityOrigin: 'manual', advertisedOrigin: 'unknown', sourceLabel: '手动设置',
+    sourceDescription: '手动设置的上下文容量，仅适用于当前连接和型号；服务商实际限制仍然适用。',
+    compressionTriggerTokens: 102400, manualClamped: false });
   assert.equal(unknown.capabilities.contextWindow, 128000); assert.equal(unknown.capabilities.supportsImages, true);
   const original = { contextWindow: 64000, contextWindowKind: 'input', supportsTools: true };
   const narrower = applyModelCapacity({ capabilities: original, manualTokens: 32000 });
@@ -114,6 +116,32 @@ test('manual unknown capacities become total windows and real catalog limits rem
   const unset = applyModelCapacity({ capabilities: {}, manualTokens: null });
   assert.equal(unset.modelCapacity.capacityTokens, null); assert.equal(unset.modelCapacity.source, 'unknown');
   assert.equal(unset.modelCapacity.compressionTriggerTokens, 45000);
+});
+
+test('capacity descriptions distinguish account input ceilings, public defaults, Ollama configuration and manual values without changing limits', () => {
+  for (const [origin, kind, label, phrase] of [
+    ['provider', 'total', '服务商返回', '服务商接口返回的上下文容量'],
+    ['account', 'input', '账号接口返回', '账号接口返回的输入上限'],
+    ['account', 'total', '账号接口返回', '账号接口返回的上下文容量'],
+    ['official-default', 'total', '官方型号默认', '不代表当前账号一定可用'],
+    ['ollama', 'total', 'Ollama 运行配置', '受模型训练容量约束'],
+  ]) {
+    const capabilities = { contextWindow: 500000, contextWindowKind: kind, contextWindowOrigin: origin };
+    const automatic = applyModelCapacity({ capabilities }).modelCapacity;
+    assert.equal(automatic.capacityTokens, 500000); assert.equal(automatic.capacityOrigin, origin);
+    assert.equal(automatic.advertisedOrigin, origin); assert.equal(automatic.sourceLabel, label);
+    assert.ok(automatic.sourceDescription.includes(phrase)); assert.equal(automatic.limitKind, kind);
+    const manual = applyModelCapacity({ capabilities, manualTokens: 1000000 }).modelCapacity;
+    assert.equal(manual.capacityTokens, 500000); assert.equal(manual.manualClamped, true);
+    assert.equal(manual.capacityOrigin, 'manual'); assert.equal(manual.advertisedOrigin, origin);
+    assert.equal(manual.limitKind, kind); assert.equal(manual.sourceLabel, '手动设置');
+    assert.ok(manual.sourceDescription.includes('服务商实际限制仍然适用'));
+  }
+  const invalid = applyModelCapacity({ capabilities: { contextWindow: 1000000, contextWindowOrigin: 'PRIVATE_METADATA' } });
+  assert.equal(invalid.modelCapacity.capacityOrigin, 'provider'); assert.equal(invalid.capabilities.contextWindowOrigin, 'provider');
+  assert.equal(JSON.stringify(invalid).includes('PRIVATE_METADATA'), false);
+  const unknown = applyModelCapacity().modelCapacity;
+  assert.equal(unknown.capacityOrigin, 'unknown'); assert.equal(unknown.sourceDescription, '当前模型未提供容量，可在下方填写。');
 });
 
 test('the effective capacity drives compression rather than the old 850000 absolute trigger or unknown character guard', async () => {

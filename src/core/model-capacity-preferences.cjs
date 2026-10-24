@@ -11,6 +11,9 @@ const validModel = value => typeof value === 'string' && value.trim() === value 
   && value.length <= 200 && !/[\p{Cc}\p{Cf}]/u.test(value);
 const validCapacity = value => Number.isSafeInteger(value) && value >= MIN_MODEL_CAPACITY && value <= MAX_MODEL_CAPACITY;
 const validLimit = value => Number.isSafeInteger(value) && value > 0;
+const CAPACITY_ORIGINS = new Set(['provider', 'account', 'official-default', 'ollama']);
+const CAPACITY_LABELS = { manual: '手动设置', provider: '服务商返回', account: '账号接口返回',
+  'official-default': '官方型号默认', ollama: 'Ollama 运行配置', unknown: '未知' };
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 /** Stable across restarts and model/window/connection-status changes. Secrets
@@ -61,13 +64,28 @@ function applyModelCapacity({ capabilities = {}, manualTokens = null } = {}) {
   const capacityTokens = manualTokens === null ? advertisedTokens : advertisedTokens === null ? manualTokens : Math.min(manualTokens, advertisedTokens);
   const source = manualTokens !== null ? 'manual' : advertisedTokens !== null ? 'catalog' : 'unknown';
   const limitKind = advertisedTokens !== null && capabilities.contextWindowKind === 'input' ? 'input' : 'total';
+  const advertisedOrigin = advertisedTokens === null ? 'unknown'
+    : CAPACITY_ORIGINS.has(capabilities.contextWindowOrigin) ? capabilities.contextWindowOrigin : 'provider';
+  const capacityOrigin = source === 'manual' ? 'manual' : advertisedOrigin;
+  const kind = limitKind === 'input' ? '输入上限' : '上下文容量';
+  const sourceDescription = {
+    manual: `手动设置的${kind}，仅适用于当前连接和型号；服务商实际限制仍然适用。`,
+    provider: `服务商接口返回的${kind}。`,
+    account: `账号接口返回的${kind}，可能与官方型号公布的上下文容量不同。`,
+    'official-default': '接口未提供容量，采用官方型号公开的上下文容量；不代表当前账号一定可用。',
+    ollama: '当前 Ollama 请求使用的上下文配置，受模型训练容量约束。',
+    unknown: '当前模型未提供容量，可在下方填写。',
+  }[capacityOrigin];
   const result = { ...capabilities,
     // The agent's temporary-capability cache must not resurrect a manual value
     // after reset, while an automatic catalog outage may reuse a known limit.
     contextWindowPreferenceKey: manualTokens === null ? 'automatic' : `manual:${manualTokens}` };
+  if (advertisedTokens === null) delete result.contextWindowOrigin;
+  else result.contextWindowOrigin = advertisedOrigin;
   if (capacityTokens === null) { delete result.contextWindow; delete result.contextWindowKind; }
   else { result.contextWindow = capacityTokens; result.contextWindowKind = limitKind; }
   return { capabilities: result, modelCapacity: { capacityTokens, advertisedTokens, manualTokens, source, limitKind,
+    capacityOrigin, advertisedOrigin, sourceLabel: CAPACITY_LABELS[capacityOrigin], sourceDescription,
     compressionTriggerTokens: capacityTokens === null ? 45000 : Math.max(1, Math.floor(capacityTokens * 0.8)),
     manualClamped: manualTokens !== null && advertisedTokens !== null && manualTokens > advertisedTokens } };
 }
@@ -108,9 +126,9 @@ class ModelCapacityPreferences {
     const scope = modelCapacityScope(connection, model);
     if (capacityTokens !== null && !validCapacity(capacityTokens))
       throw failure('MODEL_CAPACITY_INVALID_VALUE', `模型容量必须为 ${MIN_MODEL_CAPACITY} 至 ${MAX_MODEL_CAPACITY} 之间的整数 Token。`);
-    if (advertisedTokens !== null && !validLimit(advertisedTokens)) throw failure('MODEL_CAPACITY_INVALID_CONFIG', '模型目录容量无效。');
+    if (advertisedTokens !== null && !validLimit(advertisedTokens)) throw failure('MODEL_CAPACITY_INVALID_CONFIG', '模型容量上限无效。');
     if (capacityTokens !== null && advertisedTokens !== null && capacityTokens > advertisedTokens)
-      throw failure('MODEL_CAPACITY_ABOVE_LIMIT', '手动容量不能超过模型目录提供的容量。');
+      throw failure('MODEL_CAPACITY_ABOVE_LIMIT', '手动容量不能超过自动识别的容量上限。');
     const operation = this.#queue.then(async () => {
       await this.init();
       const next = new Map(this.#records); next.delete(scope);

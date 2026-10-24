@@ -82,7 +82,7 @@ function safeProfiles(profiles, redact) {
   });
 }
 
-function safeModels(models, redact) {
+function safeModels(models, redact, normalized = false) {
   if (!Array.isArray(models)) throw connectionError('invalid_model_catalog', 'ChatGPT 返回了无效的模型列表，请稍后重试。', true);
   const result = [];
   const seen = new Set();
@@ -93,10 +93,14 @@ function safeModels(models, redact) {
     }
     if (seen.has(model.slug)) continue;
     seen.add(model.slug);
-    const capacity = deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true });
+    const capacity = deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true,
+      // The SDK's raw metadata comes from this account. Only our own cached
+      // allowlisted models may preserve a derived official fallback marker.
+      contextWindowOrigin: normalized ? model.contextWindowOrigin : 'account' });
     result.push({ slug: redact(model.slug), displayName: redact(model.displayName),
       ...(Number.isSafeInteger(capacity.contextWindow) && capacity.contextWindow > 0
-        ? { contextWindow: capacity.contextWindow, contextWindowKind: capacity.contextWindowKind } : {}) });
+        ? { contextWindow: capacity.contextWindow, contextWindowKind: capacity.contextWindowKind,
+          contextWindowOrigin: capacity.contextWindowOrigin } : {}) });
   }
   return result;
 }
@@ -356,7 +360,7 @@ export class ChatGPTConnection {
     const models = session.sharing ? this.#modelCache.get(this.#profileKey())?.models || [] : [];
     return {
       session, profiles: safeProfiles(this.#profiles, text => this.redact(text)),
-      models: safeModels(models, text => this.redact(text)),
+      models: safeModels(models, text => this.redact(text), true),
       usage: this.#usageState(session),
     };
   }
@@ -455,7 +459,7 @@ export class ChatGPTConnection {
     if (!this.#session.sharing) return [];
     const key = this.#profileKey();
     const cached = this.#modelCache.get(key);
-    if (!force && cached && cached.expiresAt > Date.now()) return safeModels(cached.models, text => this.redact(text));
+    if (!force && cached && cached.expiresAt > Date.now()) return safeModels(cached.models, text => this.redact(text), true);
     if (this.#modelRequests.has(key)) return this.#modelRequests.get(key);
     const request = Promise.resolve().then(async () => {
       try {
@@ -464,7 +468,7 @@ export class ChatGPTConnection {
         if (key !== this.#profileKey() || !this.#session.sharing) throw connectionError('cancelled', '当前 ChatGPT 账号已切换，模型列表请求已取消。');
         this.#modelCache.set(key, { models, expiresAt: Date.now() + MODEL_CACHE_MS });
         this.#updateError(null); this.#notify();
-        return safeModels(models, text => this.redact(text));
+        return safeModels(models, text => this.redact(text), true);
       } catch (error) {
         if (generation === this.#clientGeneration && key === this.#profileKey()) this.#updateError(error);
         throw error;

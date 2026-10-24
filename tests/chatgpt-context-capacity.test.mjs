@@ -42,12 +42,17 @@ test('official GPT-6.1-Sol keeps its verified capacity through SDK, main-process
   const models = await connection.listModels();
   const sol = models.find(value => value.slug === model);
   assert.equal(sol.contextWindow, 1050000); assert.equal(sol.contextWindowKind, 'total');
+  assert.equal(sol.contextWindowOrigin, 'official-default');
   assert.equal(models.find(value => value.slug === 'future-official-model').contextWindow, 256000);
+  assert.equal(models.find(value => value.slug === 'future-official-model').contextWindowOrigin, 'account');
   assert.equal(models.find(value => value.slug === 'input-only').contextWindowKind, 'input');
   assert.equal(models.find(value => value.slug === 'invalid-capacity').contextWindow, undefined);
   assert.equal(JSON.stringify(models).includes('MUST_NOT_BE_PUBLIC'), false);
   assert.equal(JSON.stringify(await connection.publicState()).includes('fixture-account-credential'), false);
   const capabilities = deriveModelCapabilities('openai', model, { ...sol, officialSource: true });
+  assert.equal(capabilities.contextWindowOrigin, 'official-default');
+  assert.equal((await connection.listModels()).find(value => value.slug === model).contextWindowOrigin, 'official-default');
+  assert.equal((await connection.publicState()).models.find(value => value.slug === model).contextWindowOrigin, 'official-default');
   const policy = contextCompressionPolicy({ modelCapabilities: capabilities });
   assert.equal(policy.effectiveTriggerTokens, 840000); assert.equal(policy.triggerClampReason, 'model-capacity');
   assert.equal(Object.hasOwn(policy, 'fallbackGuardTokens'), false);
@@ -56,6 +61,31 @@ test('official GPT-6.1-Sol keeps its verified capacity through SDK, main-process
     summarize: () => assert.fail('This moderate first-turn tool history must not use the 45k unknown-model guard') });
   assert.equal(prepared.compacted, false); assert.equal(prepared.metadata.contextLimit, 1050000);
   assert.equal(prepared.metadata.effectiveTriggerTokens, 840000); assert.deepEqual(messages, original);
+});
+
+test('an explicit 500K account input ceiling stays authoritative through SDK, repeated sanitization, cache and public state', async t => {
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ models: [{ slug: model, display_name: 'GPT-6.1-Sol', visibility: 'list', max_input_tokens: 500000,
+      contextWindowOrigin: 'official-default', accessToken: 'PRIVATE_RESPONSE_METADATA' }] });
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const connection = new ChatGPTConnection({ dataDir: path.resolve('tests/.tmp/input-capacity-mock'), safeStorage: cryptography,
+    createClient: async () => mockClient(), openExternal: async () => assert.fail('No sign-in or user browser is needed') });
+  await connection.init();
+  for (const models of [await connection.listModels(), await connection.listModels(), (await connection.publicState()).models]) {
+    const entry = models.find(value => value.slug === model);
+    assert.deepEqual(entry, { slug: model, displayName: 'GPT-6.1-Sol', contextWindow: 500000,
+      contextWindowKind: 'input', contextWindowOrigin: 'account' });
+    const capabilities = deriveModelCapabilities('openai', model, { ...entry, officialSource: true });
+    assert.equal(capabilities.contextWindow, 500000); assert.equal(capabilities.contextWindowKind, 'input');
+    assert.equal(capabilities.contextWindowOrigin, 'account');
+    assert.equal(contextCompressionPolicy({ modelCapabilities: capabilities }).effectiveTriggerTokens, 400000);
+    assert.equal(JSON.stringify(models).includes('PRIVATE_RESPONSE_METADATA'), false);
+  }
+  assert.equal(calls, 1);
 });
 
 test('exact official model fallbacks respect explicit service capacities and never apply to proxies or unknown IDs', () => {

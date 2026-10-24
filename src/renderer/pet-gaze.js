@@ -4,7 +4,7 @@
   // idle clip, not arbitrary imported pets. All pixels outside the two local
   // eye ellipses are copied unchanged from Chromium's decoded video frame.
   const WIDTH = 640, HEIGHT = 360;
-  const FACE = Object.freeze({ x: 256, y: 180, width: 116, height: 28 });
+  const FACE = Object.freeze({ x: 256, y: 166, width: 116, height: 44 });
   const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
   function eyesIn(frame) {
     const { data, width, height } = frame, mask = new Uint8Array(width * height), components = [];
@@ -83,8 +83,12 @@
       lastFrame = timestamp;
       const box = bounds(), pictureHeight = box.width * HEIGHT / WIDTH;
       const centerX = box.left + box.width * .485, centerY = box.top + (box.height - pictureHeight) / 2 + pictureHeight * .525;
-      const targetX = cursor ? Math.tanh((cursor.x - centerX) / Math.max(90, box.width * .8)) * 3.2 : 0;
-      const targetY = cursor ? Math.tanh((cursor.y - centerY) / Math.max(90, box.width * .8)) * 1.8 : 0;
+      // The 640 px source is displayed in a 220 px pet box by default. A tiny
+      // source warp used to become a barely visible fraction of a screen pixel,
+      // especially when the pet sat against the right edge of the window.
+      const distance = Math.max(60, box.width * .35);
+      const targetX = cursor ? Math.tanh((cursor.x - centerX) / distance) * 5.2 : 0;
+      const targetY = cursor ? Math.tanh((cursor.y - centerY) / distance) * 3.2 : 0;
       x += (targetX - x) * .24; y += (targetY - y) * .24;
       try {
         if (canvas.width !== WIDTH) canvas.width = WIDTH;

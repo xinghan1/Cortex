@@ -231,3 +231,90 @@ test('character estimates exclude image transport, signatures, opaque state and 
   assert.ok(estimateContextTokens(plain, [{ name: 'read_file', description: 'A real tool definition' }]) > estimateContextTokens(plain));
   assert.equal(withTransport[0].providerState.reasoning_content, 'private reasoning');
 });
+
+const breakdownContext = (overrides = {}) => ({ version: 2, provider: 'openai', model: 'fixture', connectionKey: 'account',
+  requestId: 'dispatch-a', phase: 'complete', status: 'reported', inputTokens: 1001, outputTokens: 101,
+  limit: 10000, limitKind: 'total', measuredAt: '2026-10-24T01:00:00Z',
+  breakdown: { version: 1, requestId: 'dispatch-a', source: 'estimated-local',
+    systemTokens: 100, toolTokens: 200, messageTokens: 700, totalTokens: 1000,
+    estimatedOutputTokens: 888, hasUnknownAttachmentCost: false }, ...overrides });
+
+test('breakdown allocates measured input by local weights and adds output only to total-window messages', () => {
+  const context = breakdownContext(), session = { contextUsage: context }, before = structuredClone(session);
+  const value = metrics([record({ inputTokens: 900000, outputTokens: 8000 })], session);
+  assert.deepEqual(value.contextBreakdown, { systemTokens: 100, toolTokens: 200, messageTokens: 802, totalTokens: 1102,
+    source: 'estimated-allocation', displaySource: 'current', hasUnknownAttachmentCost: false });
+  assert.equal(value.contextBreakdown.totalTokens, value.contextDisplay.usedTokens);
+  assert.equal(value.totalTokens, 908000); assert.deepEqual(session, before);
+  const expectedContext = { provider: context.provider, model: context.model, connectionKey: context.connectionKey,
+    limit: 2000, limitKind: 'input' };
+  const input = metrics([], session, { expectedContext });
+  assert.equal(input.contextDisplay.usedTokens, 1001); assert.equal(input.contextDisplay.percent, 50);
+  assert.equal(input.contextBreakdown.messageTokens, 701); assert.equal(input.contextBreakdown.totalTokens, 1001);
+  assert.equal(input.contextBreakdown.source, 'estimated-allocation');
+  assert.deepEqual(session, before, 'Changing the denominator or kind never rewrites stored input weights');
+  const zero = metrics([], { contextUsage: breakdownContext({ inputTokens: 0, outputTokens: 0 }) });
+  assert.deepEqual([zero.contextBreakdown.systemTokens, zero.contextBreakdown.toolTokens, zero.contextBreakdown.messageTokens], [0, 0, 0]);
+  assert.equal(zero.contextBreakdown.totalTokens, zero.contextDisplay.usedTokens);
+});
+
+test('partial or absent usage permits an explicitly local estimate without fabricating measured fields or billing', () => {
+  for (const phase of ['requesting', 'complete', 'stopped', 'failed']) {
+    const context = breakdownContext({ phase, status: phase === 'requesting' ? 'pending' : 'unknown', inputTokens: null, outputTokens: null });
+    const value = metrics([record({ reported: false, inputTokens: null, outputTokens: null })], { contextUsage: context });
+    assert.equal(value.contextDisplay.source, 'estimated'); assert.equal(value.contextDisplay.usedTokens, 1888);
+    assert.equal(value.contextDisplay.percent, 18.9); assert.equal(value.contextDisplay.inputTokens, null);
+    assert.equal(value.contextDisplay.outputTokens, null); assert.equal(value.contextBreakdown.messageTokens, 1588);
+    assert.equal(value.contextBreakdown.totalTokens, value.contextDisplay.usedTokens);
+    assert.equal(value.contextBreakdown.source, 'estimated-local'); assert.equal(value.contextBreakdown.displaySource, 'estimated');
+    assert.equal(value.contextUsedTokens, null); assert.equal(value.contextPercent, null);
+    assert.equal(value.totalTokens, 0); assert.equal(value.usageStatus, 'partial');
+  }
+  const input = metrics([], { contextUsage: breakdownContext({ status: 'unknown', inputTokens: null, outputTokens: null, limitKind: 'input' }) });
+  assert.equal(input.contextDisplay.usedTokens, 1000); assert.equal(input.contextBreakdown.messageTokens, 700);
+  const partial = metrics([], { contextUsage: breakdownContext({ phase: 'requesting', status: 'partial', inputTokens: null, outputTokens: 20 }) });
+  assert.equal(partial.contextDisplay.usedTokens, 1020, 'A wire output counter replaces the stream output estimate, never adds to it');
+  assert.equal(partial.contextOutputTokens, 20); assert.equal(partial.contextUsedTokens, null);
+});
+
+test('last-reported breakdown is bound to its own report and cannot borrow the current request weights', () => {
+  const old = breakdownContext({ inputTokens: 2000, outputTokens: 20 });
+  const pending = makePendingContextUsage(old);
+  assert.equal(pending.requestId, null); assert.equal(pending.breakdown, undefined);
+  assert.deepEqual(pending.lastReported.breakdown, old.breakdown);
+  const current = breakdownContext({ requestId: 'dispatch-b', phase: 'requesting', status: 'pending', inputTokens: null, outputTokens: null,
+    breakdown: { ...old.breakdown, requestId: 'dispatch-b', systemTokens: 990, toolTokens: 0, messageTokens: 10 }, lastReported: old });
+  const value = metrics([], { contextUsage: current });
+  assert.equal(value.contextDisplay.source, 'last-reported');
+  assert.deepEqual(value.contextBreakdown, { systemTokens: 200, toolTokens: 400, messageTokens: 1420, totalTokens: 2020,
+    source: 'estimated-allocation', displaySource: 'last-reported', hasUnknownAttachmentCost: false });
+  const { breakdown, ...legacy } = old;
+  const missing = metrics([], { contextUsage: { ...current, lastReported: legacy } });
+  assert.equal(missing.contextDisplay.source, 'last-reported'); assert.equal(missing.contextBreakdown, null);
+  assert.equal(missing.contextDisplay.usedTokens, 2020, 'Legacy real totals remain visible without invented category rows');
+});
+
+test('breakdown rejects stale bindings, malformed numbers and invalidated request anchors while stripping raw extras', () => {
+  const context = breakdownContext(), expectedContext = { provider: context.provider, model: context.model, connectionKey: context.connectionKey };
+  for (const patch of [{ provider: 'relay' }, { model: 'other' }, { connectionKey: 'another-account' }]) {
+    const value = metrics([], { contextUsage: context }, { expectedContext: { ...expectedContext, ...patch } });
+    assert.equal(value.contextBreakdown, null); assert.equal(value.contextDisplay.source, 'none');
+  }
+  for (const patch of [{ version: 0 }, { requestId: 'another-dispatch' }, { systemTokens: -1 }, { toolTokens: 1.2 },
+    { totalTokens: 1001 }, { hasUnknownAttachmentCost: 'yes' }, { estimatedOutputTokens: Infinity },
+    { systemTokens: Number.MAX_SAFE_INTEGER, toolTokens: Number.MAX_SAFE_INTEGER }]) {
+    const value = metrics([], { contextUsage: { ...context, breakdown: { ...context.breakdown, ...patch } } });
+    assert.equal(value.contextBreakdown, null); assert.equal(value.contextDisplay.source, 'current');
+  }
+  for (const patch of [{ requestId: null }, { phase: 'changed', status: 'pending', inputTokens: null, outputTokens: null },
+    { phase: 'compacted', status: 'pending', inputTokens: null, outputTokens: null }])
+    assert.equal(metrics([], { contextUsage: { ...context, ...patch } }).contextBreakdown, null);
+  const extra = { ...context, breakdown: { ...context.breakdown, hasUnknownAttachmentCost: true,
+    rawSystem: 'PRIVATE_SYSTEM', providerState: { signature: 'PRIVATE_SIGNATURE' } } };
+  const result = metrics([], { contextUsage: extra });
+  assert.equal(result.contextBreakdown.hasUnknownAttachmentCost, true);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE|rawSystem|providerState|estimatedOutputTokens/);
+  assert.doesNotMatch(JSON.stringify(result.contextBreakdown), /dispatch-a/);
+  // Only the existing public contextRequestId is a valid request identifier.
+  assert.equal(result.contextRequestId, 'dispatch-a');
+});

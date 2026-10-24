@@ -6,6 +6,20 @@
 .context-settings-popup:not([hidden]) { animation: context-settings-enter 180ms ease both; }
 .context-settings-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
 .context-settings-heading strong { color: #f2f6ff; font-size: 14px; }
+.context-usage-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 10px 0; }
+.context-usage-heading strong { font-size: 13px; font-weight: 600; }
+#context-usage-tokens { color: var(--ui-muted, #a8bcd9); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.context-composition-meter { display: flex; height: 8px; width: 100%; overflow: hidden; border-radius: 4px; background: var(--ui-soft-border, rgb(180 195 220 / 20%)); }
+.context-segment { display: block; flex: 0 0 auto; width: 0; height: 100%; }
+.context-system { background: #9599a3; }
+.context-tools { background: #ae83dc; }
+.context-messages { background: #6d9ee8; }
+.context-category-list { display: grid; gap: 8px; margin: 16px 0 12px; padding: 0; list-style: none; }
+.context-category-list li { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.context-category-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
+.context-category-list strong { margin-left: auto; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.context-usage-source, .context-capacity-detail { margin: 6px 0 0; color: var(--ui-muted, #a8bcd9); font-size: 11px; overflow-wrap: anywhere; }
+.context-capacity-divider { height: 1px; margin-top: 14px; background: var(--ui-soft-border, rgb(183 207 250 / 20%)); }
 .context-settings-description { margin: 8px 0 12px; color: #a8bcd9; font-size: 11px; }
 .context-settings-popup label { display: block; margin-top: 13px; margin-bottom: 6px; }
 #context-trigger-input { display: block; box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid rgb(180 206 246 / 30%); border-radius: 9px; padding: 9px 10px; background: rgb(5 15 32 / 42%); color: #f0f5ff; font: 13px var(--mono, Consolas, monospace); }

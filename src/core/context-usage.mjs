@@ -41,6 +41,21 @@ export function estimateRequestTokens(messages, tools = []) {
   return estimateContextTokens([...messages, ...native], tools);
 }
 
+// Estimate only the effective request projection, after compaction and native
+// state compatibility filtering. Categories are approximate allocation weights,
+// not provider measurements. Telescoping differences keep their sum equal to
+// the existing request estimate, with shared transport overhead in messages.
+// Only numeric counts leave this module; neither private state nor image bytes
+// are persisted in display metadata. Image inference cost remains unknown.
+export function estimateContextBreakdown(messages, tools = []) {
+  const totalTokens = estimateRequestTokens(messages, tools);
+  const withoutTools = estimateRequestTokens(messages, []);
+  const messageTokens = estimateRequestTokens(messages.filter(message => message.role !== 'system'), []);
+  return { systemTokens: withoutTools - messageTokens, toolTokens: totalTokens - withoutTools,
+    messageTokens, totalTokens, source: 'estimated-local',
+    hasUnknownAttachmentCost: messages.some(message => message.attachments?.length > 0) };
+}
+
 export function captureContextMeasurement({ config, messages, tools = [], inputTokens, outputTokens }) {
   if (!count(inputTokens) || !count(outputTokens) || !Number.isSafeInteger(inputTokens + outputTokens)) return null;
   const inputOnly = config.modelCapabilities?.contextWindowKind === 'input';

@@ -9,12 +9,36 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('context capacity follows valid directory metadata and verified exact official models while distinguishing input limits', () => {
   assert.equal(deriveModelCapabilities('openai', 'gpt-6-astra', { officialSource: true }).contextWindow, 1050000);
-  assert.deepEqual(deriveModelCapabilities('deepseek', 'opaque-id', { context_window: 131072 }), { contextWindow: 131072, contextWindowKind: 'total' });
-  assert.deepEqual(deriveModelCapabilities('anthropic', 'opaque-id', { max_input_tokens: 200000, max_tokens: 64000 }), { contextWindow: 200000, contextWindowKind: 'input' });
-  assert.deepEqual(deriveModelCapabilities('relay', 'opaque-id', { capabilities: { context_length: 32000 } }), { contextWindow: 32000, contextWindowKind: 'total' });
+  assert.deepEqual(deriveModelCapabilities('deepseek', 'opaque-id', { context_window: 131072 }), { contextWindow: 131072, contextWindowKind: 'total', contextWindowOrigin: 'provider' });
+  assert.deepEqual(deriveModelCapabilities('anthropic', 'opaque-id', { max_input_tokens: 200000, max_tokens: 64000 }), { contextWindow: 200000, contextWindowKind: 'input', contextWindowOrigin: 'provider' });
+  assert.deepEqual(deriveModelCapabilities('relay', 'opaque-id', { capabilities: { context_length: 32000 } }), { contextWindow: 32000, contextWindowKind: 'total', contextWindowOrigin: 'provider' });
   for (const value of [0, -1, '128000', 1.5, Number.MAX_SAFE_INTEGER + 1, null]) {
     assert.equal(deriveModelCapabilities('relay', 'opaque-id', { context_window: value, max_output_tokens: 999999 }).contextWindow, undefined);
   }
+});
+
+test('capacity provenance survives normalized caches while remote catalogs cannot claim official fallback or account provenance', async () => {
+  const fallback = deriveModelCapabilities('openai', 'gpt-6.1-sol', { officialSource: true });
+  assert.equal(fallback.contextWindowOrigin, 'official-default');
+  assert.deepEqual(deriveModelCapabilities('openai', 'gpt-6.1-sol', { ...fallback, officialSource: true }), fallback);
+  assert.equal(deriveModelCapabilities('openai', 'gpt-6.1-sol', fallback).contextWindowOrigin, 'official-default',
+    'The API path re-derives normalized catalogs without an account-only officialSource flag');
+  const automatic = await new ModelCatalog().list(args({ baseUrl: 'https://api.openai.com/v1',
+    fetchImpl: async () => json({ data: [entry('gpt-6.1-sol')] }) }));
+  assert.equal(deriveModelCapabilities('openai', 'gpt-6.1-sol', automatic.models[0]).contextWindowOrigin, 'official-default');
+  for (const origin of ['official-default', 'account', 'PRIVATE_METADATA']) {
+    const catalog = new ModelCatalog();
+    const value = await catalog.list(args({ baseUrl: 'https://api.openai.com/v1', fetchImpl: async () => json({
+      data: [entry('gpt-6.1-sol', { context_window: 500000, contextWindowOrigin: origin, credentials: 'PRIVATE_METADATA' })],
+    }) }));
+    assert.equal(value.models[0].contextWindow, 500000);
+    assert.equal(value.models[0].contextWindowOrigin, 'provider');
+    assert.equal(JSON.stringify(value).includes('PRIVATE_METADATA'), false);
+  }
+  assert.equal(deriveModelCapabilities('relay', 'gpt-6.1-sol', { contextWindow: 1050000,
+    officialSource: true, contextWindowOrigin: 'official-default' }).contextWindowOrigin, 'provider');
+  assert.equal(deriveModelCapabilities('openai', 'gpt-6.1-sol', { contextWindow: 500000,
+    officialSource: true, contextWindowOrigin: 'official-default' }).contextWindowOrigin, 'provider');
 });
 
 test('OpenAI catalog uses GET, bearer header, no redirects and preserves unknown model IDs', async () => {

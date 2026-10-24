@@ -1,5 +1,5 @@
-// Native preference controls and real local persistence in disposable windows.
-// Footer metrics below are public display fixtures; no model or command runs.
+// Native capacity controls, real local persistence and local model responses.
+// The loopback fixture never calls a paid provider or runs a command.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -14,7 +14,7 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
   const project = path.join(dataDir, 'context-settings-' + randomUUID());
   const preferenceFile = path.join(dataDir, 'model-capacities.json');
   const model = 'capacity-' + randomUUID(), knownModel = model + '-known', apiKey = 'capacity-fixture-key', problems = [], requests = [];
-  let child, other, baseUrl, original, configured = false, stage = 'initialize capacity fixture';
+  let child, other, baseUrl, original, originalAppearance, configured = false, stage = 'initialize capacity fixture';
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const js = (code, target = child) => target.webContents.executeJavaScript(code);
   const call = (method, value, target = child) => js(`window.forge[${JSON.stringify(method)}](${value === undefined ? '' : JSON.stringify(value)})`, target);
@@ -30,6 +30,10 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
     return {trigger:!!trigger,buttonTag:trigger?.tagName,expanded:trigger?.getAttribute('aria-expanded'),
       popupHidden:popup?.hidden,input:input?.value,min:input?.min,max:input?.max,step:input?.step,
       source:$('context-capacity-source')?.textContent,error:$('context-trigger-error')?.textContent,errorHidden:$('context-trigger-error')?.hidden,
+      sourceDetail:$('context-capacity-detail')?.textContent,usageLabel:$('context-usage-label')?.textContent,
+      usageTokens:$('context-usage-tokens')?.textContent,usageSource:$('context-usage-source')?.textContent,
+      parts:['system','tools','messages'].map(name=>({text:$('context-'+name+'-tokens')?.textContent,
+        width:parseFloat($('context-segment-'+name)?.style.width||'0'),color:getComputedStyle($('context-segment-'+name)).backgroundColor})),
       effectiveHintPresent:!!$('context-effective-hint'),presetElements:popup?.querySelectorAll('.context-trigger-presets,[data-context-trigger]').length||0,
       saveDisabled:$('context-trigger-save')?.disabled,
       ringInsideTrigger:!!trigger?.contains(ring),rings:document.querySelectorAll('#session-context').length,
@@ -60,6 +64,7 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
     if ((await inspect()).popupHidden) await click('#session-context-trigger');
     await until('context popup opens', async () => !(await inspect()).popupHidden);
     await until('context popup enter transition settles', () => js(`Number(getComputedStyle($('context-settings-popup')).opacity)>=.99`));
+    await until('context popup reveal completes', () => js(`$('context-settings-popup').getAnimations().every(animation=>animation.playState!=='running'&&animation.playState!=='pending')`));
   };
   const enter = async value => {
     await open(); await click('#context-trigger-input'); await key('a', ['control']);
@@ -71,6 +76,7 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
     await until('capacity saved ' + value, async () => (await state()).modelCapacity.manualTokens === value);
   };
   const capture = async filename => {
+    await until('context screenshot is fully revealed', () => js(`$('context-settings-popup').getAnimations().every(animation=>animation.playState!=='running'&&animation.playState!=='pending')`));
     for (let attempt = 1; attempt <= 4; attempt++) {
       try { child.webContents.invalidate(); await wait(attempt * 200); const image = await child.webContents.capturePage(); assert.equal(image.isEmpty(), false); await fs.writeFile(path.join(output, filename), image.toPNG()); return; }
       catch (error) { if (attempt === 4 || !/UnknownVizError/.test(String(error))) throw error; }
@@ -99,7 +105,7 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
   };
   try {
     await fs.mkdir(project,{recursive:true});await fs.mkdir(output,{recursive:true});await fs.writeFile(path.join(project,'README.md'),'Disposable capacity fixture.\n');
-    original=await state(win);assert.equal(original.settings.providers.relay.hasKey,false,'Refusing to overwrite a configured relay key');
+    original=await state(win);originalAppearance=await call('getAppearance',undefined,win);assert.equal(original.settings.providers.relay.hasKey,false,'Refusing to overwrite a configured relay key');
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));baseUrl=`http://127.0.0.1:${server.address().port}/v1`;
     child=BrowserWindow.fromId((await call('newWindow',undefined,win)).id);assert.ok(child&&child.webContents.isOffscreen());
     await until('capacity controls',()=>js(`Boolean(appState&&window.forge.setModelCapacity&&!projectSwitching)`));
@@ -107,7 +113,8 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);await until('fixture project',async()=>(await state()).workspace?.root===project&&await js('!projectSwitching'));
     configured=true;await select(model);const originalScale=(await state()).textScale;
     await js(`window.__contextSettingsInputs=[];$('context-trigger-input').addEventListener('input',event=>window.__contextSettingsInputs.push({trusted:event.isTrusted,value:event.target.value}));true`);
-    stage='unknown capacity is blank';await open();let value=await inspect();assertPlacement(value);assert.equal(value.input,'');assert.equal(value.source,'来源：未提供');assert.equal(value.min,'1000');assert.equal(value.max,'16000000');
+    stage='unknown capacity is blank';await open();let value=await inspect();assertPlacement(value);assert.equal(value.input,'');assert.equal(value.source,'容量来源：未知');assert.equal(value.min,'1000');assert.equal(value.max,'16000000');
+    assert.equal(value.usageLabel,'上下文已用 —');assert.equal(value.usageTokens,'— / —');assert.ok(value.parts.every(part=>part.text==='—'&&part.width===0));
     assert.equal(value.rings,1);assert.equal(value.ringInsideTrigger,true);assert.equal(value.role,'progressbar');
     stage='manual persistence';await set(400000);const saved=await state(),scope=saved.modelCapacity.scope;
     assert.equal(saved.modelCapacity.capacityTokens,400000);assert.equal(saved.modelCapacity.compressionTriggerTokens,320000);assert.equal(saved.modelCapacity.source,'manual');
@@ -121,19 +128,30 @@ module.exports = async function smokeContextSettings({ win, output, dataDir }) {
     await until('400k ring',async()=>(await inspect()).percent==='3%');await set(64000);
     await until('64k ring',async()=>(await inspect()).percent==='18.8%'&&(await state(other)).modelCapacity.manualTokens===64000);
     value=await inspect();assert.equal(value.ariaNow,'18.8');assert.equal(value.dash,'18.8 100');assert.match(value.title,/64,000/);assert.equal(requests.filter(item=>!item.completion).length,1);
+    assert.equal(value.usageLabel,'上下文已用 18.8%');assert.equal(value.usageTokens,'12K / 64K');assert.match(value.usageSource,/实测.*分项为估算/);
+    assert.ok(value.parts.every(part=>/^~/.test(part.text)&&part.width>0));assert.ok(Math.abs(value.parts.reduce((sum,part)=>sum+part.width,0)-18.8)<.001);
+    const colors=value.parts.map(part=>part.color.match(/\d+/g).slice(0,3).map(Number));
+    assert.ok(Math.max(...colors[0])-Math.min(...colors[0])<25);assert.ok(colors[1][2]>colors[1][0]&&colors[1][0]>colors[1][1]);assert.ok(colors[2][2]>colors[2][1]&&colors[2][1]>colors[2][0]);
     await open();await capture('context-settings-custom-capacity.png');
+    stage='six interface styles keep usage, composition and capacity editing readable';
+    for(const uiStyle of ['glass','black','white','industrial','deepseek','codex']){
+      await call('setAppearance',{uiStyle});await until('context material '+uiStyle,()=>js(`document.documentElement.dataset.uiStyle===${JSON.stringify(uiStyle)}`));
+      await open();value=await inspect();assertPlacement(value);assert.equal(value.usageLabel,'上下文已用 18.8%');assert.equal(value.input,'64000');assert.ok(value.parts.every(part=>part.width>0));
+      await capture('context-settings-'+uiStyle+'.png');
+    }
     stage='invalid input and reload';const before=await fs.readFile(preferenceFile,'utf8');await enter(100);await click('#context-trigger-save');await until('range error',async()=>!(await inspect()).errorHidden);assert.equal(await fs.readFile(preferenceFile,'utf8'),before);
     child.webContents.reload();await wait(50);await until('reloaded controls',()=>js('Boolean(appState?.modelCapacity&&window.forge.setModelCapacity&&!projectSwitching)'));await open();assert.equal((await inspect()).input,'64000');assertPlacement(await inspect());
     assert.equal((await new ModelCapacityPreferences(dataDir).init()).get(connection,model),64000);
-    stage='model switch and directory ceiling';await enter(65000);await select(knownModel);await until('dirty draft closed',async()=>(await inspect()).popupHidden);await open();value=await inspect();assert.equal(value.input,'128000');assert.equal(value.max,'128000');assert.equal(value.source,'来源：模型目录');
+    stage='model switch and directory ceiling';await enter(65000);await select(knownModel);await until('dirty draft closed',async()=>(await inspect()).popupHidden);await open();value=await inspect();assert.equal(value.input,'128000');assert.equal(value.max,'128000');assert.equal(value.source,'容量来源：服务商返回');assert.match(value.sourceDetail,/服务商/);
     await enter(128001);await click('#context-trigger-save');await until('directory ceiling error',async()=>!(await inspect()).errorHidden&&/128,000/.test((await inspect()).error));assert.equal((await state()).modelCapacity.manualTokens,null);
     await set(64000);await open();await click('#context-trigger-reset');await until('directory reset',async()=>(await state()).modelCapacity.manualTokens===null&&(await state()).modelCapacity.capacityTokens===128000);await open();assert.equal((await inspect()).input,'128000');await capture('context-settings-directory-restored.png');
-    stage='unknown reset';await select(model);await open();assert.equal((await inspect()).input,'64000');await click('#context-trigger-reset');await until('unknown reset saved',async()=>(await state()).modelCapacity.capacityTokens===null&&(await state()).modelCapacity.manualTokens===null);await open();assert.equal((await inspect()).input,'');assert.equal((await inspect()).source,'来源：未提供');assert.equal((await new ModelCapacityPreferences(dataDir).init()).get(connection,model),null);await capture('context-settings-unknown-restored.png');
+    stage='unknown reset';await select(model);await open();assert.equal((await inspect()).input,'64000');await click('#context-trigger-reset');await until('unknown reset saved',async()=>(await state()).modelCapacity.capacityTokens===null&&(await state()).modelCapacity.manualTokens===null);await open();assert.equal((await inspect()).input,'');assert.equal((await inspect()).source,'容量来源：未知');assert.equal((await new ModelCapacityPreferences(dataDir).init()).get(connection,model),null);await capture('context-settings-unknown-restored.png');
     stage='dismiss and compact viewport';await key('Escape');await until('Escape closes',async()=>(await inspect()).popupHidden);child.setContentSize(1100,760);await wait(100);await open();assertPlacement(await inspect());await click('#task-input');await until('outside closes',async()=>(await inspect()).popupHidden);assert.deepEqual(problems,[]);
-    const result={status:'completed',realApi:false,realCommands:false,localFixtureModelOnly:true,nativeNumericInputAndSave:true,unknownCapacityBlank:true,persistentFreshStoreRoundTrip:true,rendererReloadRestoresSavedValue:true,crossWindowSameScopeSync:true,exactModelAndConnectionScope:true,switchDiscardsDirtyDraft:true,knownDirectoryMaximumEnforced:true,resetRestoresDirectoryOrUnknown:true,actualContextRingRecalculated:{usedTokens:12000,beforeCapacity:400000,beforePercent:3,afterCapacity:64000,afterPercent:18.8},existingTextScalePreserved:true,nativeEscapeAndOutsideDismiss:true,compactPopoverFitsViewport:true,screenshots:['context-settings-custom-capacity.png','context-settings-directory-restored.png','context-settings-unknown-restored.png']};
+    const result={status:'completed',realApi:false,realCommands:false,localFixtureModelOnly:true,nativeNumericInputAndSave:true,unknownCapacityBlank:true,persistentFreshStoreRoundTrip:true,rendererReloadRestoresSavedValue:true,crossWindowSameScopeSync:true,exactModelAndConnectionScope:true,switchDiscardsDirtyDraft:true,knownDirectoryMaximumEnforced:true,resetRestoresDirectoryOrUnknown:true,approximateThreeWayBreakdown:true,segmentedColors:['gray','purple','blue'],sixMaterialStyles:true,actualContextRingRecalculated:{usedTokens:12000,beforeCapacity:400000,beforePercent:3,afterCapacity:64000,afterPercent:18.8},existingTextScalePreserved:true,nativeEscapeAndOutsideDismiss:true,compactPopoverFitsViewport:true,screenshots:['context-settings-custom-capacity.png','context-settings-directory-restored.png','context-settings-unknown-restored.png',...['glass','black','white','industrial','deepseek','codex'].map(style=>'context-settings-'+style+'.png')]};
     await fs.writeFile(path.join(output,'context-settings-smoke-result.json'),JSON.stringify(result,null,2)+'\n');return result;
   }catch(error){const failure={status:'failed',stage,error:error.message,stack:error.stack,requests,problems};if(child&&!child.isDestroyed()){try{failure.ui=await inspect();failure.state=await state();await capture('context-settings-failure.png');}catch(diagnostic){failure.diagnosticError=diagnostic.message;}}await fs.writeFile(path.join(output,'context-settings-smoke-result.json'),JSON.stringify(failure,null,2)+'\n');throw new Error('Context-settings smoke failed at '+stage+': '+error.message,{cause:error});
   }finally{
+    if(originalAppearance&&!win.isDestroyed())await call('setAppearance',{uiStyle:originalAppearance.uiStyle},win).catch(()=>{});
     const target=child&&!child.isDestroyed()?child:win;
     if(configured&&!target.isDestroyed()){
       for(const selectedModel of[model,knownModel]){await call('saveSettings',{provider:'relay',authMode:'apiKey',apiProtocol:'responses',baseUrl,apiKey,model:selectedModel,reasoningEffort:'default'},target).catch(()=>{});const current=await state(target).catch(()=>null);if(current?.modelCapacity?.scope)await call('setModelCapacity',{scope:current.modelCapacity.scope,capacityTokens:null},target).catch(()=>{});}

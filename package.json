@@ -1,7 +1,7 @@
 {
   "name": "synora-code",
   "productName": "Synora code",
-  "version": "0.21.3",
+  "version": "0.21.4",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",

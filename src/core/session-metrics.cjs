@@ -65,11 +65,59 @@ function publicContextReport(report) {
   };
 }
 
+// Stored counts describe one dispatched request's input. Validate that anchor
+// before allocating an actual report or exposing a local estimate. Inherited
+// counts from an invalidated request must never describe newly changed content.
+function requestBreakdown(context) {
+  const value = context?.breakdown;
+  if (context?.version !== 2 || typeof context.requestId !== 'string' || !context.requestId
+      || value?.version !== 1 || value.requestId !== context.requestId || value.source !== 'estimated-local'
+      || !['requesting', 'complete', 'failed', 'stopped'].includes(context.phase)
+      || !['systemTokens', 'toolTokens', 'messageTokens', 'totalTokens'].every(key => validTokens(value[key]))
+      || !validTokens(value.systemTokens + value.toolTokens + value.messageTokens)
+      || value.systemTokens + value.toolTokens + value.messageTokens !== value.totalTokens
+      || typeof value.hasUnknownAttachmentCost !== 'boolean'
+      || (value.estimatedOutputTokens !== undefined && !validTokens(value.estimatedOutputTokens))) return null;
+  return value;
+}
+
+function publicContextBreakdown(context, displaySource, measured = false) {
+  const value = requestBreakdown(context);
+  if (!value) return null;
+  let systemTokens = value.systemTokens, toolTokens = value.toolTokens, messageTokens = value.messageTokens;
+  if (measured) {
+    // These are approximate proportions calibrated to the real input total,
+    // not three invented server counters. Assign integer rounding to messages.
+    systemTokens = value.totalTokens ? Math.floor(context.inputTokens * (value.systemTokens / value.totalTokens)) : 0;
+    toolTokens = value.totalTokens ? Math.min(context.inputTokens - systemTokens,
+      Math.floor(context.inputTokens * (value.toolTokens / value.totalTokens))) : 0;
+    messageTokens = context.inputTokens - systemTokens - toolTokens;
+  }
+  const outputTokens = context.limitKind === 'input' ? 0 : validTokens(context.outputTokens)
+    ? context.outputTokens : value.estimatedOutputTokens ?? 0;
+  messageTokens += outputTokens;
+  const totalTokens = systemTokens + toolTokens + messageTokens;
+  if (!validTokens(totalTokens)) return null;
+  return { systemTokens, toolTokens, messageTokens, totalTokens,
+    source: measured ? 'estimated-allocation' : 'estimated-local', displaySource,
+    hasUnknownAttachmentCost: value.hasUnknownAttachmentCost };
+}
+
+function estimatedContextReport(context, breakdown) {
+  const limit = validTokens(context.limit) && context.limit > 0 ? context.limit : null;
+  return { usedTokens: breakdown.totalTokens, inputTokens: null, outputTokens: null, limit,
+    limitKind: context.limitKind === 'input' ? 'input' : 'total',
+    percent: limit ? Math.round(breakdown.totalTokens / limit * 1000) / 10 : null,
+    provider: typeof context.provider === 'string' ? context.provider : null,
+    model: typeof context.model === 'string' ? context.model : null,
+    measuredAt: typeof context.measuredAt === 'string' ? context.measuredAt : null };
+}
+
 function makePendingContextUsage(previous = {}, overrides = {}) {
-  const { lastReported, ...flat } = previous;
-  const last = reportedContext(flat) || reportedContext(lastReported);
+  const { lastReported, breakdown, ...flat } = previous;
+  const last = reportedContext(previous) || reportedContext(lastReported);
   return { ...flat, ...overrides, version: 2, status: 'pending', phase: 'changed',
-    usedTokens: null, inputTokens: null, outputTokens: null, measuredAt: null,
+    usedTokens: null, inputTokens: null, outputTokens: null, measuredAt: null, requestId: null,
     ...(last ? { lastReported: last } : {}) };
 }
 
@@ -84,13 +132,19 @@ function createSessionMetrics(session, usage, { unavailable = false, expectedCon
     : context.version === 2 && (context.status === 'partial' || contextInputTokens !== null || contextOutputTokens !== null) ? 'partial' : 'unknown';
   const contextUsedTokens = actual ? actual.usedTokens : null;
   const previous = reportedContext(projectCurrentCapacity(context.lastReported, expectedContext));
-  const contextLastReported = previous && contextMatches(previous, expectedContext) ? publicContextReport(previous) : null;
+  const compatiblePrevious = previous && contextMatches(previous, expectedContext) ? previous : null;
+  const contextLastReported = publicContextReport(compatiblePrevious);
   // Display the latest compatible complete report while a changed request is
   // unmeasured. This is a labelled historical sample, never a current budget,
   // streaming approximation, or replacement for the strict fields above.
-  const displayReport = actual ? publicContextReport(actual) : contextLastReported;
+  const displaySource = actual ? 'current' : contextLastReported ? 'last-reported' : 'estimated';
+  const contextBreakdown = actual ? publicContextBreakdown(actual, 'current', true)
+    : compatiblePrevious ? publicContextBreakdown(compatiblePrevious, 'last-reported', true)
+    : !stale ? publicContextBreakdown(context, 'estimated') : null;
+  const displayReport = actual ? publicContextReport(actual) : contextLastReported
+    || (contextBreakdown ? estimatedContextReport(context, contextBreakdown) : null);
   const contextDisplay = {
-    source: actual ? 'current' : displayReport ? 'last-reported' : 'none',
+    source: displayReport ? displaySource : 'none',
     pending: !actual && (Boolean(displayReport) || ['pending', 'partial'].includes(contextStatus)),
     ...(displayReport || { usedTokens: null, inputTokens: null, outputTokens: null, limit: null, percent: null,
       provider: null, model: null, measuredAt: null, limitKind: null }),
@@ -115,7 +169,7 @@ function createSessionMetrics(session, usage, { unavailable = false, expectedCon
     contextPhase: !stale && typeof context.phase === 'string' ? context.phase : null,
     contextMeasuredAt: actual && typeof context.measuredAt === 'string' ? context.measuredAt : null,
     contextRequestId: !stale && typeof context.requestId === 'string' ? context.requestId : null,
-    contextLastReported, contextDisplay,
+    contextLastReported, contextDisplay, contextBreakdown,
     contextRequestedTriggerTokens: !stale && validTokens(context.requestedTriggerTokens) ? context.requestedTriggerTokens : null,
     contextEffectiveTriggerTokens: !stale && validTokens(context.effectiveTriggerTokens) ? context.effectiveTriggerTokens : null,
     contextTriggerClamped: !stale && context.triggerClamped === true,

@@ -27,7 +27,7 @@
     let state = { enabled: false, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: '', packs: [] };
     let disposed = false, revision = 0, writeRevision = 0, animationIndex = 0, currentKind = '', currentURL = '', mediaFailed = false;
     let running = false, waiting = false, workspaceId = '', phase = 'idle', drag = null, selectedPack = null;
-    let transient = false, blurred = false;
+    let transient = false;
     const tools = new Set(), approvals = new Set(), listeners = new Set();
     const motion = view.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => motion?.matches === true;
@@ -38,7 +38,7 @@
     });
     function syncGaze() {
       gaze?.setActive(!disposed && state.followCursor && selectedPack?.id === 'dsh-pet'
-        && !overlay.hidden && !document.hidden && !blurred && !reduced() && !mediaFailed
+        && !overlay.hidden && !document.hidden && !reduced() && !mediaFailed
         && !drag && !transient && phase === 'idle' && !running && !waiting && !tools.size && currentKind === 'idle');
     }
     const inputRegions = [document.querySelector?.('.composer-area'), document.getElementById?.('task-form'), document.getElementById?.('composer-approval')].filter(Boolean);
@@ -235,9 +235,6 @@
     const visibility = () => playback();
     const motionChanged = () => playback();
     const cursorMoved = event => { if (event.pointerType !== 'touch') gaze?.point({ x: event.clientX, y: event.clientY }); };
-    const cursorLeft = () => gaze?.point(null);
-    const windowBlurred = () => { blurred = true; syncGaze(); };
-    const windowFocused = () => { blurred = false; syncGaze(); };
     video.addEventListener('pointerdown', pointerDown); video.addEventListener('pointermove', pointerMove);
     video.addEventListener('pointerup', pointerEnd); video.addEventListener('pointercancel', pointerEnd);
     video.addEventListener('contextmenu', contextMenu); video.addEventListener('keydown', keyDown);
@@ -245,8 +242,9 @@
     fallback.addEventListener('click', onConfigure); fallback.addEventListener('contextmenu', contextMenu);
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
     document.addEventListener('visibilitychange', visibility); view.addEventListener?.('resize', resized);
-    document.addEventListener('pointermove', cursorMoved, { passive: true }); document.addEventListener('mouseleave', cursorLeft);
-    view.addEventListener?.('blur', windowBlurred); view.addEventListener?.('focus', windowFocused);
+    // The main process also supplies desktop cursor coordinates. Losing focus
+    // or crossing the window edge must not stop a still-visible idle pet.
+    document.addEventListener('pointermove', cursorMoved, { passive: true });
     motion?.addEventListener?.('change', motionChanged);
     const layoutObserver = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(scheduleLayout) : null;
     const layoutRegions = new Set([...inputRegions, document.getElementById?.('message-scroll'), document.querySelector?.('.conversation')].filter(Boolean));
@@ -263,8 +261,7 @@
         if (disposed) return; disposed = true; drag = null; listeners.clear(); unsubscribe?.();
         document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
         document.removeEventListener('visibilitychange', visibility); view.removeEventListener?.('resize', resized);
-        document.removeEventListener('pointermove', cursorMoved); document.removeEventListener('mouseleave', cursorLeft);
-        view.removeEventListener?.('blur', windowBlurred); view.removeEventListener?.('focus', windowFocused); gaze?.destroy();
+        document.removeEventListener('pointermove', cursorMoved); gaze?.destroy();
         motion?.removeEventListener?.('change', motionChanged); layoutObserver?.disconnect();
         if (layoutFrame !== null) { view.cancelAnimationFrame(layoutFrame); layoutFrame = null; }
         video.pause(); video.removeAttribute('src'); video.load();

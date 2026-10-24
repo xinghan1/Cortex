@@ -70,7 +70,7 @@ module.exports = async function smokeMenus({ win, output, dataDir }) {
     const found=await js(`(async()=>{
       const seen=[];
       const result=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{off();reject(new Error('Find timed out: '+JSON.stringify(seen)));},4000);const off=window.forge.onEvent(event=>{if(event.type==='find-result'){seen.push(event);if(event.matches>0){clearTimeout(timer);off();resolve(event);}}});});
-      const input=document.getElementById('find-input');input.value='开始一个任务';input.dispatchEvent(new Event('input',{bubbles:true}));return await result;
+      const input=document.getElementById('find-input');input.value='探索未至之境';input.dispatchEvent(new Event('input',{bubbles:true}));return await result;
     })()`);
     await js(`document.getElementById('find-close').click()`);
     if(!found.matches) throw new Error('Find did not locate visible app text');

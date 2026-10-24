@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { captureContextMeasurement, contextMeasurementMatchesConfig, estimateRequestTokens, getContextMeasurementTokens } from '../src/core/context-usage.mjs';
+import { captureContextMeasurement, contextMeasurementMatchesConfig, estimateContextBreakdown, estimateRequestTokens, getContextMeasurementTokens } from '../src/core/context-usage.mjs';
 
 const config = { provider: 'ollama', model: 'fixture', baseUrl: 'http://localhost:11434', apiKey: 'PRIVATE_KEY',
   connectionKey: 'connection', modelCapabilities: { contextWindow: 32768 } };
@@ -64,4 +64,31 @@ test('input-only capacity calibrates input without adding output, while old ambi
   const nextInput = getContextMeasurementTokens(generated, tools, inputOnly);
   assert.equal(nextInput.tokens, 5000 + expectedGrowth);
   assert.equal(nextInput.estimatedDeltaTokens, expectedGrowth);
+});
+
+test('request breakdown counts effective system, tools and conversation with exact approximate totals and no private payload', () => {
+  const system = { role: 'system', content: 'PRIVATE_SYSTEM '.repeat(40) };
+  const projected = [system, ...messages], before = structuredClone(projected);
+  const value = estimateContextBreakdown(projected, tools);
+  assert.ok(value.systemTokens > 0); assert.ok(value.toolTokens > 0); assert.ok(value.messageTokens > 0);
+  assert.equal(value.totalTokens, estimateRequestTokens(projected, tools));
+  assert.equal(value.systemTokens + value.toolTokens + value.messageTokens, value.totalTokens);
+  assert.equal(value.source, 'estimated-local'); assert.equal(value.hasUnknownAttachmentCost, true);
+  assert.doesNotMatch(JSON.stringify(value), /PRIVATE|fixture|aW1hZ2U=|providerState|parameters/);
+  const withoutNative = projected.map(({ providerState, ...message }) => message);
+  const plain = estimateContextBreakdown(withoutNative, tools);
+  assert.ok(value.messageTokens > plain.messageTokens, 'Opaque replay remains a numeric budget allowance only');
+  assert.ok(Math.abs(value.systemTokens - plain.systemTokens) <= 1);
+  assert.ok(Math.abs(value.toolTokens - plain.toolTokens) <= 1, 'Ceiling at category boundaries may allocate one rounding token');
+  assert.deepEqual(projected, before);
+});
+
+test('breakdown treats image inference cost as unknown and never counts the base64 transport as text', () => {
+  const imageMessage = { role: 'user', content: 'Inspect.', attachments: [{ dataUrl: 'data:image/png;base64,' + 'A'.repeat(100000) }] };
+  const withImage = estimateContextBreakdown([imageMessage]);
+  const withoutImage = estimateContextBreakdown([{ role: 'user', content: 'Inspect.' }]);
+  assert.equal(withImage.totalTokens, withoutImage.totalTokens);
+  assert.equal(withImage.hasUnknownAttachmentCost, true); assert.equal(withoutImage.hasUnknownAttachmentCost, false);
+  assert.equal(withImage.systemTokens, 0); assert.equal(withImage.toolTokens, 0);
+  assert.equal(withImage.messageTokens, withImage.totalTokens);
 });

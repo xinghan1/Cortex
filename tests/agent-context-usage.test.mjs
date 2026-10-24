@@ -4,6 +4,9 @@ import { runAgent } from '../src/core/agent.mjs';
 import { requestModel } from '../src/core/providers.mjs';
 import { contextMeasurementMatchesConfig } from '../src/core/context-usage.mjs';
 import { estimateRequestTokens } from '../src/core/context-usage.mjs';
+import { estimateContextBreakdown } from '../src/core/context-usage.mjs';
+import { createRequire } from 'node:module';
+const { aggregateSessionUsage, createSessionMetrics } = createRequire(import.meta.url)('../src/core/session-metrics.cjs');
 
 const config = { provider: 'ollama', model: 'fixture', modelCapabilities: { contextWindow: 100000 }, permissionMode: 'request' };
 const options = overrides => ({ config, messages: [{ role: 'user', content: 'Inspect.' }], toolDefinitions: [],
@@ -165,4 +168,64 @@ test('a later partial failure preserves the previous complete sample and cancell
   assert.equal(stopped.inputTokens, 90); assert.equal(stopped.outputTokens, 4);
   assert.equal(stopped.lastReported.usedTokens, 75); assert.equal(stopped.lastReported.lastReported, undefined);
   assert.equal(stopped.measurement.measuredTokens, 75, 'A cancelled request cannot capture a new calibration anchor');
+});
+
+test('dispatch breakdown uses the compacted request projection and never the full persisted archive or summary request', async () => {
+  const tools = [{ name: 'read_file', description: 'Read fixture', parameters: { type: 'object' } }];
+  const messages = [{ role: 'user', content: 'GOAL: retain the full original requirement and inspect the file.' },
+    { role: 'assistant', content: 'Previously read.', toolCalls: [call], providerState: {
+      provider: 'ollama', output: [{ encrypted_content: 'PRIVATE_NATIVE_STATE' }] } },
+    { role: 'tool', toolCallId: call.id, content: 'ARCHIVED_FILE_CONTENT\n' + 'X'.repeat(120000) },
+    { role: 'user', content: 'Now continue verifying the result.' }];
+  const original = structuredClone(messages), samples = [], records = [], ordinary = [], checkpoint = {};
+  let summaries = 0;
+  await runAgent(options({ config: { ...config, contextCompressionTriggerTokens: 10000 }, messages, contextCheckpoint: checkpoint,
+    toolDefinitions: tools, onContextUsage: sample => samples.push(sample), onUsage: async record => records.push(record),
+    requestModel: async request => {
+      if (request.messages[0].content.startsWith('[CONTEXT_COMPACTION]')) {
+        summaries++;
+        request.onProgress({ estimatedOutputTokens: 99 });
+        return { ...reply(200, 10), message: { role: 'assistant', content: 'The file was inspected; continue verifying the original goal.', toolCalls: [] } };
+      }
+      ordinary.push(request);
+      assert.equal(request.messages.some(message => message.content.includes('ARCHIVED_FILE_CONTENT')), false);
+      return reply(300, 20);
+    } }));
+  assert.equal(summaries, 1); assert.equal(ordinary.length, 1); assert.equal(checkpoint.count, 1);
+  const final = samples.at(-1), { version, requestId, estimatedOutputTokens, ...weights } = final.breakdown;
+  assert.equal(version, 1); assert.equal(requestId, final.requestId);
+  assert.deepEqual(weights, estimateContextBreakdown(ordinary[0].messages, tools));
+  assert.ok(weights.totalTokens < estimateRequestTokens([ordinary[0].messages[0], ...original], tools));
+  assert.deepEqual(messages.slice(0, original.length), original);
+  assert.equal(samples.find(sample => sample.phase === 'compacted').breakdown, undefined);
+  assert.equal(new Set(samples.filter(sample => sample.breakdown).map(sample => sample.requestId)).size, 1);
+  assert.equal(records.length, 2); assert.equal(records.filter(record => record.purpose === 'context-compaction').length, 1);
+  const value = createSessionMetrics({ messages, contextUsage: final }, aggregateSessionUsage(records));
+  assert.equal(value.contextBreakdown.totalTokens, 320); assert.equal(value.contextDisplay.usedTokens, 320);
+  assert.equal(value.contextBreakdown.source, 'estimated-allocation');
+  assert.doesNotMatch(JSON.stringify(final.breakdown), /PRIVATE|ARCHIVED_FILE|GOAL|parameters|role/);
+});
+
+test('a numeric output stream estimate supplies approximate display only and never enters billing or measured fields', async () => {
+  for (const limitKind of ['total', 'input']) {
+    const samples = [], records = [], dispatched = [];
+    await runAgent(options({ config: { ...config, modelCapabilities: { contextWindow: 100000, contextWindowKind: limitKind } },
+      onContextUsage: sample => samples.push(sample), onUsage: async record => records.push(record), requestModel: async request => {
+        dispatched.push(request);
+        request.onProgress({ estimatedOutputTokens: 900 });
+        request.onProgress({ estimatedOutputTokens: 500 });
+        return { message: { role: 'assistant', content: 'Visible answer.', toolCalls: [] }, usageReported: false, contextUsage: { complete: true } };
+      } }));
+    const final = samples.at(-1), value = createSessionMetrics({ contextUsage: final }, aggregateSessionUsage(records));
+    const inputEstimate = estimateRequestTokens(dispatched[0].messages, dispatched[0].tools);
+    assert.equal(final.breakdown.estimatedOutputTokens, 900);
+    assert.equal(value.contextDisplay.source, 'estimated');
+    assert.equal(value.contextDisplay.usedTokens, inputEstimate + (limitKind === 'total' ? 900 : 0));
+    assert.equal(value.contextBreakdown.totalTokens, value.contextDisplay.usedTokens);
+    assert.equal(value.contextUsedTokens, null); assert.equal(value.contextInputTokens, null); assert.equal(value.contextOutputTokens, null);
+    assert.equal(records[0].reported, false); assert.equal(records[0].inputTokens, null); assert.equal(records[0].outputTokens, null);
+    assert.equal(value.totalTokens, 0);
+    const changed = samples.find(sample => sample.phase === 'changed');
+    assert.equal(changed?.breakdown, undefined);
+  }
 });

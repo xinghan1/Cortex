@@ -1533,6 +1533,7 @@ function renderUsageStats(stats) {
 }
 
 function renderSessionMetrics(metrics) {
+  window.ForgeContextSettings?.updateMetrics(metrics);
   const validNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
   const number = value => validNumber(value) ? Math.trunc(value).toLocaleString('en-US') : '—';
   const percent = value => validNumber(value) && value <= 100
@@ -1557,26 +1558,31 @@ function renderSessionMetrics(metrics) {
       inputTokens: metrics.contextInputTokens, outputTokens: metrics.contextOutputTokens, limit: metrics.contextLimit }
     : { source: 'none', pending: true });
   const contextPercent = validNumber(display.percent)
-    ? display.percent.toLocaleString('zh-CN', { maximumFractionDigits: 1 }) + '%' : null;
-  const contextLabel = contextPercent === null ? '0%' : contextPercent;
+    ? `${display.source === 'estimated' ? '~' : ''}${display.percent.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}%` : null;
+  const contextLabel = contextPercent === null ? '—' : contextPercent;
   const context = $('session-context');
   const description = typeof metrics?.contextDescription === 'string' ? metrics.contextDescription : '';
   const details = [];
-  const hasSample = display.source !== 'none' && validNumber(display.usedTokens);
+  const hasEstimate = display.source === 'estimated' && validNumber(display.usedTokens);
+  const hasSample = !['none', 'estimated'].includes(display.source) && validNumber(display.usedTokens);
   if (hasSample) {
     const limit = validNumber(display.limit) ? number(display.limit) : '未提供';
     details.push(`最近完整请求实测：${number(display.usedTokens)} / ${display.limitKind === 'input' ? '输入上限' : '容量'} ${limit} Token。`);
     details.push(`服务端回报：输入 ${number(display.inputTokens)} / 输出 ${validNumber(display.outputTokens) ? number(display.outputTokens) : '未回报'} Token。`);
     if (display.pending) details.push('当前新增内容待回报，以上保留最近完整实测；未计入本地估算。');
   }
-  if (description && !hasSample) details.push(description);
-  else if (contextPercent === null && !hasSample) details.push('等待完整的服务端实测数据。');
-  const contextTitle = (contextPercent !== null ? `${display.pending ? '最近实测上下文' : '上下文使用率'}：${contextLabel}\n`
-    : hasSample ? '模型未提供可用容量，暂显示 0%。\n' : '暂无完整实测数据，暂显示 0%。\n') + details.join('\n');
+  if (hasEstimate) {
+    details.push(`本地估算：~${number(display.usedTokens)} / 容量 ${validNumber(display.limit) ? number(display.limit) : '未提供'} Token。`);
+    details.push('服务端尚未完整回报；本地估算不作为实测或计费用量。');
+  }
+  if (description && !hasSample && !hasEstimate) details.push(description);
+  else if (contextPercent === null && !hasSample && !hasEstimate) details.push('等待完整的服务端实测数据。');
+  const contextTitle = (contextPercent !== null ? `${hasEstimate ? '本地估算上下文' : display.pending ? '最近实测上下文' : '上下文使用率'}：${contextLabel}\n`
+    : hasSample || hasEstimate ? '模型未提供可用容量，使用率未知。\n' : '暂无可用上下文用量。\n') + details.join('\n');
   $('session-context-value').textContent = contextLabel;
   $('session-context-progress').setAttribute('stroke-dasharray', `${contextPercent === null ? 0 : Math.min(100, display.percent)} 100`);
   context.classList.toggle('unknown', contextPercent === null);
-  context.classList.toggle('pending', Boolean(display.pending && hasSample));
+  context.classList.toggle('pending', Boolean(display.pending && (hasSample || hasEstimate)));
   context.title = contextTitle;
   context.setAttribute('aria-valuetext', contextTitle.replace(/\n/g, '，'));
   if (contextPercent === null) context.removeAttribute('aria-valuenow');
@@ -2270,7 +2276,6 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   window.synoraRoleModels?.update(state);
   sideChatControls?.update(state);
   permissionControls?.update(state);
-  document.querySelector('.welcome-note').textContent = state.permissionMode === 'full' ? '当前为完全控制：操作将自动批准。' : state.permissionMode === 'assist' ? 'AI 自动审批，按任务范围允许或拒绝操作。' : '写入文件与执行命令前会请求你的确认。';
   if (state.browser) browserController?.apply(state.browser);
   syncWindowChrome();
   if (syncPendingQueue && state.promptQueue) syncPromptQueue(state.promptQueue);

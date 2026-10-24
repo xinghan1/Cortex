@@ -69,14 +69,14 @@ function fixture({ readFails = false } = {}) {
 test('cursor tracking uses bounded smooth eye offsets while the native video remains the frame source', () => {
   const f = fixture(); f.ui.point({ x: 100000, y: -100000 }); f.ui.setActive(true);
   f.tick(); assert.equal(f.canvas.hidden, false); assert.equal(f.canvas.dataset.gaze, 'tracking');
-  const first = Number(f.canvas.dataset.gazeX); assert.ok(first > 0 && first < 1);
-  f.tick(35); assert.ok(Number(f.canvas.dataset.gazeX) > 3 && Number(f.canvas.dataset.gazeX) <= 3.2);
-  assert.ok(Number(f.canvas.dataset.gazeY) >= -1.8 && Number(f.canvas.dataset.gazeY) < -1.7);
+  const first = Number(f.canvas.dataset.gazeX); assert.ok(first > 0 && first < 1.5);
+  f.tick(35); assert.ok(Number(f.canvas.dataset.gazeX) > 5 && Number(f.canvas.dataset.gazeX) <= 5.2);
+  assert.ok(Number(f.canvas.dataset.gazeY) >= -3.2 && Number(f.canvas.dataset.gazeY) < -3.1);
   assert.equal(f.canvas.width, 640); assert.equal(f.canvas.height, 360);
-  assert.equal(f.canvas.lastFrame.x, 256); assert.equal(f.canvas.lastFrame.y, 180);
+  assert.equal(f.canvas.lastFrame.x, 256); assert.equal(f.canvas.lastFrame.y, 166);
   assert.equal(f.draws[0][0], f.video, 'The canvas draws the same authentic decoded video');
   f.ui.point({ x: -100000, y: 100000 }); f.tick(40);
-  assert.ok(Number(f.canvas.dataset.gazeX) < -3); assert.ok(Number(f.canvas.dataset.gazeY) > 1.7);
+  assert.ok(Number(f.canvas.dataset.gazeX) < -5); assert.ok(Number(f.canvas.dataset.gazeY) > 3.1);
   f.ui.point(null); f.tick(40); assert.ok(Math.abs(Number(f.canvas.dataset.gazeX)) < .01);
   f.ui.destroy(); assert.equal(f.frames.size, 0); assert.equal(f.canvas.hidden, true);
 });
@@ -84,8 +84,21 @@ test('cursor tracking uses bounded smooth eye offsets while the native video rem
 test('idle tracking cancels scheduled work and recenters across actions, then can restart without a stale frame', () => {
   const f = fixture(); f.ui.point({ x: 100000, y: 100000 }); f.ui.setActive(true); f.tick(10);
   f.ui.setActive(false); assert.equal(f.frames.size, 0); assert.equal(f.canvas.hidden, true); assert.equal(f.canvas.dataset.gaze, 'off');
-  f.ui.setActive(true); f.tick(); assert.ok(Number(f.canvas.dataset.gazeX) < 1, 'A resumed idle starts centered rather than jumping to the old offset');
+  f.ui.setActive(true); f.tick(); assert.ok(Number(f.canvas.dataset.gazeX) < 1.5, 'A resumed idle starts centered rather than jumping to the old offset');
   f.ui.destroy(); f.ui.setActive(true); f.tick(); assert.equal(f.frames.size, 0); assert.equal(f.canvas.hidden, true);
+});
+
+test('a cursor close to the right window edge still produces a visible default-size gaze change', () => {
+  const f = fixture();
+  // The pet's eye center is near x=207; there are only 90 CSS pixels to its
+  // right when it rests against a window edge, while the left side is broad.
+  f.ui.point({ x: 297, y: 310 }); f.ui.setActive(true); f.tick(40);
+  const right = Number(f.canvas.dataset.gazeX);
+  f.ui.point({ x: -500, y: 310 }); f.tick(40);
+  const left = Number(f.canvas.dataset.gazeX);
+  assert.ok(right > 4, 'Nearby right-side space must not weaken the default-size response');
+  assert.ok((right - left) * 220 / 640 > 3, 'Opposite gaze positions span at least three screen pixels at the default scale');
+  f.ui.destroy();
 });
 
 test('unsupported frames or canvas failures preserve the original video and clean up without a retry loop', () => {

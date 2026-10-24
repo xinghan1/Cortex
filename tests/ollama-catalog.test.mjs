@@ -21,6 +21,7 @@ test('native catalog loads tags and show without a key and preserves accurate co
     ['coder:latest', true, true], ['chat:latest', false, true], ['embed:latest', false, false],
   ]);
   const coder = result.models[0]; assert.equal(coder.contextWindow, 8192); assert.equal(coder.trainingContextWindow, 131072);
+  assert.equal(coder.contextWindowOrigin, 'ollama');
   assert.equal(coder.modelDefaultContextWindow, 2048, 'A Modelfile default must not prevent explicit runtime overrides');
   assert.deepEqual(coder.reasoningEfforts, ['none', 'enabled']); assert.equal(coder.defaultReasoningEffort, 'enabled');
   assert.equal(coder.supportsImages, true);

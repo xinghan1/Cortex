@@ -1,0 +1,32 @@
+.pet-dialog { position: fixed; z-index: 110; box-sizing: border-box; display: flex; flex-direction: column; max-height: min(480px, calc(100vh - 64px)); padding: 13px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 14px); background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); box-shadow: 0 12px 36px rgb(0 0 0 / 22%); font-size: 13px; line-height: 1.6; text-align: left; -webkit-app-region: no-drag; }
+.pet-dialog[hidden], .pet-dialog [hidden] { display: none !important; }
+.pet-dialog[data-mode='composer'] { position: relative; flex-shrink: 0; width: 100%; margin-bottom: 8px; max-height: min(440px, calc(100vh - 90px)); }
+html.pet-dialog-replaces-composer #task-form { display: none !important; }
+.pet-dialog-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 10px; }
+.pet-dialog-toggle, .pet-dialog-close { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.pet-dialog-toggle { padding: 0; text-align: left; font: inherit; font-weight: 600; }
+.pet-dialog-close { padding: 1px 5px; font-size: 20px; line-height: 1; }
+.pet-dialog-details { display: flex; flex-direction: column; min-height: 0; }
+.pet-dialog-content { min-height: 0; overflow: auto; max-height: 220px; overscroll-behavior: contain; }
+.pet-dialog-question, .pet-dialog-message { margin: 9px 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.pet-dialog-message.user { padding-left: 9px; border-left: 2px solid var(--ui-accent, var(--accent)); color: var(--ui-muted, var(--muted)); }
+.pet-dialog-options { display: grid; gap: 6px; margin: 10px 0; }
+.pet-dialog-choice, .pet-dialog-button { border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 8px); background: var(--ui-control, var(--panel2)); color: inherit; padding: 7px 10px; cursor: pointer; font: inherit; }
+.pet-dialog-choice { text-align: left; overflow-wrap: anywhere; }
+.pet-dialog-choice:hover, .pet-dialog-button:hover, .pet-dialog-choice[aria-pressed='true'] { background: var(--ui-hover, var(--panel2)); border-color: var(--ui-accent, var(--accent)); }
+.pet-dialog-form { flex-shrink: 0; margin: 8px 0 0; }
+.pet-dialog-input { box-sizing: border-box; display: block; width: 100%; min-height: 58px; max-height: 110px; resize: vertical; padding: 8px 10px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 8px); background: var(--ui-control, var(--panel2)); color: inherit; font: inherit; }
+.pet-dialog-input::placeholder { color: var(--ui-muted, var(--muted)); }
+.pet-dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.pet-dialog-status { margin-right: auto; color: var(--ui-muted, var(--muted)); font-size: 11px; }
+.pet-dialog-error { margin: 6px 0; color: var(--ui-bad, #ef9b9b); font-size: 12px; overflow-wrap: anywhere; }
+.pet-dialog-send { background: var(--ui-accent, var(--accent)); border-color: var(--ui-accent, var(--accent)); color: var(--ui-accent-ink, #142039); }
+.pet-dialog-launcher { position: fixed; z-index: 111; max-width: 130px; padding: 6px 10px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 12px); background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); font: inherit; font-size: 11px; cursor: pointer; -webkit-app-region: no-drag; }
+.pet-dialog-launcher[data-mode='composer'] { position: static; flex-shrink: 0; font-size: 12px; }
+.pet-dialog-launcher[hidden] { display: none; }
+.pet-dialog-launcher:focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
+.pet-dialog :is(button, textarea):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
+.pet-dialog :disabled { opacity: .65; cursor: default; }
+.pet-dialog[data-collapsed='true'] { padding: 10px 12px; }
+@media (max-height: 650px) { .pet-dialog-content { max-height: 140px; } .pet-dialog[data-mode='composer'] { max-height: calc(100vh - 72px); } }
+@media (forced-colors: active) { .pet-dialog { border-color: CanvasText; box-shadow: none; } }

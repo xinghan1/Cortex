@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, screen } = require('electron');
 const { DshPetStore } = require('./dsh-pet.cjs');
 const { PluginManager } = require('./plugin-manager.cjs');
 
@@ -15,6 +15,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
   const screenshots = [], themes = [], statusAnimations = [], decisions = [], pickerRequests = [], composerLayouts = [], operationColors = [];
   let child, panel, stage = 'initialize', nextPick = null, nextWrite = 'allow', originalAppearance;
   const originalOpenDialog = dialog.showOpenDialog, originalMessageBox = dialog.showMessageBox;
+  const originalCursorPoint = screen.getCursorScreenPoint;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const step = async value => { stage = value; await fs.writeFile(path.join(output, 'extensions-progress.json'), JSON.stringify({ stage, at: new Date().toISOString() })); };
   const bounded = async (promise, label, milliseconds = 18000) => {
@@ -164,38 +165,51 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     }
 
     await step('native pointer drives genuine eye-only frame changes');
+    await updatePet({ size: 220, x: 1, y: 1 });
     await until('production gaze is active while idle', () => js("document.getElementById('pet-overlay-gaze')?.dataset.gaze==='tracking'&&!document.getElementById('pet-overlay-gaze').hidden"));
-    // Use a second instance of the production renderer with a fixed decoded
-    // frame so moving idle-video pixels and the host's real 50 ms screen-cursor
-    // broadcast cannot mask whether the eye warp itself preserves the body.
+    // Freeze the genuine idle frame but use the actual visible production
+    // canvas, overlay controller and 50 ms main-process pointer IPC. Desktop
+    // coordinates are injected into screen only inside this isolated fixture;
+    // native renderer mouse moves must agree with those same coordinates.
     await js(`(async()=>{
-      const source=document.getElementById('pet-overlay-video'),video=document.createElement('video'),canvas=document.createElement('canvas');
-      video.muted=true;video.preload='auto';video.src=source.currentSrc||source.src;
-      await new Promise((resolve,reject)=>{video.addEventListener('loadedmetadata',resolve,{once:true});video.addEventListener('error',reject,{once:true});video.load()});
-      video.currentTime=.5;await new Promise(resolve=>{if(!video.seeking)resolve();else video.addEventListener('seeked',resolve,{once:true})});video.pause();
-      const controller=window.ForgePetGaze.create({document,video,canvas,bounds:()=>document.getElementById('pet-overlay').getBoundingClientRect()});
-      const fixture=window.nativePetGaze={video,canvas,controller,moves:0,left:null};
-      fixture.pointer=event=>{fixture.moves++;controller.point({x:event.clientX,y:event.clientY})};document.addEventListener('pointermove',fixture.pointer);
-      controller.setActive(true);return true;
+      const video=document.getElementById('pet-overlay-video'),canvas=document.getElementById('pet-overlay-gaze');
+      video.pause();video.currentTime=.5;await new Promise(resolve=>{if(!video.seeking)resolve();else video.addEventListener('seeked',resolve,{once:true})});
+      const fixture=window.nativePetGaze={video,canvas,moves:0,pointerEvents:[],left:null};
+      fixture.pointer=event=>{if(event.isTrusted)fixture.moves++};document.addEventListener('pointermove',fixture.pointer);
+      fixture.off=window.forge.onEvent(event=>{if(event.type==='pet-pointer')fixture.pointerEvents.push({x:event.x,y:event.y,inside:event.inside})});return true;
     })()`);
-    const mouseMove = async x => { child.focus(); child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', x, y: 300 }); };
+    let desktopCursor = originalCursorPoint();
+    screen.getCursorScreenPoint = () => desktopCursor;
+    const desktopMove = (x, y = 300) => { const box = child.getContentBounds(), zoom = child.webContents.getZoomFactor(); desktopCursor = { x: Math.round(box.x + x * zoom), y: Math.round(box.y + y * zoom) }; };
+    const mouseMove = async x => { desktopMove(x); child.focus(); child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', x, y: 300 }); };
     await mouseMove(10);
-    await until('real left mouse motion moves irises left', () => js("window.nativePetGaze.moves>0&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-2"));
+    await until('real left mouse motion moves visible production irises left', () => js("window.nativePetGaze.moves>0&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-4"));
     await js("window.nativePetGaze.left=new Uint8ClampedArray(window.nativePetGaze.canvas.getContext('2d').getImageData(0,0,640,360).data);window.nativePetGaze.leftPNG=window.nativePetGaze.canvas.toDataURL('image/png');true");
+    await capture('pet-production-gaze-left.png');
     await mouseMove(1270);
-    await until('real right mouse motion moves irises right', () => js("window.nativePetGaze.moves>1&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)>2"));
+    await until('right-edge mouse motion moves visible production irises right', () => js("window.nativePetGaze.moves>1&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)>4"));
+    await capture('pet-production-gaze-right.png');
     const gazeEvidence = await js(`(()=>{
       const f=window.nativePetGaze,right=f.canvas.getContext('2d').getImageData(0,0,640,360).data;
       let changed=0,outsideEyeROI=0,alphaChanged=0;for(let i=0;i<right.length;i+=4){
         if(f.left[i]===right[i]&&f.left[i+1]===right[i+1]&&f.left[i+2]===right[i+2]&&f.left[i+3]===right[i+3])continue;
-        changed++;const pixel=i/4,x=pixel%640,y=Math.floor(pixel/640);if(x<256||x>=372||y<180||y>=208)outsideEyeROI++;
+        changed++;const pixel=i/4,x=pixel%640,y=Math.floor(pixel/640);if(x<256||x>=372||y<166||y>=210)outsideEyeROI++;
         if(f.left[i+3]!==right[i+3])alphaChanged++;
       }
-      return {changed,outsideEyeROI,alphaChanged,nativePointerMoves:f.moves,leftPNG:f.leftPNG,rightPNG:f.canvas.toDataURL('image/png')};
+      return {changed,outsideEyeROI,alphaChanged,nativePointerMoves:f.moves,productionCanvas:true,petSize:window.synoraPetOverlay.snapshot().size,
+        injectedDesktopCoordinates:true,leftPNG:f.leftPNG,rightPNG:f.canvas.toDataURL('image/png')};
     })()`);
     assert.ok(gazeEvidence.changed > 30); assert.equal(gazeEvidence.outsideEyeROI, 0); assert.equal(gazeEvidence.alphaChanged, 0); assert.ok(gazeEvidence.nativePointerMoves >= 2);
     for (const [key, filename] of [['leftPNG', 'pet-eyes-left.png'], ['rightPNG', 'pet-eyes-right.png']]) { await fs.writeFile(path.join(output, filename), Buffer.from(gazeEvidence[key].split(',')[1], 'base64')); screenshots.push(filename); delete gazeEvidence[key]; }
-    await js("(()=>{const f=window.nativePetGaze;document.removeEventListener('pointermove',f.pointer);f.controller.destroy();f.video.removeAttribute('src');f.video.load();delete window.nativePetGaze;return true})()");
+    assert.equal(gazeEvidence.petSize, 220);
+    const beforeBlur = await js('window.nativePetGaze.pointerEvents.length');
+    child.blur(); win.focus(); desktopMove(-200, -100);
+    await until('a visible unfocused pet follows desktop pointer IPC outside the window', async () => !child.isFocused() && await js(`window.nativePetGaze.pointerEvents.length>${beforeBlur}&&!document.hidden&&!document.getElementById('pet-overlay-gaze').hidden&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-4`));
+    gazeEvidence.visibleWhileUnfocused = true; gazeEvidence.desktopOutsideWindow = true;
+    await js("(()=>{const f=window.nativePetGaze;document.removeEventListener('pointermove',f.pointer);f.off();f.video.play();delete window.nativePetGaze;return true})()");
+    screen.getCursorScreenPoint = originalCursorPoint;
+    child.focus(); child.webContents.focus();
+    await updatePet({ x: dragged.x, y: dragged.y });
 
     await step('native work-status animation mapping and parallel tools');
     const event = async input => { await js(`window.synoraPetOverlay.handleEvent(${JSON.stringify(input)});true`); };
@@ -212,6 +226,13 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await event({ type: 'run-end', status: 'completed' }); await expectAnimation('success');
     await event({ type: 'run-start' }); await event({ type: 'run-end', status: 'failed' }); await expectAnimation('error');
     await event({ type: 'run-end', status: 'stopped' }); await decoded('idle');
+
+    if (process.env.FORGEDESK_SMOKE_PET_GAZE_ONLY === '1') {
+      const evidence = { status: 'completed', network: false, modelRequests: 0, actualUpstreamVideo: true,
+        genuineEyeWarp: gazeEvidence, productionGazeDisabledDuringTasks: true, statusAnimations, screenshots };
+      await fs.writeFile(path.join(output, 'pet-gaze-evidence.json'), JSON.stringify(evidence, null, 2));
+      return evidence;
+    }
 
     await step('independent pet and plugin settings across all appearance styles');
     for (const style of ['glass', 'black', 'white', 'industrial']) {
@@ -385,10 +406,11 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     console.error('EXTENSIONS_SMOKE_DIAGNOSTIC', JSON.stringify(diagnostic));
     throw error;
   } finally {
+    screen.getCursorScreenPoint = originalCursorPoint;
     dialog.showOpenDialog = originalOpenDialog; dialog.showMessageBox = originalMessageBox;
     if (panel && !panel.isDestroyed()) panel.destroy();
     if (child && !child.isDestroyed()) {
-      await js("(()=>{const f=window.nativePetGaze;if(!f)return;document.removeEventListener('pointermove',f.pointer);f.controller.destroy();f.video.removeAttribute('src');f.video.load();delete window.nativePetGaze})()").catch(() => {});
+      await js("(()=>{const f=window.nativePetGaze;if(!f)return;document.removeEventListener('pointermove',f.pointer);f.off?.();delete window.nativePetGaze})()").catch(() => {});
       if (originalAppearance) await call('setAppearance', { uiStyle: originalAppearance.uiStyle, selectionColor: originalAppearance.selectionColor }).catch(() => {});
       child.destroy();
     }

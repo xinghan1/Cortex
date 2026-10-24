@@ -309,6 +309,19 @@ const usageRecord = overrides => ({
   reported: true, status: 'completed', ...overrides,
 });
 
+test('pet chat purpose and isolated run identity survive ledger normalization and reload', async t => {
+  const store = await fixture(t), mainRun = randomUUID(), petRun = randomUUID(), sessionId = randomUUID();
+  const entry = usageRecord({ sessionId, runId: petRun, purpose: 'pet-chat', inputTokens: 40, outputTokens: 6, partial: true, status: 'stopped' });
+  await store.recordUsage(entry); await store.recordUsage(entry);
+  const restored = new Store(store.dir, mockCrypto); await restored.init();
+  const records = restored.usage.records.filter(record => record.id === entry.id);
+  assert.equal(records.length, 1); assert.equal(records[0].purpose, 'pet-chat');
+  assert.equal(records[0].runId, petRun); assert.notEqual(records[0].runId, mainRun);
+  assert.equal(records[0].partial, true); assert.equal(records[0].inputTokens, 40);
+  const raw = JSON.parse(await fs.readFile(path.join(store.dir, 'usage.json'), 'utf8'));
+  assert.equal(raw.records.find(record => record.id === entry.id).purpose, 'pet-chat');
+});
+
 test('session metrics preserve cache reports, compaction charges and frozen history baselines across restart', async t => {
   const store = await fixture(t);
   const original = store.createSession('E:\\synthetic-project');

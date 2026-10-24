@@ -43,6 +43,7 @@
   <link rel="stylesheet" href="./extensions.css">
   <link rel="stylesheet" href="./pet-settings.css">
   <link rel="stylesheet" href="./pet-overlay.css">
+  <link rel="stylesheet" href="./pet-dialog.css">
   <script src="./syntax-highlight.js" defer></script>
   <script src="./editor-highlight.js" defer></script>
   <script src="./code-completion.js" defer></script>
@@ -78,6 +79,7 @@
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
+  <script src="./pet-dialog.js" defer></script>
   <script src="./deepseek-account.js" defer></script>
   <script src="./appearance.js" defer></script>
   <script src="./menu.js" defer></script>
@@ -134,9 +136,7 @@
           <section id="welcome" class="welcome">
             <div class="welcome-mark" aria-hidden="true"><img src="./synora-logo.png" alt="" width="48" height="48"></div>
             <p class="welcome-eyebrow">SYNORA WORKSPACE</p>
-            <h2>开始一个任务</h2>
-            <p>打开项目，选择模型，然后描述需要完成的工作。</p>
-            <p class="welcome-note">写入文件与执行命令前会请求你的确认。</p>
+            <h2>探索未至之境</h2>
           </section>
           <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
         </div>
@@ -183,11 +183,16 @@
                   </span>
                 </button>
                 <section id="context-settings-popup" class="context-settings-popup" role="dialog" aria-labelledby="context-settings-title" hidden>
-                  <div class="context-settings-heading"><strong id="context-settings-title">模型容量</strong><button id="context-settings-close" class="icon-button small" type="button" aria-label="关闭上下文设置">×</button></div>
-                  <p class="context-settings-description">用于显示上下文占用并计算自动压缩时机。</p>
+                  <div class="context-settings-heading"><strong id="context-settings-title">上下文</strong><button id="context-settings-close" class="icon-button small" type="button" aria-label="关闭上下文设置">×</button></div>
+                  <div class="context-usage-heading"><strong id="context-usage-label">上下文已用 —</strong><span id="context-usage-tokens">— / —</span></div>
+                  <div id="context-composition-meter" class="context-composition-meter" role="progressbar" aria-label="上下文使用量" aria-valuemin="0" aria-valuemax="100" aria-valuetext="暂无上下文用量" data-known="false"><span id="context-segment-system" class="context-segment context-system" aria-hidden="true"></span><span id="context-segment-tools" class="context-segment context-tools" aria-hidden="true"></span><span id="context-segment-messages" class="context-segment context-messages" aria-hidden="true"></span></div>
+                  <ul class="context-category-list"><li><span class="context-category-dot context-system" aria-hidden="true"></span><span>系统提示词</span><strong id="context-system-tokens">—</strong></li><li><span class="context-category-dot context-tools" aria-hidden="true"></span><span>工具定义</span><strong id="context-tools-tokens">—</strong></li><li><span class="context-category-dot context-messages" aria-hidden="true"></span><span>对话消息</span><strong id="context-messages-tokens">—</strong></li></ul>
+                  <p id="context-usage-source" class="context-usage-source">暂无上下文用量 · 分项为估算</p>
+                  <div class="context-capacity-divider"></div>
                   <label for="context-trigger-input">模型容量（Token）</label>
                   <input id="context-trigger-input" type="number" inputmode="numeric" min="1000" max="16000000" step="1" placeholder="模型未提供，可手动填写" aria-describedby="context-capacity-source context-trigger-error">
-                  <p id="context-capacity-source" class="context-capacity-source">来源：未提供</p>
+                  <p id="context-capacity-source" class="context-capacity-source">容量来源：未知</p>
+                  <p id="context-capacity-detail" class="context-capacity-detail">当前模型未提供容量，可手动填写。</p>
                   <p id="context-trigger-error" class="context-trigger-error" role="status" hidden></p>
                   <div class="context-settings-actions"><button id="context-trigger-reset" class="button subtle" type="button">恢复模型目录</button><button id="context-trigger-save" class="button solid" type="button">保存</button></div>
                 </section>

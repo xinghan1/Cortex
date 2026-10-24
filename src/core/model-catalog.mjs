@@ -7,6 +7,7 @@ import { ollamaEndpoint } from './ollama-endpoint.mjs';
 // https://platform.claude.com/docs/en/api/models/list
 const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const CAPACITY_ORIGINS = new Set(['provider', 'account', 'official-default']);
 // Verified against each exact official model page on 2026-10-24. Account
 // catalogs can contain only an ID/name, so a missing optional directory field
 // must not downgrade these known models to the unknown-model 45k guard.
@@ -100,6 +101,14 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
     if (Number.isSafeInteger(capacity) && capacity > 0) {
       result.contextWindow = capacity;
       result.contextWindowKind = total !== undefined ? source.contextWindowKind === 'input' ? 'input' : 'total' : 'input';
+      // Only a small normalized enum crosses the capability/cache boundary.
+      // Raw API rows have their origin replaced by normalizeModel below.
+      const origin = CAPACITY_ORIGINS.has(metadata.contextWindowOrigin) ? metadata.contextWindowOrigin : 'provider';
+      // Re-deriving a sanitized API catalog need not carry officialSource.
+      // Preserving provenance grants no new capacity or model capability.
+      result.contextWindowOrigin = origin === 'account' && provider === 'openai' ? 'account'
+        : origin === 'official-default' && provider === 'openai' && result.contextWindowKind === 'total'
+          && OFFICIAL_OPENAI_CONTEXT_WINDOWS[id] === capacity ? 'official-default' : 'provider';
       break;
     }
   }
@@ -119,6 +128,7 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
         && result.contextWindow === undefined && Object.hasOwn(OFFICIAL_OPENAI_CONTEXT_WINDOWS, id)) {
       result.contextWindow = OFFICIAL_OPENAI_CONTEXT_WINDOWS[id];
       result.contextWindowKind = 'total';
+      result.contextWindowOrigin = 'official-default';
     }
     // Exact published IDs only; no guessed capabilities for future model families.
     // https://developers.openai.com/api/docs/models/gpt-6.1-sol
@@ -176,6 +186,7 @@ function ollamaCapabilities(metadata) {
   result.contextWindowTokens = userContext;
   result.contextWindow = validTraining ? Math.min(userContext, training) : userContext;
   result.contextWindowKind = 'total';
+  result.contextWindowOrigin = 'ollama';
   if (validTraining) result.trainingContextWindow = training;
   // Modelfile num_ctx is a runtime default, overridden by explicit request
   // options. Keep it as reference metadata rather than a training ceiling.
@@ -245,7 +256,7 @@ function normalizeModel(provider, item, officialSource, secrets) {
   }
   const name = [item.display_name, item.name, item.displayName].find(value => typeof value === 'string' && value.trim() && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value));
   const model = { id: item.id, displayName: name || item.id,
-    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource,
+    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource, contextWindowOrigin: 'provider',
       // Raw server `compatible:false` is an explicit protocol denial. Only our
       // previously normalized text-only result may carry that flag alongside
       // textCompatible:true; contradictory raw advertisements cannot override it.
