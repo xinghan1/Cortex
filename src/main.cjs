@@ -261,6 +261,7 @@ async function initializeOfficialAgents() {
     getProxyEnv: async () => officialProxyEnvironment((await kimiAgent.publicState()).region === 'global' ? 'https://auth.kimi.ai' : 'https://auth.kimi.com') });
   glmRuntime = new ZCodeRuntime({ dataDir: path.join(root, 'glm'), onChange });
   glmAgent = new ZCodeAgent({ dataDir: path.join(root, 'glm'), runtime: glmRuntime, version: app.getVersion(), onChange,
+    openExternal: url => shell.openExternal(url),
     getProxyEnv: async () => officialProxyEnvironment((await glmAgent.publicState()).region === 'zai' ? 'https://z.ai' : 'https://bigmodel.cn') });
   await Promise.all([antigravity.init(), kimiAgent.init(), glmAgent.init()]);
 }

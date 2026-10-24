@@ -1,6 +1,9 @@
 'use strict';
 (function (root) {
   const messages = Object.freeze({
+    KIMI_SUBSCRIPTION_REQUIRED: '账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。',
+    ZCODE_AUTH_URL_INVALID: '官方代理返回的授权地址无效，请重试登录。',
+    ZCODE_BROWSER_OPEN_FAILED: '无法打开官方授权页面，请检查默认浏览器后重试。',
     AGY_RUNTIME_UNSUPPORTED: '当前系统暂不支持 Antigravity 官方代理。',
     AGY_DOWNLOAD_FAILED: '官方代理下载失败，请检查网络后重试。',
     AGY_INTEGRITY_FAILED: '官方代理校验失败，请重新下载。',
@@ -52,6 +55,7 @@
       modeId: 'gemini-auth-mode', bridgePrefix: 'antigravity', errorPrefix: 'AGY_', regions: [], ...descriptor };
     const messageFor = value => {
       const code = errorCode(value), normalized = code?.startsWith(spec.errorPrefix) ? 'AGY_' + code.slice(spec.errorPrefix.length) : null;
+      if (code?.startsWith(spec.errorPrefix) && Object.hasOwn(messages, code)) return messages[code];
       if (spec.errorPrefix === 'AGY_') return errorMessage(value);
       const message = Object.hasOwn(messages, normalized) ? messages[normalized] : value ? '官方代理操作未完成，请重试。' : '';
       return message.replaceAll('Antigravity', spec.name).replaceAll('Google', spec.provider === 'kimi' ? 'Kimi' : '智谱 / Z.AI').replaceAll('Gemini API Key', `${spec.provider === 'kimi' ? 'Kimi' : 'GLM'} API Key`);

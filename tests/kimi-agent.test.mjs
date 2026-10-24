@@ -176,6 +176,25 @@ test('auth and protocol failures never expose arbitrary official stderr, RPC mes
   await assert.rejects(bad.agent.signIn(), { code: 'KIMI_PROTOCOL_ERROR' }); assert.equal(bad.fake.children.some(child => child.args.includes('--login')), false);
   for (const line of ['PRIVATE_TOKEN=abc', 'Opening browser for Kimi device login: https://evil.example/device', 'Opening browser for Kimi device login: https://auth.kimi.com/device?access_token=SECRET', 'If the browser did not open, paste the URL above and enter code: <script>']) assert.equal(kimiLoginPublicLine(line), null);
 });
+test('the confirmed official subscription denial preserves the logged-in profile instead of asking for reauthentication', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    child.error(rpc, { code: -32000, message: 'Authentication required: 403 Your current subscription does not have access to Kimi Code right now. Upgrade your plan to keep coding with Kimi Code: https://example.invalid/?secret=PRIVATE_TOKEN', data: null }); return true;
+  } });
+  const signed = await f.agent.signIn(); await f.agent.listModels();
+  await assert.rejects(f.agent.runTask(task(f)), error => error.code === 'KIMI_SUBSCRIPTION_REQUIRED'
+    && error.message === '[KIMI_SUBSCRIPTION_REQUIRED] 账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。');
+  const state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true); assert.equal(state.session.profileId, signed.session.profileId);
+  assert.equal(state.error.code, 'KIMI_SUBSCRIPTION_REQUIRED'); assert.doesNotMatch(JSON.stringify(state), /PRIVATE_TOKEN|example\.invalid|secret=/);
+  const saved = JSON.parse(await fs.readFile(path.join(f.dir, 'kimi-agent', 'profiles.json'), 'utf8')); assert.equal(saved.profileId, signed.session.profileId);
+  assert.equal((await fs.stat(path.join(f.dir, 'kimi-agent', 'profiles', signed.session.profileId))).isDirectory(), true); assert.equal(f.fake.calls.some(call => call.rpc.method === 'logout'), false);
+  await f.agent.dispose(); assert.equal((await f.create().publicState()).session.profileId, signed.session.profileId);
+});
+test('other auth-required messages retain the official protocol behavior instead of guessing a subscription issue', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => { if (rpc.method !== 'session/prompt') return false; child.error(rpc, { code: -32000, message: 'Authentication required: token expired; subscription status unavailable' }); return true; } });
+  const signed = await f.agent.signIn(); await assert.rejects(f.agent.runTask(task(f)), { code: 'KIMI_AUTH_REQUIRED' }); const state = await f.agent.publicState();
+  assert.equal(state.session.status, 'reauth_required'); assert.equal(state.session.sharing, false); assert.equal(state.session.profileId, signed.session.profileId);
+});
 test('full-agent task timeout permits one hour by default and 24 hours explicitly while initialization stays bounded', async t => {
   const f = await fixture(t, { requestTimeoutMs: 86400000 }); await f.agent.signIn(); await f.agent.runTask(task(f));
   assert.throws(() => new KimiAgent({ dataDir: f.dir, runtime: f.runtime, requestTimeoutMs: 86400001 }), { code: 'KIMI_INVALID_INPUT' });

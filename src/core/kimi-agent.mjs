@@ -33,6 +33,9 @@ function safeError(error) {
   return fail('KIMI_REQUEST_FAILED', '官方 Kimi 请求未完成，请检查账号和网络后重试。');
 }
 function rpcError(method, error) {
+  if (error?.code === -32000 && typeof error.message === 'string'
+      && error.message.includes('current subscription does not have access to Kimi Code'))
+    return fail('KIMI_SUBSCRIPTION_REQUIRED', '账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。');
   if (error?.code === -32000) return fail('KIMI_AUTH_REQUIRED', '请通过官方 Kimi 登录后重试。');
   if (error?.code === -32602) return fail(method.startsWith('session/') ? 'KIMI_SESSION_FAILED' : 'KIMI_REQUEST_FAILED', '官方 Kimi 未接受此会话或配置，请刷新目录或开始新会话。');
   // Never expose remote error data: it may contain official account diagnostics.

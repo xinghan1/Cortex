@@ -18,7 +18,7 @@ function officialFake(handler = () => false) {
       child.send({ method: 'session/event', params: { sessionId, type, payload, turnId, seq: state.seq, eventId: 'event-' + state.seq, timestamp: Date.now() } });
     };
     child.kill = () => { child.kills++; if (child.exitCode === null) { child.exitCode = 0; queueMicrotask(() => { child.emit('exit', 0); child.emit('close', 0); }); } return true; };
-    child.finishLogin = (region = args.at(-2), user = 'fixture-user', providerId = region) => { child.stdout.write(JSON.stringify({ status: 'ready', provider: region, user: { user_id: user, email: 'PRIVATE_EMAIL' }, model: providerId + '/glm-fixture', credentialsPath: 'PRIVATE_PATH' }, null, 2)); child.kill(); };
+    child.finishLogin = (region = args[args.indexOf('login') + 1], user = 'fixture-user', providerId = region) => { child.stdout.write(JSON.stringify({ status: 'ready', provider: region, user: { user_id: user, email: 'PRIVATE_EMAIL' }, model: providerId + '/glm-fixture', credentialsPath: 'PRIVATE_PATH' }, null, 2)); child.kill(); };
     let buffer = '';
     child.stdin.on('data', bytes => {
       buffer += bytes.toString(); let split;
@@ -253,4 +253,74 @@ test('system proxy callback maps to the official dedicated proxy contract after 
     assert.equal(child.options.env.ZCODE_HTTP_PROXY, 'http://127.0.0.1:7890'); assert.equal(child.options.env.ZCODE_NO_PROXY, 'localhost,127.0.0.1');
     assert.equal(child.options.env.ZCODE_CREDENTIAL_SECRET, undefined);
   }
+});
+
+const authorize = region => region === 'zai'
+  ? 'https://chat.z.ai/api/oauth/authorize?client_id=zcode&redirect_uri=https%3A%2F%2Fzcode.z.ai%2Fapi%2Fv1%2Foauth%2Fcli%2Fcallback&state=fixture-nonce&response_type=code'
+  : 'https://bigmodel.cn/login?appId=zcode&redirect=https%3A%2F%2Fzcode.z.ai%2Fapi%2Fv1%2Foauth%2Fcli%2Fcallback%2Fbigmodel&state=fixture-nonce';
+function loginBanner(child, target) { child.stderr.write('Open this URL to sign in:\n' + target + '\n'); }
+
+test('optional safe opener receives the complete original official URL across stderr chunks without cmd query splitting or duplicate launches', async t => {
+  for (const region of ['bigmodel', 'zai']) {
+    const opened = [], target = authorize(region);
+    const f = await fixture(t, { openExternal: url => opened.push(url), handler: ({ child, login }) => {
+      if (!login) return false;
+      child.stderr.write('Unrelated original runtime notice\nOpen this URL to si');
+      child.stderr.write('gn in:\r\n' + target.slice(0, 37)); child.stderr.write(target.slice(37) + '\r\n');
+      loginBanner(child, target); child.finishLogin(region); return true;
+    } });
+    const state = await f.agent.signIn({ region });
+    assert.equal(state.session.status, 'connected'); assert.deepEqual(opened, [target]);
+    assert.deepEqual(f.fake.children[0].args, ['login', region, '--json', '--no-browser']);
+    assert.doesNotMatch(JSON.stringify(state), /fixture-nonce|authorize\?|redirect_uri|appId=/u);
+  }
+});
+
+test('unsafe authorization URL banners are rejected before any browser call, including a valid banner arriving after an invalid one', async t => {
+  const candidates = ['http://bigmodel.cn/login?state=fixture', 'https://bigmodel.cn.evil.invalid/login', 'https://chat.z.ai/api/oauth/authorize',
+    'https://bigmodel.cn/other', 'https://user:secret@bigmodel.cn/login', 'https://bigmodel.cn:8443/login', 'https://bigmodel.cn/login#fragment',
+    'javascript:alert(1)', 'https://bigmodel.cn/login\t?state=fixture'];
+  for (const target of candidates) {
+    const opened = [];
+    const f = await fixture(t, { openExternal: url => opened.push(url), handler: ({ child, login }) => {
+      if (!login) return false; loginBanner(child, target); loginBanner(child, authorize('bigmodel')); child.finishLogin(); return true;
+    } });
+    await assert.rejects(f.agent.signIn(), { code: 'ZCODE_AUTH_URL_INVALID' }); assert.deepEqual(opened, []);
+    assert.equal((await f.agent.publicState()).session.sharing, false);
+  }
+});
+
+test('cancelled and stale login output cannot open a page or commit an account after a newer attempt begins', async t => {
+  let held, hold = true; const entered = deferred(), opened = [];
+  const f = await fixture(t, { openExternal: url => opened.push(url), handler: ({ child, login }) => {
+    if (!login) return false;
+    if (hold) { held = child; entered.resolve(); return true; }
+    loginBanner(child, authorize('bigmodel')); child.finishLogin(); return true;
+  } });
+  const running = f.agent.signIn(), cancelled = assert.rejects(running, { name: 'AbortError' }); await entered.promise;
+  await f.agent.cancelSignIn(); await cancelled;
+  loginBanner(held, authorize('bigmodel')); held.finishLogin(); await tick(); assert.deepEqual(opened, []);
+  hold = false; const next = await f.agent.signIn(); loginBanner(held, authorize('bigmodel')); await tick();
+  assert.equal(next.session.status, 'connected'); assert.deepEqual(opened, [authorize('bigmodel')]);
+});
+
+test('a failed or cancelled safe browser opener preserves the previous isolated account without revealing its thrown message', async t => {
+  let failOpen = false, holdOpen = false; const entered = deferred(), release = deferred();
+  const f = await fixture(t, { openExternal: () => {
+    if (failOpen) throw Error('PRIVATE_BROWSER_SECRET https://untrusted.invalid/?token=SECRET');
+    if (holdOpen) { entered.resolve(); return release.promise; }
+  }, handler: ({ child, login }) => { if (!login) return false; loginBanner(child, authorize('bigmodel')); child.finishLogin(); return true; } });
+  const first = await f.agent.signIn(); failOpen = true;
+  await assert.rejects(f.agent.signIn(), { code: 'ZCODE_BROWSER_OPEN_FAILED' });
+  let state = await f.agent.publicState(); assert.equal(state.session.profileId, first.session.profileId); assert.equal(state.session.sharing, true);
+  assert.doesNotMatch(JSON.stringify(state), /PRIVATE|SECRET|https:/u);
+  failOpen = false; holdOpen = true; const running = f.agent.signIn(), cancelled = assert.rejects(running, { name: 'AbortError' }); await entered.promise;
+  await f.agent.cancelSignIn(); await cancelled; release.resolve(); await tick(); state = await f.agent.publicState();
+  assert.equal(state.session.profileId, first.session.profileId);
+  const metadata = JSON.parse(await fs.readFile(path.join(f.dir, 'zcode-agent', 'connection.json'), 'utf8')); assert.equal(metadata.profileId, first.session.profileId);
+});
+
+test('a successful CLI exit without the official no-browser authorization banner cannot bind a profile', async t => {
+  const f = await fixture(t, { openExternal: () => { throw Error('must not run'); } });
+  await assert.rejects(f.agent.signIn(), { code: 'ZCODE_AUTH_URL_INVALID' }); assert.equal((await f.agent.publicState()).session.sharing, false);
 });

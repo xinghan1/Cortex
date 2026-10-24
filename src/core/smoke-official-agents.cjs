@@ -13,7 +13,11 @@ module.exports = async function smokeOfficialAgents({ win, output, dataDir, stor
   assert.equal(win.webContents.isOffscreen(), true);
   const nonce = randomUUID(), project = path.join(dataDir, 'official-agent-project-' + nonce), fixtureDir = path.join(dataDir, 'official-agent-fixtures-' + nonce);
   const script = path.join(fixtureDir, 'agent.cjs'), logFile = path.join(fixtureDir, 'requests.ndjson');
-  const screenshots = [], events = [], processes = [], controllers = [], problems = [], apiRequests = [];
+  const screenshots = [], events = [], processes = [], controllers = [], problems = [], apiRequests = [], browserCalls = [];
+  const glmLoginUrls = Object.freeze({
+    bigmodel:'https://bigmodel.cn/login?appId=zcode-native&redirect=https%3A%2F%2Fbigmodel.cn%2Fzcode%2Fcallback%3Fsource%3Dnative%26flow%3Dfixture&state=native-state%2Bexact&nonce=native-nonce',
+    zai:'https://chat.z.ai/api/oauth/authorize?appId=zcode-native&redirect=https%3A%2F%2Fchat.z.ai%2Fzcode%2Fcallback%3Fsource%3Dnative%26flow%3Dfixture&state=native-state%2Bexact&nonce=native-nonce',
+  });
   let child, restore, original, appearance, petState, baseUrl, stage = 'initialize';
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const js = async (code, target = child) => {
@@ -106,6 +110,7 @@ module.exports = async function smokeOfficialAgents({ win, output, dataDir, stor
   };
   try {
     await fs.mkdir(output,{recursive:true}); await fs.mkdir(fixtureDir,{recursive:true}); await fs.mkdir(project,{recursive:true}); await fs.writeFile(path.join(project,'README.md'),'OFFICIAL_FIXTURE_READONLY\n');
+    await fs.writeFile(path.join(fixtureDir,'glm-login-urls.json'),JSON.stringify(glmLoginUrls));
     original = await call('getState',undefined,win); appearance = await call('getAppearance',undefined,win); petState = await call('petState',undefined,win);
     for (const descriptor of descriptors) { assert.equal(typeof descriptor.Constructor,'function'); assert.equal(original.settings.providers[descriptor.provider]?.hasKey,false,'Only a fresh disposable provider may be configured'); }
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve)); baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
@@ -119,7 +124,7 @@ const reply=(request,result)=>send({id:request.id,result});
 const region=()=>{try{return fs.readFileSync(regionFile,'utf8')}catch{return kind==='glm'?'bigmodel':'mainland-cn'}};
 log({event:'spawn',args});
 if(kind==='kimi'&&args.includes('--login')){const selected=args[args.indexOf('--region')+1];fs.writeFileSync(regionFile,selected);process.stderr.write('Opening browser for Kimi device login: https://auth.kimi.com/device?user_code=ABCD-1234\nIf the browser did not open, paste the URL above and enter code: ABCD-1234\n');setTimeout(()=>process.exit(0),40);return;}
-if(kind==='glm'&&args.includes('login')){const selected=args[args.indexOf('login')+1];fs.writeFileSync(regionFile,selected);process.stdout.write(JSON.stringify({status:'ready',provider:selected,user:{user_id:'native-fixture-user'},model:selected+'/glm-official-fixture'})+'\n');setTimeout(()=>process.exit(0),15);return;}
+if(kind==='glm'&&args.includes('login')){const selected=args[args.indexOf('login')+1];if(!args.includes('--no-browser'))throw new Error('The controlled browser bridge must use the official no-browser mode');const url=JSON.parse(fs.readFileSync(path.join(__dirname,'glm-login-urls.json'),'utf8'))[selected];process.stderr.write('Open this URL to sign in:\n'+url+'\n');fs.writeFileSync(regionFile,selected);process.stdout.write(JSON.stringify({status:'ready',provider:selected,user:{user_id:'native-fixture-user'},model:selected+'/glm-official-fixture'})+'\n');setTimeout(()=>process.exit(0),25);return;}
 let sessionNumber=0,pending=null,sequence=0;const sessions=new Map();
 const model=()=>kind==='gemini'?'gemini-official-fixture':kind==='kimi'?'kimi-'+region()+'-fixture':'glm-official-fixture';
 const update=(sessionId,value)=>send({method:'session/update',params:{sessionId,update:value}});
@@ -136,7 +141,7 @@ if(method==='runtime/capabilities'){reply(request,{independentPlanState:true,his
 if(method==='session/new'||method==='session/resume'||method==='session/load'){const sessionId=params.sessionId||'session-'+kind+'-'+ ++sessionNumber;sessions.set(sessionId,{});reply(request,{sessionId,models:{availableModels:[{modelId:model(),name:kind+' native fixture'}],currentModelId:model()},configOptions:[{id:'model',category:'model',type:'select',currentValue:model(),options:[{value:model(),name:kind+' native fixture'}]}],modes:{availableModes:[{id:'agent',name:'Agent'},{id:'default',name:'Default'},{id:'guarded',name:'Guarded'}],currentModeId:'agent'}});return;}
 if(method==='session/create'||method==='create'){const sessionId='session-glm-'+ ++sessionNumber;sessions.set(sessionId,{});reply(request,{protocol:{name:'ZCode Protocol',version:1},session:{sessionId,workspace:params.workspace,mode:'guarded'},settings:{model:{available:[{ref:{providerId:region(),modelId:model()},label:'ZCode native fixture',properties:{inputFormat:['text'],outputFormat:['text']}}]}}});return;}
 if(method==='session/subscribe'||method==='subscribe'){reply(request,{sessionId:params.sessionId,eventSeq:0,events:[]});return;}
-if(method==='session/prompt'||method==='session/send'||method==='send'){pending=request;const sessionId=params.sessionId,body=JSON.stringify(params),marker=body.includes('OFFICIAL_NATIVE_STOP_')?'STOP':body.includes('OFFICIAL_NATIVE_QUESTION_')?'QUESTION':body.includes('OFFICIAL_NATIVE_DENY_')?'DENY':'ALLOW';log({marker});
+if(method==='session/prompt'||method==='session/send'||method==='send'){const subscriptionFile=path.join(__dirname,'kimi-subscription-error.once');if(kind==='kimi'&&fs.existsSync(subscriptionFile)){fs.unlinkSync(subscriptionFile);log({marker:'SUBSCRIPTION_DENIED'});send({id,error:{code:-32000,message:'Authentication required: 403 Your current subscription does not have access to Kimi Code right now. Upgrade your plan to keep coding with Kimi Code: https://example.invalid/?secret=PRIVATE_TOKEN',data:null}});return;}pending=request;const sessionId=params.sessionId,body=JSON.stringify(params),marker=body.includes('OFFICIAL_NATIVE_STOP_')?'STOP':body.includes('OFFICIAL_NATIVE_QUESTION_')?'QUESTION':body.includes('OFFICIAL_NATIVE_DENY_')?'DENY':'ALLOW';log({marker});
 if(kind==='glm'){reply(request,{accepted:true,sessionId,stateRevision:1});zEvent(sessionId,'turn.started',{inputId:params.inputId,turnNumber:1,input:params.content});zEvent(sessionId,'tool.updated',{toolCallId:'tool-native',toolName:'Bash',input:{command:'mock-only-no-execution'},kind:'scheduled'});for(const stdoutTail of ['line 1\n','line 1\nline 2\n'])zEvent(sessionId,'tool.updated',{toolCallId:'tool-native',toolName:'Bash',stdoutTail,kind:'progress'});}
 else{update('foreign-session',{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'WRONG_SESSION_SHOULD_NOT_APPEAR'}});update(sessionId,{sessionUpdate:'tool_call',toolCallId:'tool-native',title:'模拟官方代理操作',kind:'execute',status:'in_progress',rawInput:{command:'mock-only-no-execution'},content:[{type:'content',content:{type:'text',text:'line 1\n'}}]});}
 if(marker==='STOP')return;
@@ -151,6 +156,7 @@ if(id!==undefined)reply(request,{});
     for (const descriptor of descriptors) {
       const runtime = fakeRuntime(descriptor), agent = new descriptor.Constructor({dataDir:path.join(fixtureDir,descriptor.key),runtime,
         spawnImpl:(_entry,args,options)=>{const process=spawn(global.process.execPath,[script,descriptor.provider,...args],{...options,env:{...options.env,ELECTRON_RUN_AS_NODE:'1'}});processes.push(process);return process;},
+        ...(descriptor.provider==='glm'?{openExternal:async url=>{assert.ok(Object.values(glmLoginUrls).includes(url),'Browser callback must preserve the complete original authorization URL');const parsed=new URL(url);assert.equal(parsed.searchParams.get('appId'),'zcode-native');assert.equal(parsed.searchParams.get('state'),'native-state+exact');assert.equal(parsed.searchParams.get('nonce'),'native-nonce');assert.ok(parsed.searchParams.get('redirect').endsWith('?source=native&flow=fixture'));browserCalls.push(url);}}:{}),
         killTreeImpl:killTree,onChange:()=>broadcastState(),requestTimeoutMs:15000,startTimeoutMs:10000,stopGraceMs:100});
       await agent.init(); controllers.push(agent); installed[descriptor.key]=agent;
       installed[descriptor.provider==='gemini'?'antigravityRuntime':descriptor.provider==='kimi'?'kimiRuntime':'glmRuntime']=runtime;
@@ -179,6 +185,21 @@ if(id!==undefined)reply(request,{});
       assert.equal(await js(`$('messages').textContent.includes('WRONG_SESSION_SHOULD_NOT_APPEAR')`),false);
       const rpc=await log(); assert.ok(rpc.some(record=>record.kind===descriptor.provider&&record.response&&(descriptor.provider==='glm'?record.response.decision==='allow':record.response.outcome?.optionId==='allow-once-native')));
       if(descriptor.provider==='glm')assert.ok(rpc.some(record=>record.id===99&&record.response?.action==='accept'&&record.response.content?.answers?.['官方代理选择本次测试方式']==='keep-files'));
+      if(descriptor.provider==='kimi'){
+        stage='Kimi subscription denial keeps its connected account';const loginCount=(await log()).filter(record=>record.kind==='kimi'&&record.event==='spawn'&&record.args.includes('--login')).length;
+        await fs.writeFile(path.join(fixtureDir,'kimi-subscription-error.once'),'one simulated denial');
+        const failed=await call('runTask',{text:'OFFICIAL_NATIVE_SUBSCRIPTION_kimi_'+nonce});
+        const ended=await until('subscription request terminal',async()=>await js(`window.__officialSmoke.events.find(event=>event.type==='run-end'&&event.runId===${JSON.stringify(failed.runId)})`));
+        assert.equal(ended.status,'failed');
+        await until('subscription failure settled',async()=>!(await state()).activeTask.running);
+        const retained=(await state()).kimiAgent;assert.equal(retained.session.status,'connected');assert.equal(retained.session.sharing,true);assert.equal(retained.session.profileId,profile);assert.equal(retained.error.code,'KIMI_SUBSCRIPTION_REQUIRED');
+        assert.doesNotMatch(JSON.stringify(retained),/PRIVATE_TOKEN|example\.invalid|secret=/);
+        await selectMode(descriptor);await until('subscription recovery guidance',()=>js(`$('kimi-agent-login-message').textContent==='账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。'`));
+        assert.equal(await js(`$('kimi-agent-sign-in').hidden&&!$('kimi-agent-models').hidden&&!$('kimi-agent-models').disabled`),true);
+        await capture('official-agent-kimi-subscription.png');await selectCatalog(descriptor);
+        assert.equal((await log()).filter(record=>record.kind==='kimi'&&record.event==='spawn'&&record.args.includes('--login')).length,loginCount,'Subscription denial must not trigger another login');
+        records.push({provider:'kimi',marker:'SUBSCRIPTION',status:ended.status,runId:failed.runId,profilePreserved:true});
+      }
       await openSettings('pet'); await js(`$('provider-select').value=${JSON.stringify(descriptor.provider)};$('provider-select').dispatchEvent(new Event('change',{bubbles:true}));true`);
       assert.equal(await js(`Array.from($(${JSON.stringify(descriptor.mode)}).options).find(option=>option.value===${JSON.stringify(descriptor.authMode)}).disabled`),true);
       assert.equal(await js(`$('key-status').textContent`),'未配置'); await click('#close-settings');
@@ -199,11 +220,15 @@ if(id!==undefined)reply(request,{});
     stage='six theme account panels'; await selectMode(ag);
     for (const uiStyle of ['glass','black','white','industrial','deepseek','codex']) { await call('setAppearance',{uiStyle}); await until('material '+uiStyle,()=>js(`document.documentElement.dataset.uiStyle===${JSON.stringify(uiStyle)}`)); await capture('official-agent-'+uiStyle+'.png'); }
     await click('#close-settings');
+    assert.deepEqual(browserCalls,[glmLoginUrls.bigmodel,glmLoginUrls.zai]);
+    assert.ok((await log()).filter(record=>record.kind==='glm'&&record.event==='spawn'&&record.args.includes('login')).every(record=>record.args.includes('--no-browser')));
+    assert.doesNotMatch(JSON.stringify((await state()).glmAgent),/zcode-native|native-state|redirect=/);
     events.push(...await js('window.__officialSmoke.events')); assert.equal(events.some(event=>event.type==='tool-start'&&event.name==='run_command'),true);
     assert.equal(apiRequests.some(request=>request.method==='POST'),false); assert.deepEqual(problems,[]);
     const result={status:'completed',mock:true,realLogin:false,realModelCalls:false,realDownloads:false,realCommands:false,actualNodeChildProcesses:true,
       allThreeNativeModes:true,installIsNotLogin:true,scopeAndRegionIsolation:true,apiKeysPreserved:true,rolesCannotBorrowAgentOrKey:true,
       nativePermissionAllowOnceId:true,nativeUserInputValue:true,nativeChoiceOnlyFullWaitsForUser:true,nativeDeny:true,nativeStop:true,foreignSessionRejected:true,sixThemes:true,
+      glmFullAuthorizationQueryPreserved:true,glmNoBrowserMode:true,realBrowserOpened:false,glmBrowserCallbackCount:browserCalls.length,kimiSubscriptionKeepsConnectedAccount:true,
       records,screenshots,methods:[...new Set((await log()).map(record=>record.method).filter(Boolean))],usage:store?.usage?.records?.filter(record=>records.some(value=>value.runId===record.runId)).map(({provider,status,reported,inputTokens,outputTokens})=>({provider,status,reported,inputTokens,outputTokens}))||[]};
     await fs.writeFile(path.join(output,'official-agents-smoke-result.json'),JSON.stringify(result,null,2)+'\n'); return result;
   } catch(error) {

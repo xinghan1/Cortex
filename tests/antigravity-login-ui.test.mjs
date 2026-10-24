@@ -67,6 +67,27 @@ test('switching account region invalidates the directory immediately and cannot 
   assert.equal(f.node('kimi-agent-login-status').textContent,'请连接所选地区账号');assert.equal(f.node('kimi-agent-models').hidden,true);assert.equal(f.node('kimi-agent-sign-in').hidden,false);
   assert.equal(f.calls.length,0,'selecting a region never silently authorizes or disconnects an account');
 });
+test('Kimi subscription denial explains the Coding access requirement without displaying remote details or losing the connected account controls',()=>{
+  const f=fixture({descriptor:kimi,initial:{...empty(),region:'mainland-cn',runtime:{status:'ready'},session:{status:'connected',sharing:true,profileId:'signed-in-profile'},
+    error:{code:'KIMI_SUBSCRIPTION_REQUIRED',message:'PRIVATE_REMOTE_URL https://example.invalid/?token=SECRET'}}});f.open();
+  const expected='账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。';
+  assert.equal(f.node('kimi-agent-login-message').textContent,expected);assert.equal(f.node('kimi-agent-login-message').hidden,false);
+  assert.equal(f.node('kimi-agent-login-status').textContent,'Kimi Code 官方代理已连接');assert.equal(f.node('kimi-agent-sign-in').hidden,true);assert.equal(f.node('kimi-agent-models').disabled,false);
+  assert.equal(f.api.errorMessage(new Error('[KIMI_SUBSCRIPTION_REQUIRED] PRIVATE_REMOTE_URL')),expected);assert.doesNotMatch(f.node('kimi-agent-login-message').textContent,/PRIVATE|SECRET|https:/);assert.equal(f.calls.length,0);
+});
+
+test('ZCode authorization URL and browser failures display only the matching fixed recovery guidance',()=>{
+  for(const [code,expected]of [
+    ['ZCODE_AUTH_URL_INVALID','官方代理返回的授权地址无效，请重试登录。'],
+    ['ZCODE_BROWSER_OPEN_FAILED','无法打开官方授权页面，请检查默认浏览器后重试。'],
+  ]){
+    const f=fixture({descriptor:glm,initial:{...empty(),region:'bigmodel',runtime:{status:'ready'},error:{code,message:'PRIVATE_REMOTE https://bigmodel.cn/login?state=SECRET&redirect=PRIVATE_PATH'}}});f.open();
+    assert.equal(f.node('glm-agent-login-message').textContent,expected);assert.equal(f.node('glm-agent-login-message').hidden,false);
+    assert.equal(f.node('glm-agent-sign-in').hidden,false);assert.equal(f.node('glm-agent-sign-in').disabled,false);
+    assert.equal(f.api.errorMessage(new Error(`Error invoking remote method: [${code}] PRIVATE_REMOTE https://host/?token=SECRET`)),expected);
+    assert.doesNotMatch(f.node('glm-agent-login-message').textContent,/PRIVATE|SECRET|https:/);assert.equal(f.calls.length,0);
+  }
+});
 
 test('only the Kimi public device flow can show a verified HTTPS URL and code; ZCode nonce URLs and unknown fields remain hidden',()=>{
   const attempt={phase:'waiting-browser',verificationUrl:'https://www.kimi.com/code',userCode:'ABCD-1234',accessToken:'PRIVATE_TOKEN'};

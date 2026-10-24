@@ -19,6 +19,15 @@ const fail = (code, message) => Object.assign(new Error(`[${code}] ${message}`),
 const cancelled = () => Object.assign(fail('ZCODE_CANCELLED', 'ZCode 操作已取消。'), { name: 'AbortError' });
 const invalid = () => fail('ZCODE_PROTOCOL_ERROR', '官方 ZCode 代理返回了无效协议数据。');
 const MAX_FRAME = 16 * 1024 * 1024;
+function officialAuthorizationUrl(raw, region) {
+  const bad = () => fail('ZCODE_AUTH_URL_INVALID', '官方 ZCode 未返回有效的授权页面，请重试登录。');
+  if (typeof raw !== 'string' || raw.length > 8192 || /\s|[\x00-\x1f\x7f]/u.test(raw)) throw bad();
+  let url; try { url = new URL(raw); } catch { throw bad(); }
+  const allowed = region === 'bigmodel' ? url.hostname === 'bigmodel.cn' && url.pathname === '/login'
+    : url.hostname === 'chat.z.ai' && ['/api/oauth/authorize', '/oauth/authorize'].includes(url.pathname);
+  if (!allowed || url.protocol !== 'https:' || url.username || url.password || url.port || url.hash) throw bad();
+  return raw;
+}
 function safeError(error) {
   if (error?.name === 'ZCodeAgentError') return error;
   if (error?.name === 'AbortError') return cancelled();
@@ -90,19 +99,19 @@ function readCatalog(snapshot, providerId) {
 }
 
 export class ZCodeAgent {
-  #dir; #file; #runtime; #spawn; #kill; #proxy; #onChange; #onEvent; #permission; #userInput;
+  #dir; #file; #runtime; #spawn; #kill; #proxy; #onChange; #onEvent; #permission; #userInput; #openExternal;
   #profile = null; #region = 'bigmodel'; #providerId = null; #initialized = null; #storageError = false; #error = null;
   #client = null; #starting = null; #startup = null; #attempt = null; #epoch = 0; #closed = false;
   #sessions = new Map(); #models = new Map(); #active = null; #closing = new Set(); #timeout; #startTimeout; #stopGrace;
-  constructor({ dataDir, runtime, spawnImpl = spawn, killTreeImpl, getProxyEnv = () => ({}), onChange = () => {}, onEvent = () => {}, onPermission = async () => null, onUserInput = async () => ({ action: 'cancel' }),
+  constructor({ dataDir, runtime, spawnImpl = spawn, killTreeImpl, getProxyEnv = () => ({}), openExternal, onChange = () => {}, onEvent = () => {}, onPermission = async () => null, onUserInput = async () => ({ action: 'cancel' }),
     platform = process.platform, requestTimeoutMs = 3600000, startTimeoutMs = 60000, stopGraceMs = 1500 } = {}) {
     if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir) || !runtime?.ensure || !runtime?.publicState || typeof spawnImpl !== 'function'
-        || ![getProxyEnv, onChange, onEvent, onPermission, onUserInput].every(value => typeof value === 'function')
+        || ![getProxyEnv, onChange, onEvent, onPermission, onUserInput].every(value => typeof value === 'function') || openExternal !== undefined && typeof openExternal !== 'function'
         || !Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 86400000
         || ![startTimeoutMs, stopGraceMs].every(value => Number.isInteger(value) && value > 0 && value <= 600000)) throw fail('ZCODE_INVALID_INPUT', 'ZCode 代理配置无效。');
     this.#dir = path.join(path.resolve(dataDir), 'zcode-agent'); this.#file = path.join(this.#dir, 'connection.json'); this.#runtime = runtime;
     this.#spawn = spawnImpl; this.#kill = killTreeImpl || (child => killAntigravityProcessTree(child, { platform })); this.#proxy = getProxyEnv;
-    this.#onChange = onChange; this.#onEvent = onEvent; this.#permission = onPermission; this.#userInput = onUserInput;
+    this.#onChange = onChange; this.#onEvent = onEvent; this.#permission = onPermission; this.#userInput = onUserInput; this.#openExternal = openExternal;
     this.#timeout = requestTimeoutMs; this.#startTimeout = startTimeoutMs; this.#stopGrace = stopGraceMs;
   }
   #changed() { try { Promise.resolve(this.#onChange()).catch(() => {}); } catch {} }
@@ -195,7 +204,7 @@ export class ZCodeAgent {
     if (!['bigmodel', 'zai'].includes(region)) return Promise.reject(fail('ZCODE_INVALID_INPUT', '请选择智谱或 Z.AI 账号。'));
     const controller = new AbortController(), abort = () => controller.abort(), profile = randomUUID();
     signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
-    const attempt = { controller, region, phase: 'initializing' }; this.#attempt = attempt; ++this.#epoch; this.#models.clear(); this.#sessions.clear(); this.#error = null; this.#changed();
+    const attempt = { controller, region, phase: 'initializing' }; this.#attempt = attempt; const epoch = ++this.#epoch; this.#models.clear(); this.#sessions.clear(); this.#error = null; this.#changed();
     attempt.done = (async () => {
       let child;
       try {
@@ -203,18 +212,50 @@ export class ZCodeAgent {
         if (this.#storageError) throw fail('ZCODE_STORAGE_ERROR', '请先恢复 ZCode 连接信息。');
         await this.#shutdown(); const runtime = await this.#runtime.ensure({ signal: controller.signal }), options = await this.#environment(profile, runtime, controller.signal);
         attempt.phase = 'waiting-browser'; this.#changed();
-        let buffer = ''; const decoder = new StringDecoder('utf8');
+        let buffer = '', urlSeen = false, opening = null; const decoder = new StringDecoder('utf8');
         const acknowledged = new Promise((resolve, reject) => {
-          try { child = this.#spawn(runtime.entry, [...runtime.args || [], 'login', region, '--json'], options); } catch { reject(fail('ZCODE_START_FAILED', '无法启动官方 ZCode 登录。')); return; }
+          try { child = this.#spawn(runtime.entry, [...runtime.args || [], 'login', region, '--json', ...(this.#openExternal ? ['--no-browser'] : [])], options); } catch { reject(fail('ZCODE_START_FAILED', '无法启动官方 ZCode 登录。')); return; }
           child.stdout.on('data', bytes => { buffer += decoder.write(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)); if (Buffer.byteLength(buffer) > 1024 * 1024) { reject(invalid()); void this.#kill(child); } });
-          child.stderr?.on('data', () => {}); child.on('error', () => reject(fail('ZCODE_START_FAILED', '官方 ZCode 登录程序无法运行。')));
+          if (this.#openExternal) {
+            // Official --json --no-browser prints this exact two-line banner to
+            // stderr. Use the original URL instead of cmd.exe's START parser,
+            // which can split an unquoted OAuth query at '&' on Windows.
+            const stderrDecoder = new StringDecoder('utf8'); let pendingLine = '', expectingUrl = false;
+            const line = value => {
+              if (urlSeen || controller.signal.aborted || this.#attempt !== attempt || this.#epoch !== epoch || this.#closed) return;
+              if (value === 'Open this URL to sign in:') { expectingUrl = true; return; }
+              if (!expectingUrl || !value) return; expectingUrl = false;
+              try {
+                const target = officialAuthorizationUrl(value, region); urlSeen = true;
+                opening = Promise.resolve().then(async () => {
+                  check(controller.signal); if (this.#attempt !== attempt || this.#epoch !== epoch || this.#closed) throw cancelled();
+                  try { await this.#openExternal(target); } catch { throw fail('ZCODE_BROWSER_OPEN_FAILED', '无法打开官方授权页面，请检查默认浏览器后重试。'); }
+                });
+                opening.catch(reject);
+              } catch (error) { urlSeen = true; reject(error); }
+            };
+            child.stderr?.on('data', bytes => {
+              if (controller.signal.aborted || this.#attempt !== attempt || urlSeen) return;
+              pendingLine += stderrDecoder.write(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)); let split;
+              while ((split = pendingLine.indexOf('\n')) >= 0) { const value = pendingLine.slice(0, split).replace(/\r$/u, ''); pendingLine = pendingLine.slice(split + 1); line(value); }
+              if (pendingLine.length > 8192) { pendingLine = ''; reject(fail('ZCODE_AUTH_URL_INVALID', '官方 ZCode 未返回有效的授权页面，请重试登录。')); }
+            });
+            child.stderr?.once('end', () => { if (pendingLine) line(pendingLine.replace(/\r$/u, '')); });
+          } else child.stderr?.on('data', () => {});
+          child.on('error', () => reject(fail('ZCODE_START_FAILED', '官方 ZCode 登录程序无法运行。')));
           child.once('close', code => {
             if (code !== 0) return reject(fail('ZCODE_AUTH_FAILED', '官方 ZCode 账号授权未完成，请重试。'));
             try { const result = JSON.parse(buffer); if (result.status !== 'ready' || result.provider !== region || !id(result.user?.user_id) || !id(result.model) || result.model.indexOf('/') < 1) throw invalid(); resolve(result.model.slice(0, result.model.indexOf('/'))); } catch { reject(invalid()); }
           });
         });
         const timer = setTimeout(() => controller.abort(), 600000);
-        let providerId; try { providerId = await waitFor(() => acknowledged, controller.signal); } finally { clearTimeout(timer); }
+        let providerId; try {
+          providerId = await waitFor(() => acknowledged, controller.signal);
+          if (this.#openExternal) {
+            if (!urlSeen) throw fail('ZCODE_AUTH_URL_INVALID', '官方 ZCode 未返回有效的授权页面，请重试登录。');
+            await waitFor(() => opening, controller.signal);
+          }
+        } finally { clearTimeout(timer); }
         check(controller.signal); attempt.phase = 'committing'; this.#changed();
         const previousProfile = this.#profile, previousRegion = this.#region, previousProvider = this.#providerId;
         await this.#save(profile, region, providerId);
