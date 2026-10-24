@@ -10,8 +10,8 @@ Synora code 是本地运行的 AI 编程桌面基础版。支持 OpenAI GPT、De
 
 | 版本 | 下载文件 | 使用方式 | 本机数据位置 |
 | --- | --- | --- | --- |
-| 安装版 | `Synora-code-Setup-0.21.0-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
-| 便携版 | `Synora-code-0.21.0-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
+| 安装版 | `Synora-code-Setup-0.21.1-x64.exe` | 双击 EXE，按安装向导选择目录；安装后从快捷方式启动 | `%APPDATA%\Synora code\` |
+| 便携版 | `Synora-code-0.21.1-win32-x64.zip` | 完整解压后双击文件夹内的 `Synora code.exe` | EXE 同级的 `data\` |
 
 两种版本均无需安装 Node.js。安装版按当前 Windows 用户安装，更新后继续使用固定数据目录，卸载默认保留本机数据；便携版需保留整个解压目录，移动时一并保留 `data\`。安装版与便携版使用各自的数据目录。
 
@@ -31,9 +31,9 @@ npm.cmd run build
 npm.cmd run build:installer
 ```
 
-`npm run build` 生成便携版 `dist/Synora-code-0.21.0-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
+`npm run build` 生成便携版 `dist/Synora-code-0.21.1-win32-x64/`，双击其中的 `Synora code.exe` 即可运行，分发时需保留整个文件夹。构建脚本会拒绝覆盖同名便携目录；重新构建时，请先把已有输出目录改名留存。
 
-`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.21.0-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
+`npm run build:installer` 生成安装版 `installer-output/Synora-code-Setup-0.21.1-x64.exe`，可双击进入安装向导。它从源码独立打包，不依赖上一步的便携版目录；只需要安装版时可跳过 `npm run build`。构建不会自动发布 GitHub Release 或运行生成的程序。
 
 `npm ci` 按锁文件安装依赖，首次运行或构建会下载 Electron 运行时，因此需要联网，且不能省略开发依赖。`prepare:sdk` 从仓库内的 TypeScript 源码生成 ChatGPT 登录组件，无需另外克隆第三方仓库。运行开发界面使用 `npm.cmd start`。
 
@@ -75,7 +75,7 @@ Windows x64 安装版每次启动约 5 秒后检查本仓库的 GitHub Releases�
 
 在 **外观 → 外观与背景…** 中选择玻璃风、纯黑、纯白、工业风、DeepSeek 风或 Codex 风。后两种参考炭灰静蓝与中性柔和的材质、间距和圆角，保留 Synora code 的布局与功能。
 
-通过 **外观 → 导入背景图…** 选择本机 PNG、JPEG 或 WebP 图片（最大 12 MB）。玻璃风应用于整个工作空间；纯黑、纯白、工业风、DeepSeek 风和 Codex 风只在中间会话区域显示图片，其他面板保留各自材质。背景透明度实时调整，数值越大越淡；图片和设置自动保存，切换风格或重启后仍会保留。背景仅用于本机界面，不会作为附件或项目内容发送给模型。
+通过 **外观 → 导入背景图…** 选择本机 PNG、JPEG 或 WebP 图片（最大 12 MB）。玻璃风应用于整个工作空间；纯黑、纯白、工业风、DeepSeek 风和 Codex 风只在中间会话区域显示图片，其他面板保留各自材质。输入框外侧留白及底部统计区域透明显示会话背景，输入框本身保留材质底色。背景透明度实时调整，数值越大越淡；图片和设置自动保存，切换风格或重启后仍会保留。背景仅用于本机界面，不会作为附件或项目内容发送给模型。
 
 同一设置内可直接选择蓝紫极光、玫瑰红、暖金、森林绿、海蓝、霜白、深夜黑、橙色、紫色、橄榄绿、粉色、品红、青色共十三种内置背景，无需导入图片。选择内置风格会切换掉当前导入图片，文字颜色、磨砂强度和透明度分别保留；这些渐变背景可适配不同屏幕尺寸。
 

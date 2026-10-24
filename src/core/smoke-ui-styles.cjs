@@ -70,7 +70,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     const editor=$('file-content'),code=$('file-highlight-code');
     return {style:document.documentElement.dataset.uiStyle,glassSettingsHidden:$('glass-appearance-settings').hidden,
       buttons:[...document.querySelectorAll('#ui-style-options [data-ui-style]')].map(n=>({style:n.dataset.uiStyle,pressed:n.getAttribute('aria-pressed')})),
-      surfaces:Object.fromEntries(['body','.workspace-layout','.sidebar','.conversation','#preview-panel','#sidebar-resizer','#editor-resizer','.composer','#settings-dialog','#appearance-dialog',
+      surfaces:Object.fromEntries(['body','.workspace-layout','.sidebar','.conversation','#preview-panel','#sidebar-resizer','#editor-resizer','.composer-area','.composer-footer','.composer','#settings-dialog','#appearance-dialog',
         '#app-menu-popup','#permission-popup','#reasoning-popup','.file-code-editor','#file-highlight','#file-content',
         '#file-line-numbers','#app-background','#conversation-background','.message.assistant .message-body','.message.assistant .message-paragraph',
         '.message.assistant .message-code','.message.assistant .message-code-label','.message.assistant .message-code pre code',
@@ -388,12 +388,17 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       await fs.unlink(filename);
       await click('#appearance-close'); await settle();
       const current = await inspect(), layer = current.surfaces['#conversation-background'], global = current.surfaces['#app-background'];
+      const composerArea = current.surfaces['.composer-area'], composer = current.surfaces['.composer'];
       assert.match(layer.image, /data:image\/png;base64,/u);
       assert.ok(Math.abs(layer.opacity - .72) < .001); assert.ok(Math.abs(global.opacity - .72) < .001);
       assert.equal(layer.pointerEvents, 'none');
       if (style === 'glass') { assert.equal(layer.display, 'none'); assert.notEqual(global.display, 'none'); assert.equal(layer.image, global.image); }
       else {
         assert.equal(global.display, 'none'); assert.notEqual(layer.display, 'none');
+        assert.equal(rgb(before.surfaces['.composer-area'].background).a, 1, 'Without an imported picture the composer surround must keep its normal material');
+        assert.equal(rgb(composerArea.background).a, 0, 'An imported photo must show through the composer surround in ' + style);
+        assert.equal(rgb(composer.background).a, 1, 'The input form must retain its opaque material in ' + style);
+        assert.equal(composer.background, before.surfaces['.composer'].background, 'The input form color must stay unchanged in ' + style);
         const area = current.surfaces['.conversation'].box;
         for (const edge of ['left', 'right', 'top', 'bottom']) assert.ok(Math.abs(layer.box[edge] - area[edge]) <= 1, 'Photo escaped conversation at ' + edge);
       }
@@ -403,14 +408,27 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       if (style !== 'glass') {
         for (const point of outside) assert.ok(distance(pixel(cleanImage, point.x, point.y), pixel(image, point.x, point.y)) <= 2, 'Imported image recolored an unrelated panel in ' + style);
         assert.ok(distance(pixel(cleanImage, inside.x, inside.y), pixel(image, inside.x, inside.y)) >= 10, 'Imported image is covered by conversation content in ' + style);
+        const footer = current.surfaces['.composer-footer'].box;
+        const surroundProbes = [{ x: composerArea.box.left + 6, y: composer.box.top + composer.box.height / 2 },
+          { x: composerArea.box.left + 6, y: footer.top + footer.height / 2 }];
+        for (const point of surroundProbes) {
+          assert.ok(point.y > composerArea.box.top && point.y < composerArea.box.bottom);
+          assert.ok(distance(pixel(cleanImage, point.x, point.y), pixel(image, point.x, point.y)) >= 10, 'Composer/footer surround must reveal the imported photo in ' + style);
+          assert.ok(distance(pixel(image, point.x, point.y), pixel(image, inside.x, inside.y)) <= 2, 'The solid fixture photo must continue uninterrupted behind the composer/footer surround in ' + style);
+        }
       }
+      await js("window.__materialSendClick=null;$('send-button').addEventListener('click',event=>{window.__materialSendClick={trusted:event.isTrusted,empty:!$('task-input').value.trim()};},{once:true});true");
+      await click('#send-button');
+      const sendClick = await js('window.__materialSendClick');
+      assert.equal(sendClick?.trusted, true, 'The native send button hit target must remain unobstructed');
+      assert.equal(sendClick?.empty, true, 'The fixture never submits a model task');
       if (['deepseek', 'codex'].includes(style)) {
         child.webContents.reload(); await wait(50); await initialize(child); await openEditor();
         const restored = await inspect(); assert.equal(restored.style, style);
         assert.match(restored.surfaces['#conversation-background'].image, /data:image\/png;base64,/u);
         assert.notEqual(restored.surfaces['#conversation-background'].display, 'none');
       }
-      backgroundSamples[style] = { conversation: layer, global, commonControlsVisible: controls, sourceDeletedAfterImport: true };
+      backgroundSamples[style] = { conversation: layer, global, composerArea, composer, nativeSendClick: sendClick, commonControlsVisible: controls, sourceDeletedAfterImport: true };
       await call('resetBackground'); await settle();
       assert.equal((await inspect()).surfaces['#conversation-background'].display, 'none');
     }
@@ -421,6 +439,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       nativeSixMaterialSelection: true, independentGlassPreferencesPreserved: true, version7DiskPersistence: true,
       softenedWhiteGrayLayers: true, nativePaletteSelectionAcrossSixMaterials: true, selectionTextAndIconsContrast: true,
       importedImageOnlyInsideFiveSolidConversations: true, glassRetainsGlobalImage: true, backgroundSamples,
+      importedPhotoContinuesBehindComposerAndFooter: true, inputFormKeepsItsOpaqueMaterial: true, nativeSendHitTargetsPreserved: true,
       customColorInputPersistsAcrossReload: true, crossWindowPaletteSync: true, nativePaletteReset: true, paletteSamples,
       rendererReloadRestoresIndustrial: true, crossWindowNativeSelectionAndEvents: true,
       solidPanelsMenusDialogsHaveNoBlur: true, whiteAndDarkTextContrast: true, sixOrMoreSyntaxColours: true,
