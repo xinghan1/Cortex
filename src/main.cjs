@@ -23,6 +23,10 @@ const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel
 const { isXmlURL } = require('./core/xml-reader.cjs');
 const { resolveDataDirectory } = require('./core/data-path.cjs');
 const { SessionRestore } = require('./core/session-restore.cjs');
+const { PluginManager } = require('./core/plugin-manager.cjs');
+const { createPluginExample } = require('./core/plugin-template.cjs');
+const { createPluginRuntime } = require('./core/plugin-runtime.cjs');
+const { DshPetStore } = require('./core/dsh-pet.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test');
@@ -45,7 +49,7 @@ let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
   if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
   const previousVersions = ['Synora-code-0.16.7-win32-x64', 'Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
-  previousVersions.unshift('Synora-code-0.16.8-win32-x64');
+  previousVersions.unshift('Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
@@ -65,6 +69,7 @@ let sessionRenameRevision = 0;
 const rendererErrors = [];
 let sharedQueue = Promise.resolve(), sharedMutations = 0, quitting = false;
 let appUpdater, updateEnabled = false, updateInstalling = false, updateInstallPromise = null;
+let pluginManager, pluginRuntime, dshPet, pluginProjectAccess;
 let updateTimer, updateInterval;
 let launchInstaller = launchUpdateInstaller;
 let quitForUpdate = () => { quitting = true; app.quit(); };
@@ -111,7 +116,7 @@ function installAppUpdate() {
       for (const context of contexts) context.cancelPromptCompletion();
       await Promise.all([...contexts.map(context => context.settlePromptCompletion()), ...contexts.map(context => context.settleSideChat()),
         sessionRestore?.flush(), persistentTaskUndo?.flush(), permissionPreferences?.settled(),
-        approvalReviewerPreferences?.settled(), roleModels?.settled(), sharedQueue]);
+        approvalReviewerPreferences?.settled(), roleModels?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]);
       requireUpdateIdle();
       await launchInstaller(filename);
       cancelAccountSignIns();
@@ -127,8 +132,32 @@ function installAppUpdate() {
 function startUpdateChecks() {
   if (!updateEnabled || smoke) return;
   const check = () => { if (!quitting && !updateInstalling) void appUpdater.check().catch(() => {}); };
-  updateTimer = setTimeout(check, 15000); updateTimer.unref();
+  updateTimer = setTimeout(check, 5000); updateTimer.unref();
   updateInterval = setInterval(check, 4 * 60 * 60 * 1000); updateInterval.unref();
+}
+function extensionsSnapshot() { return { plugins: pluginManager?.list() || [], pluginError: pluginManager?.storageError || null, pet: dshPet?.snapshot() || null }; }
+function publishExtensions() {
+  const extensions = extensionsSnapshot();
+  for (const host of windows.values()) if (!host.win.isDestroyed()) host.win.webContents.send('forge:event', { type: 'extensions', extensions });
+}
+function publishPet() {
+  const pet = dshPet.snapshot();
+  for (const host of windows.values()) if (!host.win.isDestroyed()) host.win.webContents.send('forge:event', { type: 'pet-state', pet });
+  return pet;
+}
+function pluginOwnerContext({ ownerWindow }) {
+  const host = ownerWindow && !ownerWindow.isDestroyed() && windows.get(ownerWindow.webContents.id);
+  if (!host || host.win !== ownerWindow || quitting || updateInstalling) throw new Error('软件正在切换或关闭，请稍后重新打开插件。');
+  return host.active;
+}
+function pluginProjectInfo(request) {
+  const context = pluginOwnerContext(request), root = context.tools?.root || null;
+  return { root, name: root ? path.basename(root) : '', workspaceId: context.id, sessionId: context.currentSession?.id || null };
+}
+function pluginDeveloperFiles() {
+  return app.isPackaged ? { guide: path.join(path.dirname(process.execPath), '开发者插件', 'PLUGIN_DEVELOPMENT.md'),
+    example: path.join(path.dirname(process.execPath), '开发者插件', 'examples', 'hello-plugin') }
+    : { guide: path.join(projectDir, 'docs', 'PLUGIN_DEVELOPMENT.md'), example: path.join(projectDir, 'examples', 'hello-plugin') };
 }
 function redact(value) {
   let clean = store.redact(value);
@@ -303,6 +332,7 @@ let eventSequence = 0, localOperation = false, promptPreflights = 0, closeAllowe
 let initialized = false, lastRememberedSessionId = null;
 let lastFindText = null;
 let fileClipboard = null, editorDirty = false, editorCloseRequest = null, fileOperationDone = null;
+let manualOperations = Promise.resolve();
 const pendingPrompts = [];
 let queuePaused = false, queueReason = null, promptOperations = Promise.resolve(), shuttingDown = false, stopGeneration = 0;
 const approvals = new Map();
@@ -1193,6 +1223,55 @@ function buildHandlers() {
     checkAppUpdate: async () => { if (updateEnabled) await appUpdater.check(); return appUpdateSnapshot(); },
     downloadAppUpdate: async () => { await appUpdater.download(); return appUpdateSnapshot(); },
     installAppUpdate,
+    getExtensions: () => extensionsSnapshot(),
+    installExtension: async () => {
+      const selected = await dialog.showOpenDialog(win, { title: '选择本地插件文件夹', properties: ['openDirectory'] });
+      if (!selected.canceled && selected.filePaths[0]) {
+        const manifest = await pluginManager.preview(selected.filePaths[0]);
+        const labels = { 'project.read': '读取当前项目文本文件', 'project.write': '请求修改当前项目文本文件', notifications: '显示软件内通知' };
+        const decision = await dialog.showMessageBox(win, { type: 'question', title: '安装本地插件',
+          message: `安装“${manifest.name}” ${manifest.version}？`,
+          detail: `申请权限：\n${manifest.permissions.map(value => '• ' + labels[value]).join('\n') || '无需项目权限'}\n\n安装后可在插件列表中启用和打开。`,
+          buttons: ['取消', '安装'], defaultId: 0, cancelId: 0, noLink: true });
+        if (decision.response === 1 && !quitting && !win.isDestroyed()) await pluginManager.install(selected.filePaths[0]);
+      }
+      return extensionsSnapshot();
+    },
+    setExtensionEnabled: async arg => {
+      if (!arg || Object.keys(arg).some(key => !['id', 'enabled'].includes(key))) throw new Error('插件参数无效。');
+      await pluginManager.setEnabled(arg.id, arg.enabled); return extensionsSnapshot();
+    },
+    removeExtension: async arg => {
+      if (!arg || Object.keys(arg).some(key => key !== 'id')) throw new Error('插件参数无效。');
+      pluginRuntime.close(arg.id); await pluginManager.uninstall(arg.id); return extensionsSnapshot();
+    },
+    openExtension: arg => {
+      if (!arg || Object.keys(arg).some(key => key !== 'id')) throw new Error('插件参数无效。');
+      return pluginRuntime.open(arg.id, null, win);
+    },
+    runExtensionCommand: arg => {
+      if (!arg || Object.keys(arg).some(key => !['id', 'command'].includes(key)) || typeof arg.command !== 'string') throw new Error('插件命令参数无效。');
+      return pluginRuntime.open(arg.id, arg.command, win);
+    },
+    createExtensionExample: async () => {
+      const selected = await dialog.showOpenDialog(win, { title: '选择示例插件的保存位置', properties: ['openDirectory', 'createDirectory'] });
+      if (selected.canceled || !selected.filePaths[0]) return null;
+      const destination = await createPluginExample(pluginDeveloperFiles().example, selected.filePaths[0]);
+      return { path: destination };
+    },
+    openExtensionGuide: async () => {
+      const error = await shell.openPath(pluginDeveloperFiles().guide);
+      if (error) throw new Error('无法打开插件开发文档，请检查文件关联。');
+      return null;
+    },
+    petState: () => dshPet.snapshot(),
+    setPet: async arg => { await dshPet.set(arg); return publishPet(); },
+    petImport: async () => {
+      const selected = await dialog.showOpenDialog(win, { title: '导入 dsh-pet 宠物配置',
+        properties: ['openFile'], filters: [{ name: 'dsh-pet 配置', extensions: ['json', 'jsonc'] }] });
+      if (!selected.canceled && selected.filePaths[0]) await dshPet.importFile(selected.filePaths[0]);
+      return publishPet();
+    },
     getState: state,
     getUsageAnalytics: () => loadUsageAnalytics(store, [...windows.values()].flatMap(value => [...value.contexts].map(context => context.currentSession)).filter(Boolean)),
     getAppearance: () => appearance.snapshot(),
@@ -1610,7 +1689,6 @@ function buildHandlers() {
   // Manual file actions can run alongside a model/terminal and queued prompts.
   // Serialize their own requests, including clipboard state, without waiting
   // for an active model or holding the prompt/session operation lock.
-  let manualOperations = Promise.resolve();
   const manualMutations = new Set(['fileCreate', 'fileRename', 'fileMove', 'fileDelete', 'filePaste', 'fileSave', 'fileClipboard']);
   for (const name of ['fileList', 'fileRead', 'fileCreate', 'fileRename', 'fileMove', 'fileDelete', 'fileClipboard', 'filePaste', 'fileCopyPath', 'fileReveal', 'fileSave']) {
     const handler = handlers[name];
@@ -1726,6 +1804,7 @@ function menuHandlers() {
 async function shutdown() {
   ++stopGeneration;
   shuttingDown = true;
+  pluginRuntime?.closeOwner(win);
   promptCompletion.abort();
   sideChat.close();
   pauseQueue('窗口正在关闭。');
@@ -1778,8 +1857,24 @@ const context = {
   cancelPromptCompletion: () => promptCompletion.abort(),
   settlePromptCompletion: () => promptCompletion.settled(),
   settleSideChat: () => sideChat.settled(),
+  pluginCanWrite: () => !shuttingDown && !quitting && !activeRun && !localOperation && !promptPreflights && !editorDirty
+    && !!tools && !persistentTaskUndo.isProjectBusy(tools.root),
+  runPluginMutation(operation, project, signal) {
+    const pending = manualOperations.then(() => {
+      signal?.throwIfAborted();
+      if (host.active !== context || context.id !== project?.workspaceId || tools?.root !== project?.root || !context.pluginCanWrite())
+        throw new Error('当前项目或编辑状态已变化，请重新打开插件窗口后重试。');
+      return operation();
+    });
+    const settled = pending.then(() => {}, () => {});
+    manualOperations = settled; fileOperationDone = settled;
+    return pending.finally(async () => {
+      if (fileOperationDone === settled) fileOperationDone = null;
+      try { await broadcastAllStates(); } finally { scheduleNextPrompt(); }
+    });
+  },
   dispose: () => { promptCompletion.abort(); sideChat.close(); browser?.destroy(); },
-  abort() { ++stopGeneration; promptCompletion.abort(); sideChat.close(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
+  abort() { ++stopGeneration; pluginRuntime?.closeOwner(win); promptCompletion.abort(); sideChat.close(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
   get activeRun() { return activeRun; }, get busy() { return Boolean(activeRun || localOperation || promptPreflights || fileOperationDone || sideChat.snapshot().running); },
   get hasPendingPrompts() { return pendingPrompts.length > 0; },
   get editorDirty() { return editorDirty; },
@@ -1907,6 +2002,36 @@ async function boot() {
     return image.isEmpty() ? null : image.getSize();
   } });
   await appearance.init();
+  dshPet = await new DshPetStore({ dataDir }).init();
+  pluginManager = new PluginManager({ dataDir, onChange: publishExtensions });
+  await pluginManager.init();
+  const { createPluginProjectAccess } = await import('./core/plugin-project.mjs');
+  pluginProjectAccess = createPluginProjectAccess({ WorkspaceTools,
+    getContext(request) {
+      const context = pluginOwnerContext(request);
+      return { ...pluginProjectInfo(request), canWrite: context.pluginCanWrite(),
+        runMutation: operation => context.runPluginMutation(operation, request.project, request.signal) };
+    },
+    async confirmWrite({ plugin, ownerWindow, operation, signal }) {
+      signal.throwIfAborted();
+      const preview = text => text === null ? '（新文件）' : text.length > 6000 ? text.slice(0, 6000) + '\n…（内容较长，仅显示预览）' : text;
+      const decision = await dialog.showMessageBox(ownerWindow, { type: 'question', title: '插件文件修改',
+        message: `允许“${plugin.name}”写入 ${operation.path}？`,
+        detail: `修改前：\n${preview(operation.before)}\n\n修改后：\n${preview(operation.after)}`,
+        buttons: ['取消', '允许写入'], defaultId: 0, cancelId: 0, noLink: true, signal });
+      signal.throwIfAborted(); return decision.response === 1;
+    },
+    onFilesChanged: request => pluginOwnerContext(request).emit({ type: 'files-changed', operation: 'save', path: request.path }),
+  });
+  const notifyPlugin = ({ plugin, ownerWindow, message }) => {
+    const context = pluginOwnerContext({ ownerWindow });
+    context.win.webContents.send('forge:event', { type: 'extension-notice', workspaceId: context.id, message: `${plugin.name}：${message}` });
+  };
+  pluginRuntime = createPluginRuntime({ BrowserWindow, session: electronSession, ipcMain, manager: pluginManager,
+    getOwnerWindow: () => activeWindowHost?.win || win,
+    getAppInfo: () => ({ name: app.getName(), version: app.getVersion(), apiVersion: 1 }), getProjectInfo: pluginProjectInfo,
+    listFiles: pluginProjectAccess.listFiles, readText: pluginProjectAccess.readText, writeText: pluginProjectAccess.writeText,
+    notify: notifyPlugin, onError: event => { try { notifyPlugin(event); } catch {} } });
   nativeTheme.themeSource = nativeAppearance(appearance.snapshot()).theme;
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
@@ -1943,6 +2068,14 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'extensions') {
+    const result = { version: app.getVersion(), extensions: await require('./core/smoke-extensions.cjs')({
+      win, output, dataDir, pluginManager, pluginRuntime, dshPet, createAppWindow, dialog }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_EXTENSIONS_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'role-models') {
     const result = { version: app.getVersion(), roleModels: await require('./core/smoke-role-models.cjs')({ win, output, dataDir }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
@@ -2313,6 +2446,7 @@ else {
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
   clearTimeout(updateTimer); clearInterval(updateInterval);
+  pluginRuntime?.dispose();
   void appUpdater?.dispose();
 });
 app.on('before-quit', event => {
@@ -2321,9 +2455,9 @@ app.on('before-quit', event => {
   if (quitting === 'pending') { event.preventDefault(); return; }
   if (![...windows.values()].some(context => context.busy || context.editorDirty || context.hasFileOperation)) {
     cancelAccountSignIns();
-    if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations) {
+    if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations || pluginManager || dshPet) {
       event.preventDefault(); quitting = 'pending';
-      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
+      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
     }
     return;
   }
@@ -2339,6 +2473,8 @@ app.on('before-quit', event => {
     await Promise.allSettled(contexts.map(context => context.shutdown()));
     await sessionRestore?.flush();
     await persistentTaskUndo?.flush();
+    await pluginManager?.settled();
+    await dshPet?.settled();
     quitting = true; app.quit();
   }).catch(() => { quitting = false; for (const context of contexts) context.scheduleNextPrompt(); });
 });

@@ -42,6 +42,8 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
     permissionPreferences: { settled: async () => { calls.push('flush:permissions'); } },
     approvalReviewerPreferences: { settled: async () => { calls.push('flush:reviewer'); } },
     roleModels: { settled: async () => { calls.push('flush:roles'); } },
+    pluginManager: { settled: async () => { calls.push('flush:plugins'); } },
+    dshPet: { settled: async () => { calls.push('flush:pet'); } },
     chatgpt: { cancelSignIn: () => calls.push('cancel-signin') },
     roleAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-signin') }]]),
     spawn(filename, args, options) {
@@ -69,6 +71,7 @@ test('installation waits for every cancelled completion and storage flush before
   assert.ok(f.calls.includes('settle:0') && f.calls.includes('settle:1'));
   assert.ok(f.calls.includes('settle-sidebar:0') && f.calls.includes('settle-sidebar:1') && f.calls.includes('flush:roles'));
   assert.ok(f.calls.includes('flush:restore') && f.calls.includes('flush:undo') && f.calls.includes('flush:permissions') && f.calls.includes('flush:reviewer'));
+  assert.ok(f.calls.includes('flush:plugins') && f.calls.includes('flush:pet'));
   assert.equal(f.spawns.length, 0); assert.equal(f.calls.includes('quit'), false);
   first.resolve(); storage.resolve(); await tick();
   assert.equal(f.spawns.length, 0, 'A different window can still be recording its cancelled completion usage');

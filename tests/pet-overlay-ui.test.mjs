@@ -1,0 +1,229 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import vm from 'node:vm';
+
+const source = await fs.readFile(new URL('../src/renderer/pet-overlay.js', import.meta.url), 'utf8');
+const plain = value => JSON.parse(JSON.stringify(value));
+const deferred = () => { let resolve, reject; const promise = new Promise((pass, fail) => { resolve = pass; reject = fail; }); return { promise, resolve, reject }; };
+class Target {
+  constructor() { this.listeners = new Map(); }
+  addEventListener(name, listener) { if (!this.listeners.has(name)) this.listeners.set(name, new Set()); this.listeners.get(name).add(listener); }
+  removeEventListener(name, listener) { this.listeners.get(name)?.delete(listener); }
+  emit(name, event = {}) { for (const listener of this.listeners.get(name) || []) listener({ type: name, preventDefault() {}, ...event }); }
+}
+class Element extends Target {
+  constructor(tag, document) {
+    super(); this.tag = tag; this.document = document; this.children = []; this.attributes = {}; this.dataset = {}; this.style = {};
+    this.hidden = false; this.textContent = ''; this.playCount = 0; this.pauseCount = 0; this.loadCount = 0;
+    this.classes = new Set(); this.classList = { add: value => this.classes.add(value), remove: value => this.classes.delete(value) };
+  }
+  set id(value) { this._id = value; if (value) this.document.elements.set(value, this); }
+  get id() { return this._id; }
+  set innerHTML(_) { throw new Error('Pet settings cannot render HTML'); }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = nodes; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  removeAttribute(name) { delete this.attributes[name]; if (name === 'src') this.src = ''; }
+  focus() { this.document.activeElement = this; }
+  contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+  play() { ++this.playCount; return Promise.resolve(); }
+  pause() { ++this.pauseCount; }
+  load() { ++this.loadCount; }
+  setPointerCapture(id) { this.pointer = id; }
+  hasPointerCapture(id) { return this.pointer === id; }
+  releasePointerCapture() { this.pointer = null; }
+  getBoundingClientRect() {
+    if (this.bounds) return this.bounds;
+    const left = parseFloat(this.style.left || 0), top = parseFloat(this.style.top || 0), width = parseFloat(this.style.width || 160), height = parseFloat(this.style.height || 250);
+    return { left, top, width, height, right: left + width, bottom: top + height };
+  }
+  remove() { this.removed = true; }
+}
+const categories = ['idle', 'clicks', 'drag', 'turn', 'actions', 'thinking', 'working', 'result', 'waiting', 'success', 'error'];
+const state = overrides => ({ enabled: true, size: 220, x: 1, y: 1, workStatus: true, packId: 'dsh-pet',
+  packs: [{ id: 'dsh-pet', name: '帝师猴', animations: Object.fromEntries(categories.map(kind => [kind, [{ name: kind, url: `file:///D:/app/pet/${kind}.webm` }]])) }], ...overrides });
+function fixture({ initial = state(), methods = {}, reduced = false, composerTop } = {}) {
+  const document = new Target(); document.elements = new Map(); document.hidden = false;
+  document.createElement = tag => new Element(tag, document); document.body = new Element('body', document);
+  document.getElementById = id => document.elements.get(id);
+  document.querySelector = selector => selector === '.composer-area' ? document.elements.get('composer-area') : null;
+  const view = new Target(), motion = new Target(); view.innerWidth = 1000; view.innerHeight = 800; motion.matches = reduced;
+  const frames = new Map(); let nextFrame = 0;
+  view.requestAnimationFrame = callback => { const id = ++nextFrame; frames.set(id, callback); return id; };
+  view.cancelAnimationFrame = id => frames.delete(id);
+  const observers = [];
+  view.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this); }
+    observe(target) { this.targets.add(target); }
+    disconnect() { this.disconnected = true; this.targets.clear(); }
+  };
+  if (composerTop !== undefined) {
+    for (const id of ['composer-area', 'task-form', 'composer-approval']) {
+      const node = new Element('section', document); node.id = id;
+      node.bounds = { top: composerTop, bottom: 780, left: 200, right: 980, width: 780, height: 780 - composerTop };
+      node.hidden = id === 'composer-approval'; document.body.append(node);
+    }
+  }
+  view.matchMedia = () => motion; document.defaultView = view;
+  const context = vm.createContext({ document }); vm.runInContext(source, context);
+  const calls = [], notices = [], configured = []; let current = initial; const events = new Set();
+  const bridge = {
+    petState(...args) { calls.push(['petState', plain(args)]); return methods.petState ? methods.petState() : current; },
+    setPet(patch) { calls.push(['setPet', plain(patch)]); if (methods.setPet) return methods.setPet(patch); current = { ...current, ...patch }; return current; },
+    onEvent(listener) { events.add(listener); return () => events.delete(listener); },
+  };
+  const ui = context.ForgePetOverlay.create({ document, bridge, notice: (...args) => notices.push(args), onConfigure: () => configured.push(true) });
+  return { ui, document, view, motion, observers, frames, calls, notices, configured, events, node: id => document.elements.get(id),
+    flushFrames() { const batch = [...frames.values()]; frames.clear(); for (const callback of batch) callback(); },
+    emit(event) { for (const listener of events) listener(event); },
+    pointer(name, x, y, extra = {}) { document.elements.get('pet-overlay-video').emit(name, { button: 0, pointerId: 8, clientX: x, clientY: y, ...extra }); },
+  };
+}
+const settled = () => new Promise(resolve => setImmediate(resolve));
+
+test('pet uses local transparent video with no model or plugin execution and an accessible small overlay', async () => {
+  const f = fixture(); await f.ui.ready;
+  assert.deepEqual(f.calls, [['petState', []]]);
+  const overlay = f.node('pet-overlay'), video = f.node('pet-overlay-video');
+  assert.equal(overlay.hidden, false); assert.equal(overlay.style.width, '220px');
+  assert.equal(overlay.style.left, '772px'); assert.equal(overlay.style.top, '572px');
+  assert.equal(video.src, 'file:///D:/app/pet/idle.webm'); assert.equal(video.muted, true); assert.equal(video.playsInline, true);
+  assert.equal(video.attributes.role, 'button'); assert.match(video.attributes['aria-label'], /拖动移动/u);
+  assert.equal(video.loop, true); assert.equal(video.playCount, 1);
+  f.node('pet-overlay-video').emit('error');
+  assert.equal(video.hidden, true); assert.equal(f.node('pet-overlay-fallback').hidden, false);
+  f.node('pet-overlay-fallback').emit('click'); assert.equal(f.configured.length, 1);
+});
+
+test('late initial reads cannot replace a newer saved pet event', async () => {
+  const read = deferred(), f = fixture({ methods: { petState: () => read.promise } });
+  f.emit({ type: 'pet-state', pet: state({ enabled: false, size: 400 }) });
+  read.resolve(state()); await f.ui.ready;
+  assert.equal(f.node('pet-overlay').hidden, true); assert.equal(f.ui.snapshot().size, 400);
+});
+
+test('drag captures the pointer, plays the drag clip and clamps persisted coordinates to the window', async () => {
+  const f = fixture(); await f.ui.ready; const video = f.node('pet-overlay-video');
+  f.pointer('pointerdown', 900, 700); assert.equal(video.pointer, 8);
+  f.pointer('pointermove', 899, 699); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
+  f.pointer('pointermove', -500, -500); assert.equal(f.node('pet-overlay').dataset.animation, 'drag');
+  assert.equal(f.node('pet-overlay').style.left, '8px'); assert.equal(f.node('pet-overlay').style.top, '46px');
+  f.pointer('pointerup', -500, -500); await settled();
+  assert.deepEqual(f.calls.at(-1), ['setPet', { x: 0, y: 0 }]); assert.equal(video.pointer, null);
+  assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
+  f.view.innerWidth = 150; f.view.innerHeight = 160; f.view.emit('resize');
+  const bounds = f.node('pet-overlay').getBoundingClientRect();
+  assert.ok(bounds.left + bounds.width <= 150); assert.ok(bounds.top + bounds.height <= 160);
+});
+
+test('pet bounds reserve the entire visible composer and approval controls through layout changes without altering saved positions', async () => {
+  const f = fixture({ composerTop: 600 }); await f.ui.ready;
+  const overlay = f.node('pet-overlay');
+  assert.equal(overlay.getBoundingClientRect().bottom, 592);
+  assert.equal(overlay.getBoundingClientRect().height, 220);
+  const observer = f.observers[0]; assert.ok(observer.targets.has(f.node('task-form')));
+  assert.ok(observer.targets.has(f.node('composer-approval')));
+  f.node('task-form').hidden = true; f.node('composer-approval').hidden = false;
+  f.node('composer-approval').bounds = { ...f.node('composer-approval').bounds, top: 220, height: 560 };
+  observer.callback(); f.flushFrames();
+  assert.equal(overlay.getBoundingClientRect().bottom, 212);
+  assert.equal(overlay.getBoundingClientRect().height, 166, 'The displayed pet shrinks when an expanded approval needs more space');
+  assert.equal(f.ui.snapshot().size, 220); assert.equal(f.ui.snapshot().x, 1); assert.equal(f.ui.snapshot().y, 1);
+  assert.equal(f.calls.length, 1, 'Layout changes do not rewrite saved size or normalized position');
+  f.node('composer-approval').bounds = { ...f.node('composer-approval').bounds, top: 70, height: 710 };
+  observer.callback(); f.flushFrames(); assert.equal(overlay.hidden, true, 'When no useful space remains the pet temporarily yields to the controls');
+  f.node('composer-approval').hidden = true; f.node('task-form').hidden = false;
+  observer.callback(); f.flushFrames(); assert.equal(overlay.hidden, false); assert.equal(overlay.getBoundingClientRect().bottom, 592);
+  f.node('composer-area').hidden = true; f.node('task-form').hidden = true;
+  observer.callback(); f.flushFrames(); assert.equal(overlay.getBoundingClientRect().bottom, 792, 'Hidden composer regions do not reserve stale bounds');
+  f.ui.destroy(); assert.equal(observer.disconnected, true);
+});
+
+test('ResizeObserver notifications coalesce into one later frame and teardown cancels pending layout work', async () => {
+  const f = fixture({ composerTop: 600 }); await f.ui.ready;
+  const overlay = f.node('pet-overlay'), observer = f.observers[0];
+  f.node('composer-area').bounds = { ...f.node('composer-area').bounds, top: 400, height: 380 };
+  observer.callback(); observer.callback(); observer.callback();
+  assert.equal(f.frames.size, 1, 'Repeated observer deliveries schedule only one layout');
+  assert.equal(overlay.getBoundingClientRect().bottom, 592, 'Observer delivery never writes styles synchronously');
+  f.flushFrames(); assert.equal(overlay.getBoundingClientRect().bottom, 392); assert.equal(f.frames.size, 0);
+  observer.callback(); assert.equal(f.frames.size, 1);
+  f.ui.destroy(); assert.equal(f.frames.size, 0); assert.equal(observer.disconnected, true);
+  observer.callback(); assert.equal(f.frames.size, 0, 'A late observer callback cannot schedule work after disposal');
+});
+
+test('click and keyboard interaction play only a short local animation and then return to the current task', async () => {
+  const f = fixture(); await f.ui.ready;
+  f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600);
+  assert.equal(f.node('pet-overlay').dataset.animation, 'clicks'); assert.equal(f.node('pet-overlay-video').loop, false);
+  f.node('pet-overlay-video').emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
+  f.node('pet-overlay-video').emit('keydown', { key: 'Enter' }); assert.equal(f.node('pet-overlay').dataset.animation, 'clicks');
+  assert.equal(f.calls.length, 1, 'Interaction never calls a model or changes stored project state');
+});
+
+test('task states track parallel tools, approvals, results and completion only in the current workspace', async () => {
+  const f = fixture(); await f.ui.ready;
+  const kind = () => f.node('pet-overlay').dataset.animation;
+  f.ui.updateState({ workspaceId: 'one', activeTask: { running: false } });
+  f.emit({ type: 'run-start', workspaceId: 'other' }); assert.equal(kind(), 'idle');
+  f.emit({ type: 'run-start', workspaceId: 'one' }); assert.equal(kind(), 'thinking');
+  f.emit({ type: 'tool-start', toolCallId: 'a' }); f.emit({ type: 'tool-start', toolCallId: 'b' }); assert.equal(kind(), 'working');
+  f.emit({ type: 'tool-result', toolCallId: 'a' }); assert.equal(kind(), 'working');
+  f.emit({ type: 'approval-request', id: 'approval-a' }); f.emit({ type: 'approval-request', id: 'approval-b' }); assert.equal(kind(), 'waiting');
+  f.emit({ type: 'approval-resolved', id: 'approval-a' }); assert.equal(kind(), 'waiting');
+  f.emit({ type: 'approval-resolved', id: 'approval-b' }); assert.equal(kind(), 'working');
+  f.emit({ type: 'tool-result', toolCallId: 'b' }); assert.equal(kind(), 'thinking');
+  f.emit({ type: 'text-delta', text: 'hello' }); assert.equal(kind(), 'result');
+  f.emit({ type: 'run-end', status: 'completed' }); assert.equal(kind(), 'success');
+  f.node('pet-overlay-video').emit('ended'); assert.equal(kind(), 'idle');
+  f.emit({ type: 'run-start' }); f.emit({ type: 'run-end', status: 'failed' }); assert.equal(kind(), 'error');
+  f.emit({ type: 'pet-state', pet: state({ workStatus: false }) });
+  f.emit({ type: 'run-start' }); assert.equal(kind(), 'idle');
+});
+
+test('reduced motion and a hidden window pause video without losing the pet position or making requests', async () => {
+  const f = fixture({ reduced: true }); await f.ui.ready;
+  const video = f.node('pet-overlay-video'); assert.equal(video.playCount, 0); assert.ok(video.pauseCount > 0);
+  f.motion.matches = false; f.motion.emit('change'); assert.equal(video.playCount, 1);
+  f.document.hidden = true; f.document.emit('visibilitychange'); const paused = video.pauseCount;
+  assert.ok(paused > 1);
+  f.document.hidden = false; f.document.emit('visibilitychange'); assert.equal(video.playCount, 2);
+  assert.equal(f.node('pet-overlay').style.left, '772px'); assert.equal(f.calls.length, 1);
+});
+
+test('the pet menu stays within the window and explicit actions reset, configure or hide the pet', async () => {
+  const f = fixture(); await f.ui.ready;
+  f.node('pet-overlay-video').emit('contextmenu', { clientX: 999, clientY: 799 });
+  const menu = f.node('pet-overlay-menu'); assert.equal(menu.hidden, false); assert.equal(menu.style.left, '832px'); assert.equal(menu.style.top, '542px');
+  f.node('pet-overlay-settings').emit('click'); assert.equal(f.configured.length, 1); assert.equal(menu.hidden, true);
+  f.node('pet-overlay-video').emit('keydown', { key: 'ContextMenu' });
+  f.node('pet-overlay-reset').emit('click'); await settled(); assert.deepEqual(f.calls.at(-1), ['setPet', { x: 1, y: 1 }]);
+  f.node('pet-overlay-video').emit('contextmenu', { clientX: 900, clientY: 600 });
+  f.document.emit('keydown', { key: 'Escape' }); assert.equal(menu.hidden, true);
+  f.node('pet-overlay-video').emit('contextmenu', { clientX: 900, clientY: 600 });
+  f.node('pet-overlay-hide').emit('click'); await settled();
+  assert.deepEqual(f.calls.at(-1), ['setPet', { enabled: false }]); assert.equal(f.node('pet-overlay').hidden, true);
+});
+
+test('ordered saves cannot be rewound by an earlier IPC result and keyboard movement persists clamped coordinates', async () => {
+  const first = deferred(), second = deferred(); let count = 0;
+  const f = fixture({ methods: { setPet: () => ++count === 1 ? first.promise : second.promise } }); await f.ui.ready;
+  const a = f.ui.set({ x: .2 }), b = f.ui.set({ x: .8 });
+  second.resolve(state({ x: .8 })); await b; first.resolve(state({ x: .2 })); await a;
+  assert.equal(f.ui.snapshot().x, .8);
+  const keyboard = fixture(); await keyboard.ui.ready;
+  keyboard.node('pet-overlay-video').emit('keydown', { key: 'ArrowLeft', shiftKey: true }); await settled();
+  assert.deepEqual(keyboard.calls.at(-1), ['setPet', { x: .9, y: 1 }]);
+});
+
+test('untrusted URL schemes are not loaded and teardown releases media, events and in-flight reads', async () => {
+  const untrusted = state(); untrusted.packs[0].animations.idle[0].url = 'https://untrusted.example/pet.webm';
+  const f = fixture({ initial: untrusted }); await f.ui.ready;
+  assert.equal(f.node('pet-overlay-video').src, undefined);
+  const pending = deferred(), late = fixture({ methods: { petState: () => pending.promise } });
+  late.ui.destroy(); pending.resolve(state()); await late.ui.ready;
+  assert.equal(late.events.size, 0); assert.equal(late.node('pet-overlay').removed, true); assert.equal(late.node('pet-overlay-menu').removed, true);
+  assert.equal(late.node('pet-overlay-video').src, '');
+  assert.equal(late.document.listeners.get('keydown').size, 0); assert.equal(late.view.listeners.get('resize').size, 0);
+});

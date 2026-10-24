@@ -12,6 +12,14 @@
 
 本项目修改了 `packages/local/src/index.ts` 和 `packages/local/src/types.ts`，增加仅在 Electron 主进程内使用的 `withAccessToken` 回调；两个文件均保留修改说明。对该 SDK 的修改按同一非商业许可证分发。OAuth 校验、权限检查、凭据轮换和取消流程仍使用原组件实现。Synora code 当前将此接入用于本机个人实验；商业使用该组件需要另行获得许可。
 
+## dsh-pet 桌面宠物素材
+
+来源：<https://github.com/PC2005-cloud/dsh-pet>，上游版本 `0.3.8`，固定提交 `86bc30c83225919434de8396073078dc22e926fd`。
+
+本软件通过 Synora 适配层使用原版透明 WebM 动画、动作配置和本地宠物包；内置 11 段未修改的上游动画（共 4,660,934 字节），用于待机、互动及任务状态。素材与配置保存在 `src/vendor/dsh-pet/`，该目录的 `provenance.json` 记录来源、大小与 SHA-256。
+
+上游采用 MIT License，Copyright (c) 2026 PC2005-cloud。完整许可与来源声明见 `src/vendor/dsh-pet/LICENSE` 和 `src/vendor/dsh-pet/NOTICE.md`，随安装包一并保留。
+
 ## 其他依赖
 
 应用的 npm 依赖及精确版本见 `package.json` 与 `package-lock.json`。安装后各依赖目录内保留其许可文件。Windows 便携构建复制 Electron 运行时随附的 `LICENSE`、`LICENSES.chromium.html` 及运行依赖的许可文件。

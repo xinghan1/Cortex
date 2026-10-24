@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello 开发面板</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <header><h1 id="title" tabindex="-1">Hello 开发面板</h1><p id="app-info">正在连接 Synora code…</p></header>
+  <main>
+    <section><h2>项目文件</h2><p id="project-info">打开项目后，可查看项目内的文本文件。</p>
+      <button id="list">列出项目文件</button><div id="files" class="file-list"></div>
+    </section>
+    <section><h2>文本编辑</h2>
+      <label for="path">项目相对路径</label><input id="path" value="README.md" spellcheck="false">
+      <div class="actions"><button id="read">读取文本</button><button id="new">准备新建示例文件</button></div>
+      <label for="content">文件内容</label><textarea id="content" spellcheck="false" placeholder="先读取文件，或准备新建示例文件。"></textarea>
+      <div class="actions"><button id="save" disabled>请求保存</button><button id="notify">显示通知</button></div>
+      <p class="hint">保存由软件确认；文件已变化时会提示重新读取。</p>
+    </section>
+    <p id="status" role="status" aria-live="polite">准备就绪。</p>
+  </main>
+</body>
+</html>

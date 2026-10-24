@@ -1,0 +1,77 @@
+{
+  "name": "dsh-pet",
+  "version": "0.3.8",
+  "repository": "https://github.com/PC2005-cloud/dsh-pet",
+  "commit": "86bc30c83225919434de8396073078dc22e926fd",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 PC2005-cloud",
+  "integration": "Selected unmodified upstream VP9-alpha WebM animations, played by Synora code. No upstream host, npm lifecycle scripts, model requests, or external Electron helper are executed.",
+  "assets": [
+    {
+      "size": 464764,
+      "upstreamPath": "dsh-pet/assets/webm/被鼠标拖拽悬空反馈.webm",
+      "path": "webm/被鼠标拖拽悬空反馈.webm",
+      "sha256": "31373a86026636eecc890db763760309360310eb095cf5575b13c9ca2a6cc80e"
+    },
+    {
+      "size": 441437,
+      "upstreamPath": "dsh-pet/assets/webm/待机呼吸休闲.webm",
+      "path": "webm/待机呼吸休闲.webm",
+      "sha256": "deb965d05a85dacf5ff4a20faa757846f0d11679598c3ec578a5571487660395"
+    },
+    {
+      "size": 538110,
+      "upstreamPath": "dsh-pet/assets/webm/点击回应-开心跃动.webm",
+      "path": "webm/点击回应-开心跃动.webm",
+      "sha256": "86dcb0c3dd7b651de9c107e927d57a5c4224599101706dbdcc782fa48bcd0ad7"
+    },
+    {
+      "size": 427005,
+      "upstreamPath": "dsh-pet/assets/webm/东张西望.webm",
+      "path": "webm/东张西望.webm",
+      "sha256": "a20ed02ccc5e72075a3ca83fabb57d9aac5ded699f52d00ec6de72069799fcd5"
+    },
+    {
+      "size": 198937,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-垂头叹气冒汗.webm",
+      "path": "webm/工作状态-垂头叹气冒汗.webm",
+      "sha256": "ab00c844e62221905574b4c070e0d7b6fa14fb2afa1064c27a160f10e25f7196"
+    },
+    {
+      "size": 475613,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-忙碌点按.webm",
+      "path": "webm/工作状态-忙碌点按.webm",
+      "sha256": "b5d702e0c04adb7b255ac702001c24da36c8bf95efc891f693f4976986ab2435"
+    },
+    {
+      "size": 362510,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-清点归档.webm",
+      "path": "webm/工作状态-清点归档.webm",
+      "sha256": "8c84f58f3a9e7b912e1cbfd89f77eb3652053fc9b2844295c8440cb636305d3b"
+    },
+    {
+      "size": 488024,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-雀跃庆祝.webm",
+      "path": "webm/工作状态-雀跃庆祝.webm",
+      "sha256": "3ff681051a0bb4f152d7535d64b7f3194c30298bf56d41e521216a278f135d3e"
+    },
+    {
+      "size": 408849,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-思考冒泡.webm",
+      "path": "webm/工作状态-思考冒泡.webm",
+      "sha256": "b4a36cfa28ea5d7089e362a01972c6e880297c6dcd0d39f1994efd889a3c1be5"
+    },
+    {
+      "size": 471725,
+      "upstreamPath": "dsh-pet/assets/webm/工作状态-原地踱步张望.webm",
+      "path": "webm/工作状态-原地踱步张望.webm",
+      "sha256": "a56c17ef901fa531324a46a04def2381f65922d319ec83dadde34d2a4669e411"
+    },
+    {
+      "size": 383960,
+      "upstreamPath": "dsh-pet/assets/webm/写代码.webm",
+      "path": "webm/写代码.webm",
+      "sha256": "0441287737cdbb993ce90dfa74c67ea4ea3549d8c8ea98946604668464589ed7"
+    }
+  ]
+}

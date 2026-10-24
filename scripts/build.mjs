@@ -30,4 +30,10 @@ for (const relative of runtime) {
 await fs.writeFile(path.join(resources, 'package.json'), JSON.stringify({ name: pkg.name, productName: pkg.productName, version: pkg.version, type: 'module', main: 'src/main.cjs' }, null, 2));
 await fs.rename(path.join(destination, 'electron.exe'), path.join(destination, 'Synora code.exe'));
 await fs.copyFile(path.join(root, 'README.md'), path.join(destination, '使用说明.md'));
+await fs.copyFile(path.join(root, 'THIRD_PARTY_NOTICES.md'), path.join(destination, 'THIRD_PARTY_NOTICES.md'));
+const developerDir = path.join(destination, '开发者插件');
+await fs.mkdir(path.join(developerDir, 'sdk'), { recursive: true });
+await fs.copyFile(path.join(root, 'docs', 'PLUGIN_DEVELOPMENT.md'), path.join(developerDir, 'PLUGIN_DEVELOPMENT.md'));
+await fs.copyFile(path.join(root, 'sdk', 'plugin-api.d.ts'), path.join(developerDir, 'sdk', 'plugin-api.d.ts'));
+await fs.cp(path.join(root, 'examples', 'hello-plugin'), path.join(developerDir, 'examples', 'hello-plugin'), { recursive: true });
 console.log(`已生成 Windows 便携版：${destination}`);

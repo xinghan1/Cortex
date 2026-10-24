@@ -1,0 +1,35 @@
+dialog.extensions-dialog { width: 760px; max-width: calc(100vw - 40px); max-height: calc(100vh - 60px); margin: auto; overflow-y: auto; -webkit-app-region: no-drag; }
+.extensions-dialog .dialog-header { position: sticky; top: -1px; z-index: 1; gap: 18px; padding-bottom: 8px; background: var(--ui-raised, var(--panel)); }
+.extensions-dialog .dialog-header h2 { margin: 0; font-size: 22px; }
+.extensions-status { min-height: 1.5em; margin: 8px 0; color: var(--muted); font-size: 12px; }
+.extensions-section + .extensions-section { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+.extensions-section-heading, .extensions-toolbar, .extension-title, .extension-actions { display: flex; align-items: center; gap: 9px; }
+.extensions-section-heading { justify-content: space-between; flex-wrap: wrap; margin-bottom: 14px; }
+.extensions-section-heading h3 { margin: 0; font-size: 17px; }
+.extensions-toolbar { flex-wrap: wrap; }
+.extensions-list { display: grid; gap: 12px; }
+.extensions-empty { margin: 12px 0 18px; color: var(--muted); }
+.extension-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-control, 10px); background: var(--ui-control, var(--panel2)); }
+.extension-title { flex-wrap: wrap; }
+.extension-title h4 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.extension-version, .extension-state { font-size: 11px; color: var(--muted); }
+.extension-state[data-enabled='true'] { color: var(--ui-accent, var(--accent)); }
+.extensions-description, .extension-permissions { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.extension-actions { flex-wrap: wrap; justify-content: flex-end; }
+.extension-commands { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.extension-remove-confirm { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 10px; }
+.extension-remove-confirm p { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.extension-remove-confirm .button + .button { margin-left: 8px; }
+.extensions-check { display: flex; align-items: center; gap: 9px; margin: 13px 0; }
+.extensions-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--ui-accent, var(--accent)); }
+.extensions-field-label { display: block; margin: 17px 0 8px; font-size: 12px; color: var(--muted); }
+.extensions-select { display: block; width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-control, 8px); background: var(--panel2); color: var(--text); }
+.extensions-pet-size-row { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
+.extensions-pet-size-row input { flex: 1; min-width: 60px; accent-color: var(--ui-accent, var(--accent)); }
+.extensions-pet-size-row output { width: 52px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.extensions-dialog :is(button, input, select):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
+.extensions-dialog [hidden] { display: none; }
+@media (max-width: 640px) {
+  .extension-entry { grid-template-columns: minmax(0, 1fr); }
+  .extension-actions { justify-content: flex-start; }
+}

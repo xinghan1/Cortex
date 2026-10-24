@@ -4035,6 +4035,7 @@ function handleEvent(event) {
       scrollBottom();
       break;
     case 'storage-error': notice(`本机保存失败：${event.error || '未知错误'}`, true); break;
+    case 'extension-notice': notice(event.message || '插件消息'); break;
     case 'usage':
       $('token-usage').textContent = `本次输入 ${(event.inputTokens || 0).toLocaleString()} / 输出 ${(event.outputTokens || 0).toLocaleString()} Token`;
       break;
@@ -4425,6 +4426,9 @@ async function initialize() {
   }
   appUpdateControls = window.ForgeAppUpdate.create({ bridge, button: $('app-update-button'), label: $('app-update-label'), progress: $('app-update-progress'), notice, isBusy: () => contextBusy() || editorSaving || isChatGPTBusy() });
   window.synoraAppUpdate = appUpdateControls;
+  window.synoraPetOverlay = window.ForgePetOverlay.create({ document, bridge, notice,
+    onConfigure: () => window.synoraExtensions?.open({ section: 'pet' }) });
+  window.synoraExtensions = window.ForgeExtensions.create({ document, bridge, pet: window.synoraPetOverlay, notice });
   window.synoraRoleModels = window.ForgeRoleModels.create({ document, bridge, onConfigure: openSettings,
     onState: updateState, notice, isBusy: () => contextBusy() || settingsSaving || isChatGPTBusy() });
   sideChatControls = window.ForgeSideChat.create({ bridge, getWorkspaceId: currentWorkspaceId, notice,
@@ -4440,6 +4444,7 @@ async function initialize() {
     const version = taskStateVersion;
     const queueVersion = promptQueueVersion;
     updateState(await bridge.getState(), { syncActiveTask: version === taskStateVersion, syncPendingQueue: queueVersion === promptQueueVersion });
+    window.synoraPetOverlay.updateState(appState);
     if (typeof bridge.getCurrentSession === 'function') {
       const session = await bridge.getCurrentSession();
       if (session?.id && belongsToCurrentWorkspace(session)) renderSessionSnapshot(session);
@@ -4484,6 +4489,7 @@ window.aiCodeCommands = Object.freeze({
       case 'logout': return runChatGPTAction('disconnect', () => bridge.chatgptDisconnect());
       case 'quit': return bridge.quitApp();
       case 'settings': return openSettings();
+      case 'extensions': return window.synoraExtensions?.open();
       case 'role-settings': return window.synoraRoleModels?.openList();
       case 'role-subagent-settings': return window.synoraRoleModels?.open('subagent');
       case 'role-approval-settings': return window.synoraRoleModels?.open('approval');

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "demo.hello",
+  "name": "Hello 开发面板",
+  "version": "1.0.0",
+  "description": "查看项目文件，并体验带冲突检查的文本编辑。",
+  "entry": "index.html",
+  "permissions": ["project.read", "project.write", "notifications"],
+  "commands": [{ "id": "hello.show", "title": "打开 Hello 开发面板" }]
+}

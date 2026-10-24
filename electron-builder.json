@@ -13,7 +13,10 @@
   ],
   "extraFiles": [
     { "from": "README.md", "to": "使用说明.md" },
-    { "from": "THIRD_PARTY_NOTICES.md", "to": "THIRD_PARTY_NOTICES.md" }
+    { "from": "THIRD_PARTY_NOTICES.md", "to": "THIRD_PARTY_NOTICES.md" },
+    { "from": "docs/PLUGIN_DEVELOPMENT.md", "to": "开发者插件/PLUGIN_DEVELOPMENT.md" },
+    { "from": "sdk/plugin-api.d.ts", "to": "开发者插件/sdk/plugin-api.d.ts" },
+    { "from": "examples/hello-plugin", "to": "开发者插件/examples/hello-plugin" }
   ],
   "extraMetadata": {
     "synoraInstalled": true
