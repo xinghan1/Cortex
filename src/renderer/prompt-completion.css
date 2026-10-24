@@ -1,3 +1,20 @@
+.prompt-completion-input-wrap { position: relative; }
+.prompt-completion-ghost {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ui-muted, var(--muted, #a4b6d0));
+  opacity: .7;
+  pointer-events: none;
+  user-select: none;
+}
+.prompt-completion-ghost[hidden] { display: none; }
+.composer textarea[data-has-suggestion='true']::placeholder {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
 .prompt-completion-hint {
   max-width: 200px;
   color: var(--ui-muted, var(--muted, #a4b6d0));

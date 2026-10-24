@@ -56,6 +56,47 @@ test('context uses only the latest projected request and a declared capacity', (
   assert.equal(metrics([], session, { expectedContext: { provider: 'relay', model: 'different-id' } }).contextStatus, 'unknown');
 });
 
+test('a current matching capacity immediately changes the circle denominator without rewriting history or billing', () => {
+  const identity = { provider: 'relay', model: 'current-model', connectionKey: 'current-account' };
+  const session = { contextUsage: { ...identity, version: 2, inputTokens: 20000, outputTokens: 4000,
+    limit: 64000, limitKind: 'total', status: 'reported', phase: 'complete' } };
+  const before = structuredClone(session), records = [record({ inputTokens: 800000, outputTokens: 9000 })];
+  const enlarged = metrics(records, session, { expectedContext: { ...identity, limit: 128000, limitKind: 'total' } });
+  assert.equal(enlarged.contextLimit, 128000); assert.equal(enlarged.contextPercent, 18.8);
+  assert.equal(enlarged.contextDisplay.limit, 128000); assert.equal(enlarged.contextDisplay.usedTokens, 24000);
+  assert.equal(enlarged.totalTokens, 809000); assert.deepEqual(session, before);
+  const input = metrics(records, session, { expectedContext: { ...identity, limit: 100000, limitKind: 'input' } });
+  assert.equal(input.contextUsedTokens, 20000); assert.equal(input.contextPercent, 20);
+  assert.equal(input.contextDisplay.limitKind, 'input'); assert.equal(input.contextDisplay.usedTokens, 20000);
+  const unknown = metrics(records, session, { expectedContext: { ...identity, limit: null, limitKind: 'total' } });
+  assert.equal(unknown.contextLimit, null); assert.equal(unknown.contextPercent, null);
+  assert.equal(unknown.contextDisplay.limit, null); assert.equal(unknown.contextDisplay.percent, null);
+  assert.equal(unknown.contextUsedTokens, 24000);
+  assert.equal(metrics(records, session, { expectedContext: identity }).contextLimit, 64000);
+  const incomplete = metrics([], { contextUsage: { ...session.contextUsage, limitKind: 'input', outputTokens: null } },
+    { expectedContext: { ...identity, limit: 128000, limitKind: 'total' } });
+  assert.equal(incomplete.contextUsedTokens, null); assert.equal(incomplete.contextPercent, null);
+  assert.equal(incomplete.contextStatus, 'partial');
+  assert.deepEqual(session, before);
+});
+
+test('pending last-reported context uses the current matching capacity and cannot cross account/model scopes', () => {
+  const identity = { provider: 'openai', model: 'gpt-6.1-sol', connectionKey: 'account-a' };
+  const original = { ...identity, version: 2, status: 'reported', phase: 'complete', inputTokens: 90000, outputTokens: 10000,
+    limit: 1050000, limitKind: 'total' };
+  const session = { contextUsage: makePendingContextUsage(original) }, before = structuredClone(session);
+  const changed = metrics([], session, { expectedContext: { ...identity, limit: 200000, limitKind: 'total' } });
+  assert.equal(changed.contextDisplay.source, 'last-reported'); assert.equal(changed.contextDisplay.percent, 50);
+  assert.equal(changed.contextLastReported.limit, 200000); assert.equal(changed.contextLastReported.usedTokens, 100000);
+  const reset = metrics([], session, { expectedContext: { ...identity, limit: null, limitKind: 'total' } });
+  assert.equal(reset.contextDisplay.limit, null); assert.equal(reset.contextDisplay.percent, null);
+  for (const change of [{ connectionKey: 'account-b' }, { model: 'another-model' }, { provider: 'relay' }]) {
+    const stale = metrics([], session, { expectedContext: { ...identity, ...change, limit: 200000, limitKind: 'total' } });
+    assert.equal(stale.contextDisplay.source, 'none'); assert.equal(stale.contextLastReported, null); assert.equal(stale.contextPercent, null);
+  }
+  assert.deepEqual(session, before);
+});
+
 test('a different connection cannot reuse a previous endpoint context capacity', () => {
   const session = { contextUsage: { version: 2, provider: 'relay', model: 'same-id', connectionKey: 'old', inputTokens: 20, outputTokens: 5,
     limit: 100, status: 'reported', phase: 'complete' } };

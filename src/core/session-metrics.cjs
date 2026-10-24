@@ -35,6 +35,12 @@ function contextMatches(context, expected) {
     && expected.connectionKey === context.connectionKey);
 }
 
+function projectCurrentCapacity(context, expected) {
+  if (!context || !expected || !Object.hasOwn(expected, 'limit') || !contextMatches(context, expected)) return context;
+  return { ...context, limit: validTokens(expected.limit) && expected.limit > 0 ? expected.limit : null,
+    ...(Object.hasOwn(expected, 'limitKind') ? { limitKind: expected.limitKind === 'input' ? 'input' : 'total' } : {}) };
+}
+
 function reportedContext(context) {
   if (!context || context.version !== 2 || context.status !== 'reported' || context.phase !== 'complete'
       || !validTokens(context.inputTokens)) return null;
@@ -68,7 +74,7 @@ function makePendingContextUsage(previous = {}, overrides = {}) {
 }
 
 function createSessionMetrics(session, usage, { unavailable = false, expectedContext } = {}) {
-  const context = session?.contextUsage || {};
+  const context = projectCurrentCapacity(session?.contextUsage || {}, expectedContext);
   const stale = !contextMatches(context, expectedContext);
   const actual = !stale && reportedContext(context);
   const contextInputTokens = !stale && context.version === 2 && validTokens(context.inputTokens) ? context.inputTokens : null;
@@ -77,7 +83,7 @@ function createSessionMetrics(session, usage, { unavailable = false, expectedCon
   const contextStatus = stale ? 'unknown' : actual ? 'reported' : context.version === 2 && context.status === 'pending' ? 'pending'
     : context.version === 2 && (context.status === 'partial' || contextInputTokens !== null || contextOutputTokens !== null) ? 'partial' : 'unknown';
   const contextUsedTokens = actual ? actual.usedTokens : null;
-  const previous = reportedContext(context.lastReported);
+  const previous = reportedContext(projectCurrentCapacity(context.lastReported, expectedContext));
   const contextLastReported = previous && contextMatches(previous, expectedContext) ? publicContextReport(previous) : null;
   // Display the latest compatible complete report while a changed request is
   // unmeasured. This is a labelled historical sample, never a current budget,

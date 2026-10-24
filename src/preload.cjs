@@ -44,7 +44,7 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   runTerminal: arg => call('runTerminal', arg),
   stopTerminal: () => call('stopTerminal'),
   setTextScale: (arg) => call('setTextScale', arg),
-  setContextCompression: arg => call('setContextCompression', arg),
+  setModelCapacity: arg => call('setModelCapacity', arg),
   chooseWorkspace: () => call('chooseWorkspace'),
   chooseEditorFile: () => call('chooseEditorFile'),
   openProject: arg => call('openProject', arg),

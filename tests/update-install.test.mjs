@@ -17,7 +17,7 @@ function deferred() {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const verifiedPath = 'C:\\Users\\测试\\updates & safe\\Synora-code-Setup-0.18.4-x64.exe';
-function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
+function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches = 0 } = {}) {
   const calls = [], spawns = [], windows = new Map();
   let launches = 0;
   for (const [index, enabled] of [true, false].entries()) {
@@ -41,6 +41,7 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
     persistentTaskUndo: { flush: async () => { calls.push('flush:undo'); } },
     permissionPreferences: { settled: async () => { calls.push('flush:permissions'); } },
     approvalReviewerPreferences: { settled: async () => { calls.push('flush:reviewer'); } },
+    modelCapacityPreferences: { settled: () => { calls.push('flush:capacity'); return capacityFlush ?? Promise.resolve(); } },
     roleModels: { settled: async () => { calls.push('flush:roles'); } },
     pluginManager: { settled: async () => { calls.push('flush:plugins'); } },
     dshPet: { settled: async () => { calls.push('flush:pet'); } },
@@ -63,8 +64,8 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
 }
 
 test('installation waits for every cancelled completion and storage flush before launching and quitting', async () => {
-  const first = deferred(), second = deferred(), storage = deferred();
-  const f = fixture({ completions: [first.promise, second.promise], restoreFlush: storage.promise });
+  const first = deferred(), second = deferred(), storage = deferred(), capacity = deferred();
+  const f = fixture({ completions: [first.promise, second.promise], restoreFlush: storage.promise, capacityFlush: capacity.promise });
   const install = f.install({ path: 'C:\\untrusted.exe', url: 'https://untrusted.example/installer.exe' });
   assert.equal(f.install(), install, 'Repeated clicks share one installation operation');
   assert.ok([...f.windows.values()].every(host => host.win.isEnabled() === false));
@@ -74,10 +75,13 @@ test('installation waits for every cancelled completion and storage flush before
   assert.ok(f.calls.includes('settle-sidebar:0') && f.calls.includes('settle-sidebar:1') && f.calls.includes('flush:roles'));
   assert.ok(f.calls.includes('flush:restore') && f.calls.includes('flush:undo') && f.calls.includes('flush:permissions') && f.calls.includes('flush:reviewer'));
   assert.ok(f.calls.includes('flush:plugins') && f.calls.includes('flush:pet'));
+  assert.ok(f.calls.includes('flush:capacity'));
   assert.equal(f.spawns.length, 0); assert.equal(f.calls.includes('quit'), false);
   first.resolve(); storage.resolve(); await tick();
   assert.equal(f.spawns.length, 0, 'A different window can still be recording its cancelled completion usage');
-  second.resolve(); await install;
+  second.resolve(); await tick();
+  assert.equal(f.spawns.length, 0, 'Model capacity preferences must finish saving before restarting for an update');
+  capacity.resolve(); await install;
   assert.ok(f.calls.includes('cancel-signin') && f.calls.includes('cancel-role-signin'));
   assert.equal(f.spawns.length, 1); assert.equal(f.spawns[0].filename, verifiedPath);
   assert.ok(f.calls.indexOf('verify') < f.calls.indexOf('spawn'));

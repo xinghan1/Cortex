@@ -13,6 +13,7 @@ const { installEditorContextMenu } = require('./core/editor-context-menu.cjs');
 const { loadUsageAnalytics } = require('./core/usage-analytics-loader.cjs');
 const { migrateLegacyData, findLegacyData, prepareLegacyEncryptionState } = require('./core/migrate.cjs');
 const { UIPreferences } = require('./core/ui-preferences.cjs');
+const { ModelCapacityPreferences, modelCapacityConnectionKey, modelCapacityScope, applyModelCapacity } = require('./core/model-capacity-preferences.cjs');
 const { PermissionPreferences } = require('./core/permission-preferences.cjs');
 const { ApprovalReviewerPreferences, approvalReviewerConnectionKey } = require('./core/approval-reviewer-preferences.cjs');
 const { AppearanceStore } = require('./core/appearance.cjs');
@@ -64,7 +65,7 @@ const accountLabel = mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT
 const accountController = mode => mode === 'deepseek-account' ? deepseek : chatgpt;
 const accountBaseUrl = mode => mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
 const roleAccountIdentities = new Map();
-let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
+let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, modelCapacityPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
 const catalogSnapshots = new Map();
 const windows = new Map();
@@ -122,7 +123,7 @@ function installAppUpdate() {
       for (const context of contexts) context.cancelPromptCompletion();
       await Promise.all([...contexts.map(context => context.settlePromptCompletion()), ...contexts.map(context => context.settleSideChat()),
         sessionRestore?.flush(), persistentTaskUndo?.flush(), permissionPreferences?.settled(),
-        approvalReviewerPreferences?.settled(), roleModels?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]);
+        approvalReviewerPreferences?.settled(), modelCapacityPreferences?.settled(), roleModels?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]);
       requireUpdateIdle();
       await launchInstaller(filename);
       cancelAccountSignIns();
@@ -355,7 +356,7 @@ let win, tools, currentSession, activeRun, terminal, fileManager, editorFiles;
 const workspaceId = randomUUID();
 let modelSelection = null, configRevision = 0, approvalReviewerModel = null;
 let approvalReviewerScope = null, approvalReviewerConnectionCache = null;
-let metricsConnectionKey = null;
+let metricsConnectionKey = null, metricsModelCapacity = null;
 const settingsCatalogPreviews = new Map();
 const terminalEvents = [];
 let permissionMode = permissionPreferences.get(null), browser;
@@ -622,7 +623,9 @@ function rememberTaskRun(record) {
 }
 function sessionMetricsSnapshot(session) {
   const settings = publicSettings();
-  return store.sessionMetrics(session, { provider: settings.provider, model: settings.model, connectionKey: metricsConnectionKey });
+  const capacity = metricsModelCapacity?.connectionKey === metricsConnectionKey && metricsModelCapacity.model === settings.model ? metricsModelCapacity : null;
+  return store.sessionMetrics(session, { provider: settings.provider, model: settings.model, connectionKey: metricsConnectionKey,
+    ...(capacity ? { limit: capacity.capacityTokens, limitKind: capacity.limitKind } : {}) });
 }
 function requireIdle() {
   if (activeRun) throw new Error('请先停止正在执行的任务。');
@@ -778,7 +781,14 @@ function dispatchModelRequest(config) {
 async function roleRequestConfig(role, run, modelOverride) {
   if (!roleModels.isEnabled(role)) return currentRequestConfig(run, modelOverride);
   const config = await roleRuntime.config(role, { signal: run.controller.signal, permissionMode });
-  return { ...config, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
+  const context = { provider: config.provider, authMode: config.authMode,
+    config: { baseUrl: config.baseUrl, apiProtocol: config.apiProtocol },
+    account: { session: { profileId: config.chatgptProfileId || config.deepseekProfileId } } };
+  const connection = modelCapacityConnectionKey(context, config.apiKey);
+  const effective = applyModelCapacity({ capabilities: config.modelCapabilities,
+    manualTokens: modelCapacityPreferences.get(connection, config.model) });
+  return { ...config, modelCapabilities: effective.capabilities,
+    contextCompressionTriggerTokens: effective.modelCapacity.capacityTokens ?? 850000 };
 }
 async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
@@ -805,7 +815,7 @@ async function currentRequestConfig(run, modelOverride) {
     ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
     model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
     permissionMode, connectionKey: context.key, configRevision,
-    contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
+    contextCompressionTriggerTokens: modelCapabilities.contextWindow ?? 850000 };
 }
 async function recordRunUsage(record) {
   if (activeRun && record.runId === activeRun.id && record.sessionId === activeRun.sessionId) {
@@ -837,6 +847,8 @@ async function state() {
   restoreApprovalReviewer(context);
   if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
+  const modelCapacity = capacityFor(context, publicSettings().model).modelCapacity;
+  metricsModelCapacity = { ...modelCapacity, connectionKey: context.key };
   reconcileReasoningSelection(context);
   const sessions = (await store.listSessions()).filter(session => !recentProjects?.isHidden(session.workspace));
   const history = new Map(sessions.map(session => [projectIdentity(session.workspace), session]));
@@ -848,7 +860,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -891,8 +903,19 @@ function restoreApprovalReviewer(connection) {
   return key;
 }
 function capabilitiesFor(context, model) {
+  return capacityFor(context, model).capabilities;
+}
+function capacityFor(context, model) {
   const metadata = catalogSnapshots.get(context.key)?.models.find(item => item.id === model);
-  return deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
+  const capabilities = deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
+  let connection = null, scope = null, manualTokens = null;
+  try {
+    connection = modelCapacityConnectionKey(context, isAccountMode(context.authMode) ? '' : store.key(context.provider));
+    scope = modelCapacityScope(connection, model);
+    manualTokens = modelCapacityPreferences?.get(connection, model) ?? null;
+  } catch { /* Incomplete settings still allow the settings window to open. */ }
+  const applied = applyModelCapacity({ capabilities, manualTokens });
+  return { ...applied, connection, modelCapacity: { ...applied.modelCapacity, scope, model: model || '' } };
 }
 function resolvedReasoningEffort(capabilities, selected = 'default') {
   if (selected === 'default' || !Array.isArray(capabilities.reasoningEfforts)) return selected;
@@ -1086,6 +1109,7 @@ async function startTask(input) {
   if (shuttingDown || win?.isDestroyed()) throw new Error('窗口已关闭，任务未启动。');
   if (stopGeneration !== startingGeneration) throw new Error('任务启动已取消，消息仍保留在待发送列表。');
   metricsConnectionKey = modelContext.key;
+  metricsModelCapacity = { ...capacityFor(modelContext, settings.model).modelCapacity, connectionKey: modelContext.key };
   const modelCapabilities = capabilitiesFor(modelContext, settings.model);
   // Unknown models accept the user's generic choice. Advertised capabilities
   // narrow those choices, including an explicit empty list for no adjustment.
@@ -1399,9 +1423,18 @@ function buildHandlers() {
       await uiPreferences.setTextScale(arg?.scale);
       await broadcastAllStates(); return state();
     },
-    setContextCompression: async arg => {
-      if (!arg || Object.keys(arg).some(key => key !== 'triggerTokens')) throw new Error('上下文压缩设置无效。');
-      await uiPreferences.setContextCompressionTriggerTokens(arg.triggerTokens);
+    setModelCapacity: async arg => {
+      if (!arg || typeof arg !== 'object' || Array.isArray(arg)
+          || Object.keys(arg).some(key => !['scope', 'capacityTokens'].includes(key))
+          || typeof arg.scope !== 'string' || !Object.hasOwn(arg, 'capacityTokens')) throw new Error('模型容量设置无效。');
+      if (shuttingDown || quitting || localOperation || promptPreflights) throw new Error('会话正在切换或关闭，请稍后设置模型容量。');
+      const context = await catalogContext(), settings = publicSettings();
+      const current = capacityFor(context, settings.model);
+      if (!current.modelCapacity.scope || arg.scope !== current.modelCapacity.scope) throw new Error('模型或连接已变化，请重新打开模型容量设置。');
+      if ((await catalogContext()).key !== context.key || publicSettings().model !== settings.model)
+        throw new Error('模型或连接已变化，请重新打开模型容量设置。');
+      await modelCapacityPreferences.set(current.connection, settings.model, arg.capacityTokens,
+        { advertisedTokens: current.modelCapacity.advertisedTokens });
       await broadcastAllStates(); return state();
     },
     setPermissionMode: async arg => {
@@ -1905,6 +1938,7 @@ async function shutdown() {
   await permissionPreferences.settled();
   await approvalReviewerPreferences.settled();
   await roleModels.settled();
+  await modelCapacityPreferences.settled();
 }
 function initializeBrowser() {
   browser = new BrowserPanel({ window: win, externalLifecycle: true, isForeground: () => host.active === context,
@@ -2082,6 +2116,7 @@ async function boot() {
   }
   uiPreferences = new UIPreferences(dataDir);
   await uiPreferences.init();
+  modelCapacityPreferences = await new ModelCapacityPreferences(dataDir).init();
   permissionPreferences = await new PermissionPreferences(dataDir).init();
   approvalReviewerPreferences = await new ApprovalReviewerPreferences(dataDir).init();
   appearance = new AppearanceStore({ dataDir, decodeImage: bytes => {
@@ -2567,7 +2602,7 @@ app.on('before-quit', event => {
     cancelAccountSignIns();
     if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations || pluginManager || dshPet) {
       event.preventDefault(); quitting = 'pending';
-      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
+      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), modelCapacityPreferences?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
     }
     return;
   }
@@ -2585,6 +2620,7 @@ app.on('before-quit', event => {
     await persistentTaskUndo?.flush();
     await pluginManager?.settled();
     await dshPet?.settled();
+    await modelCapacityPreferences?.settled();
     quitting = true; app.quit();
   }).catch(() => { quitting = false; for (const context of contexts) context.scheduleNextPrompt(); });
 });

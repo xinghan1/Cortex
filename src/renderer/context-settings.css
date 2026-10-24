@@ -1,7 +1,7 @@
 .session-context-control { position: relative; flex-shrink: 0; }
 .session-context-trigger { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0 3px 5px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .session-context-trigger:hover { background: rgb(170 200 250 / 8%); }
-.session-context-trigger:focus-visible { outline: 2px solid #a9ccff; outline-offset: 3px; }
+.session-context-trigger:focus-visible { outline: 2px solid var(--accent, #a9ccff); outline-offset: 3px; }
 .context-settings-popup { position: absolute; bottom: calc(100% + 11px); right: 0; width: min(340px, calc(100vw - 44px)); max-height: min(460px, calc(100vh - 80px)); overflow-y: auto; z-index: 80; padding: 16px; border: 1px solid rgb(183 207 250 / 29%); border-radius: 16px; background: linear-gradient(145deg, rgb(105 143 205 / 15%), rgb(115 92 195 / 12%)), #1a263d; box-shadow: 0 15px 45px rgb(2 7 20 / 42%); color: #dce7f8; text-align: left; white-space: normal; font-size: 12px; line-height: 1.7; }
 .context-settings-popup:not([hidden]) { animation: context-settings-enter 180ms ease both; }
 .context-settings-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
@@ -9,7 +9,8 @@
 .context-settings-description { margin: 8px 0 12px; color: #a8bcd9; font-size: 11px; }
 .context-settings-popup label { display: block; margin-top: 13px; margin-bottom: 6px; }
 #context-trigger-input { display: block; box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid rgb(180 206 246 / 30%); border-radius: 9px; padding: 9px 10px; background: rgb(5 15 32 / 42%); color: #f0f5ff; font: 13px var(--mono, Consolas, monospace); }
-#context-trigger-input:focus { outline: 2px solid #a9ccff; outline-offset: 1px; }
+#context-trigger-input:focus { outline: 2px solid var(--accent, #a9ccff); outline-offset: 1px; }
+.context-capacity-source { margin: 6px 0 0; color: var(--ui-muted, #a8bcd9); font-size: 11px; }
 .context-settings-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; }
 .context-trigger-error { margin: 9px 0; color: #ffb0b0; font-size: 11px; }
 @keyframes context-settings-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }

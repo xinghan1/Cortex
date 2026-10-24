@@ -1,4 +1,4 @@
-// Native composer Tab/Ctrl+Z/Shift+Tab/Escape with a loopback-only model.
+// Native next-question ghost text and Tab/Ctrl+Z/Shift+Tab/Escape with a loopback-only model.
 // The IME guard is an explicitly synthetic composing keyboard event fixture.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -13,7 +13,9 @@ module.exports = async function smokePromptCompletion({ win, output, dataDir }) 
   const firstPrompt = '请解释这个项目的测试方式。FIRST_PROMPT_' + nonce;
   const firstAnswer = '可以先检查边界条件，再运行测试。FIRST_ANSWER_' + nonce;
   const draft = '继续检查', continuation = '边界条件，并补充测试覆盖。';
+  const nextQuestion = '请为这些边界条件补充测试，并汇报测试结果。';
   const records = [], problems = [], screenshots = [];
+  const ghostStyles = {};
   let child, configured = false, stage = 'isolated app setup', sessionId;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, check) => {
@@ -23,7 +25,7 @@ module.exports = async function smokePromptCompletion({ win, output, dataDir }) 
   };
   const js = code => child.webContents.executeJavaScript(code);
   const call = (name, arg) => js(`window.forge[${JSON.stringify(name)}](${arg === undefined ? '' : JSON.stringify(arg)})`);
-  const snapshot = () => js(`({draft:$('task-input').value,focused:document.activeElement===$('task-input'),sessionId:appState?.sessionId||sessionId,running,promptSubmitting,userMessages:document.querySelectorAll('#messages .message.user').length,tools:document.querySelectorAll('#messages .tool-card').length,keys:window.__completionSmoke.keys,events:window.__completionSmoke.events})`);
+  const snapshot = () => js(`({draft:$('task-input').value,ghost:$('prompt-completion-ghost').textContent,ghostVisible:!$('prompt-completion-ghost').hidden,focused:document.activeElement===$('task-input'),sessionId:appState?.sessionId||sessionId,running,promptSubmitting,userMessages:document.querySelectorAll('#messages .message.user').length,tools:document.querySelectorAll('#messages .tool-card').length,keys:window.__completionSmoke.keys,events:window.__completionSmoke.events})`);
   const setDraft = text => js(`(()=>{const input=$('task-input');input.value=${JSON.stringify(text)};input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();input.setSelectionRange(input.value.length,input.value.length);return true;})()`);
   const key = async (keyCode, modifiers = []) => {
     child.focus(); child.webContents.focus();
@@ -101,14 +103,49 @@ module.exports = async function smokePromptCompletion({ win, output, dataDir }) 
     await until('original run completed', async () => (await snapshot()).events.some(event => event.type === 'run-end' && event.status === 'completed'));
     await until('app idle', async () => !(await call('getState')).activeTask.running && await js('!running&&!promptSubmitting'));
     sessionId = (await call('getState')).sessionId;
+
+    stage = 'one automatic suggestion after the live completed turn';
+    const automatic = await until('completed turn starts one empty-draft completion', () => { assert.deepEqual(problems, []); return records.length === 2 && records[1].payload && records[1]; });
+    assert.equal(automatic.payload.draft, '');
+    await js(`$('send-button').focus()`);
+    reply(automatic, JSON.stringify({ continuation: nextQuestion }));
+    await until('ghost shown without focus and without changing the empty draft', async () => {
+      const value = await snapshot(); return value.ghostVisible && value.ghost === nextQuestion && value.draft === '' && !value.focused;
+    });
+    await noTask('unaccepted automatic suggestion');
+    for (const style of ['glass', 'black', 'white', 'industrial', 'deepseek', 'codex']) {
+      await call('setAppearance', { uiStyle: style });
+      await until('ghost theme applied: ' + style, () => js(`document.documentElement.dataset.uiStyle===${JSON.stringify(style)}`));
+      ghostStyles[style] = await until('ghost follows textarea geometry: ' + style, () => js(`(() => {
+        const input=$('task-input'),ghost=$('prompt-completion-ghost'),a=getComputedStyle(input),b=getComputedStyle(ghost),r=input.getBoundingClientRect(),g=ghost.getBoundingClientRect();
+        if(a.padding!==b.padding||a.font!==b.font||Math.abs(r.left-g.left)>1||Math.abs(r.width-g.width)>1)return null;
+        const point={x:Math.round(r.left+20),y:Math.round(r.top+20)};
+        return {visible:ghost.checkVisibility({visibilityProperty:true,opacityProperty:true}),color:b.color,opacity:Number(b.opacity),padding:b.padding,font:b.font,
+          placeholder:getComputedStyle(input,'::placeholder').webkitTextFillColor,hitInput:document.elementFromPoint(point.x,point.y)===input,draft:input.value};
+      })()`));
+      const value = ghostStyles[style];
+      assert.equal(value.visible, true); assert.equal(value.draft, ''); assert.equal(value.hitInput, true);
+      assert.ok(value.opacity > 0 && value.opacity < 1); assert.equal(value.placeholder, 'rgba(0, 0, 0, 0)');
+      await capture(`prompt-completion-ghost-${style}.png`);
+    }
+    assert.equal(records.length, 2, 'Theme/state broadcasts must not repeat automatic requests');
+    await js(`$('task-input').focus();$('task-input').setSelectionRange(0,0)`);
+    await key('Tab');
+    await until('native Tab accepts ghost text into the composer', async () => (await snapshot()).draft === nextQuestion);
+    assert.equal(records.length, 2, 'Accepting ghost text must not request another completion');
+    assert.equal((await snapshot()).ghostVisible, false);
+    await noTask('accepted ghost remains an unsent draft');
+    await key('z', ['control']);
+    await until('native Ctrl+Z undoes accepted ghost text to the empty draft', async () => (await snapshot()).draft === '');
+    await wait(150); assert.equal(records.length, 2, 'Undo must not regenerate a dismissed suggestion');
     await setDraft(draft); await wait(400);
-    assert.equal(records.length, 1, 'Typing must not silently call the model before Tab');
+    assert.equal(records.length, 2, 'Typing must not silently call the model before Tab');
     await noTask('before completion');
 
     stage = 'native Tab fills a contextual continuation without sending';
-    const first = await nextCompletion(1); assert.equal(first.payload.draft, draft);
+    const first = await nextCompletion(2); assert.equal(first.payload.draft, draft);
     await until('loading hint visible', () => js(`$('prompt-completion-hint')?.dataset.status==='loading'&&$('prompt-completion-hint').checkVisibility({visibilityProperty:true,opacityProperty:true})`));
-    await key('Tab'); await wait(100); assert.equal(records.length, 2, 'Repeated Tab while pending must not duplicate requests');
+    await key('Tab'); await wait(100); assert.equal(records.length, 3, 'Repeated Tab while pending must not duplicate requests');
     await noTask('pending completion'); await capture('prompt-completion-pending.png');
     reply(first, JSON.stringify({ continuation }));
     await until('completion inserted into composer', async () => (await snapshot()).draft === draft + continuation);
@@ -155,7 +192,8 @@ module.exports = async function smokePromptCompletion({ win, output, dataDir }) 
     assert.ok(keys.some(event => event.trusted && event.key === 'Escape'));
     assert.deepEqual(problems, []);
     const evidence = { status: 'completed', realApi: false, modelRequests: records.length, originalCompletedTurn: true, contextualDraft: true,
-      nativeTabAndUndo: true, neverAutoSubmitted: true, noBackgroundRequests: true, noToolsOrQueuedTasks: true, editingCancels: true,
+      nativeTabAndUndo: true, nativeGhostAcceptanceAndUndo: true, ghostUnfocusedAndDraftEmpty: true, ghostStyles,
+      neverAutoSubmitted: true, automaticOnlyAfterCompletedTurn: true, noRequestsFromTypingOrBroadcasts: true, noToolsOrQueuedTasks: true, editingCancels: true,
       escapeCancels: true, sessionSwitchCancels: true, shiftTabTraversal: true, syntheticIMEGuard: composing, screenshots };
     await fs.writeFile(path.join(output, 'prompt-completion-evidence.json'), JSON.stringify(evidence, null, 2)); return evidence;
   } catch (error) {

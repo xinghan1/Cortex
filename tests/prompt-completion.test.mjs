@@ -101,6 +101,23 @@ test('recent public history has bounded size and instructions embedded inside it
   assert.equal(request.messages[1].content.includes('INCOMPLETE_LOCAL_NOTE'), false);
 });
 
+test('an empty draft after a completed public exchange uses the completion role and bills without changing conversation history', async () => {
+  const data = fixture({ getConfig: () => ({ ...config, modelRole: 'completion', model: 'independent-completion',
+    authMode: 'deepseek-account', deepseekProfileId: 'completion-profile' }) });
+  data.snapshot.chatgptProfileId = 'main-profile';
+  data.snapshot.messages.push({ role: 'tool', content: 'PRIVATE_TOOL' }, { role: 'assistant', content: 'PRIVATE_LOCAL', localOnly: true });
+  const before = structuredClone(data.snapshot), input = data.input('');
+  const response = await data.controller.complete(input);
+  assert.equal(response.text, '，并补充边界条件测试。');
+  const sent = data.requests[0], payload = JSON.parse(sent.messages[1].content);
+  assert.equal(payload.draft, ''); assert.equal(payload.conversation.at(-1).content, '可以先补上边界条件验证。');
+  assert.equal(sent.model, 'independent-completion'); assert.equal(sent.deepseekProfileId, 'completion-profile');
+  assert.deepEqual(sent.tools, []); assert.deepEqual(data.snapshot, before);
+  assert.equal(data.usage.length, 1); assert.equal(data.usage[0].purpose, 'prompt-completion');
+  assert.equal(data.usage[0].inputTokens, 120); assert.equal(data.usage[0].outputTokens, 20);
+  assert.equal(data.usage[0].sessionId, input.sessionId);
+});
+
 test('long Chinese drafts remain intact and appended text respects the composer character limit', async () => {
   const data = fixture();
   data.snapshot.messages = Array.from({ length: 6 }, () => ({ role: 'user', content: '中'.repeat(LIMITS.messageChars) }));

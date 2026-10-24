@@ -3315,6 +3315,7 @@ function clearConversation() {
 async function newSession(options = {}) {
   if (contextBusy() || isChatGPTBusy()) return;
   if ((editorDirty || editorSavePromise) && !(await confirmEditorTransition())) return;
+  promptCompletion?.cancel();
   const workspaceId = currentWorkspaceId();
   try {
     const session = await bridge.newSession(options);
@@ -3337,6 +3338,7 @@ async function loadSession(id) {
   if (contextBusy()) { notice('请先停止当前任务，并发送或清空待发送内容，再切换历史对话。'); return; }
   if (!(await confirmEditorTransition())) return;
   closeProjectDropdown();
+  promptCompletion?.cancel();
   const request = ++sessionRequest;
   try {
     const session = await bridge.getSession({ id });
@@ -4002,6 +4004,7 @@ function handleEvent(event) {
       renderSessions(appState?.sessions || []);
       break;
     case 'run-start':
+      if (!restoringWorkspace) promptCompletion?.startRound({ runId: event.runId, sessionId, workspaceId: currentWorkspaceId(), kind: event.kind || 'agent', demo: event.demo === true });
       contextCompacting = false;
       taskKind = event.kind || 'agent'; taskDemo = event.demo === true;
       setRunning(true, event);
@@ -4093,6 +4096,8 @@ function handleEvent(event) {
       scrollBottom();
       const version = taskStateVersion;
       const queueVersion = promptQueueVersion;
+      if (!changeOperation && !restoringWorkspace) void promptCompletion?.suggestAfterRound({ runId: event.runId, sessionId,
+        workspaceId: currentWorkspaceId(), status: event.status });
       if (!restoringWorkspace) {
         const workspaceId = currentWorkspaceId();
         bridge.getState().then((state) => {
@@ -4431,7 +4436,8 @@ function bindUI() {
 
 async function initialize() {
   promptCompletion = window.ForgePromptCompletion.create({
-    input: $('task-input'), hint: $('prompt-completion-hint'),
+    input: $('task-input'), hint: $('prompt-completion-hint'), ghost: $('prompt-completion-ghost'),
+    canSuggest: () => !contextBusy() && !restoringWorkspace && !reasoningSaving && draftAttachments.length === 0,
     getContext: () => appState?.workspace && sessionId && appState?.settings?.model && !projectSwitching && !promptSubmitting
       && !modelSaving && !settingsSaving && !isChatGPTBusy() && !approvals.size ? {
         sessionId, workspaceId: currentWorkspaceId(), model: appState.settings.model, provider: appState.settings.provider,
@@ -4440,6 +4446,7 @@ async function initialize() {
         completionConnection: appState.roleModels?.completion?.enabled ? catalogIdentity(appState.roleModels.completion.settings?.provider,
           currentAuthMode(appState.roleModels.completion.settings), appState.roleModels.completion) : '',
         completionModel: appState.roleModels?.completion?.enabled ? appState.roleModels.completion.settings?.model || '' : '',
+        completionReasoning: appState.roleModels?.completion?.enabled ? appState.roleModels.completion.settings?.reasoningEffort || '' : '',
       } : null,
     request: args => bridge.completePrompt(args), cancel: args => bridge.cancelPromptCompletion(args),
   });

@@ -2,17 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { deriveModelCapabilities } from '../src/core/model-catalog.mjs';
 import { contextCompressionPolicy } from '../src/core/context-compaction.mjs';
+const { modelCapacityConnectionKey, modelCapacityScope, applyModelCapacity } = createRequire(import.meta.url)('../src/core/model-capacity-preferences.cjs');
 
 const source = await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8');
 const configSource = source.slice(source.indexOf('async function currentRequestConfig('), source.indexOf('\nasync function recordRunUsage('));
 const capabilitiesSource = source.slice(source.indexOf('function capabilitiesFor('), source.indexOf('\nfunction resolvedReasoningEffort('));
 const startSource = source.slice(source.indexOf('async function startTask('), source.indexOf('\nasync function runPersistedChangeOperation('));
 
-function fixture({ capacity = 128000, fail = false } = {}) {
+function fixture({ capacity = 128000, fail = false, model = 'gpt-6.1-sol' } = {}) {
   const snapshots = new Map(), controller = new AbortController();
-  const settings = { provider: 'openai', authMode: 'chatgpt', model: 'gpt-6.1-sol', reasoningEffort: 'default' };
+  const settings = { provider: 'openai', authMode: 'chatgpt', model, reasoningEffort: 'default' };
   const connection = { key: 'fixture-account-a', provider: 'openai', authMode: 'chatgpt', config: {},
     account: { session: { status: 'connected', sharing: true, profileId: 'fixture-account-a' } } };
   let calls = 0, onFetch = () => {};
@@ -23,7 +25,9 @@ function fixture({ capacity = 128000, fail = false } = {}) {
       if (fail) throw new Error('Synthetic directory outage');
       snapshots.set(connection.key, { models: [{ id: settings.model, ...(capacity ? { contextWindow: capacity, contextWindowKind: 'total' } : {}) }] });
     },
-    deriveModelCapabilities, isAccountMode: mode => mode === 'chatgpt',
+    deriveModelCapabilities, modelCapacityConnectionKey, modelCapacityScope, applyModelCapacity,
+    modelCapacityPreferences: { get: () => null }, metricsConnectionKey: null, metricsModelCapacity: null,
+    isAccountMode: mode => mode === 'chatgpt',
     accountLabel: () => 'ChatGPT', accountBaseUrl: () => 'https://api.openai.com/v1',
     resolvedReasoningEffort: () => 'default', store: { key: () => '' },
     permissionMode: 'request', configRevision: 1, uiPreferences: {}, currentSession: { messages: [], workspace: 'C:/fixture' },
@@ -97,4 +101,31 @@ test('stopping or closing during cold task discovery preserves the existing sess
     await assert.rejects(data.context.startTask({ text: '检查项目。' }), /任务启动已取消|窗口已关闭/);
     assert.equal(JSON.stringify(data.context.currentSession), original);
   }
+});
+
+test('a manually configured unknown model window reaches the real request planner and reset removes it', async () => {
+  const data = fixture({ capacity: null, model: 'unknown-fixture-model' });
+  let manual = 400000;
+  data.context.modelCapacityPreferences.get = () => manual;
+  let config = await data.config();
+  assert.equal(config.modelCapabilities.contextWindow, 400000);
+  assert.equal(config.contextCompressionTriggerTokens, 400000);
+  assert.equal(contextCompressionPolicy(config).effectiveTriggerTokens, 320000);
+  manual = null;
+  config = await data.config();
+  assert.equal(config.modelCapabilities.contextWindow, undefined);
+  assert.equal(contextCompressionPolicy(config).effectiveTriggerTokens, 45000);
+});
+
+test('manual request capacity keeps the declared upper limit and can select a smaller window', async () => {
+  const data = fixture({ capacity: 128000 });
+  let manual = 256000;
+  data.context.modelCapacityPreferences.get = () => manual;
+  let config = await data.config();
+  assert.equal(config.modelCapabilities.contextWindow, 128000);
+  assert.equal(config.contextCompressionTriggerTokens, 128000);
+  manual = 64000;
+  config = await data.config();
+  assert.equal(config.modelCapabilities.contextWindow, 64000);
+  assert.equal(contextCompressionPolicy(config).effectiveTriggerTokens, 51200);
 });

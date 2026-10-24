@@ -90,7 +90,8 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
   let lastKnownCapabilities = null;
   let lastKnownCapabilitiesKey = null;
   const capabilitiesKey = current => JSON.stringify([current.provider, current.model,
-    current.baseUrl ?? null, current.authMode ?? 'apiKey', current.apiProtocol ?? null, current.connectionKey ?? null]);
+    current.baseUrl ?? null, current.authMode ?? 'apiKey', current.apiProtocol ?? null, current.connectionKey ?? null,
+    current.modelCapabilities?.contextWindowPreferenceKey ?? null]);
   const rememberCapabilities = current => {
     const limit = current.modelCapabilities?.contextWindow;
     if (Number.isSafeInteger(limit) && limit > 0) {
