@@ -1,0 +1,16 @@
+/* Imported photos stay inside the chat pane on solid interface materials. */
+.conversation { isolation: isolate; }
+#conversation-background {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: none;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--background-opacity, .72);
+}
+html.custom-background:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial'], [data-ui-style='deepseek'], [data-ui-style='codex']) #conversation-background { display: block; }

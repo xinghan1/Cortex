@@ -14,10 +14,10 @@ const identity = (root, connection) => JSON.stringify([permissionProjectKey(root
 // model selections and context-window sizes must not invalidate a saved choice.
 function approvalReviewerConnectionKey(context, apiKey = '') {
   if (!context || !['openai', 'deepseek', 'anthropic', 'relay', 'ollama'].includes(context.provider)
-      || !['apiKey', 'chatgpt'].includes(context.authMode)) throw new Error('审批模型连接无效。');
+      || !['apiKey', 'chatgpt', 'deepseek-account'].includes(context.authMode)) throw new Error('审批模型连接无效。');
   let parts;
-  if (context.authMode === 'chatgpt') {
-    if (context.provider !== 'openai') throw new Error('审批模型连接无效。');
+  if (context.authMode === 'chatgpt' || context.authMode === 'deepseek-account') {
+    if (context.provider !== (context.authMode === 'chatgpt' ? 'openai' : 'deepseek')) throw new Error('审批模型连接无效。');
     const profileId = context.account?.session?.profileId || null;
     if (profileId !== null && (typeof profileId !== 'string' || profileId.length > 1000)) throw new Error('审批模型账号无效。');
     parts = [context.provider, context.authMode, profileId];

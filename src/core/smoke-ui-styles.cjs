@@ -4,12 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { BrowserWindow, nativeTheme } = require('electron');
+const { BrowserWindow, nativeTheme, nativeImage, dialog } = require('electron');
 
 module.exports = async function smokeUiStyles({ win, output, dataDir }) {
   assert.equal(win.webContents.isOffscreen(), true);
   const project = path.join(dataDir, 'ui-styles-' + randomUUID());
   const appearanceFile = path.join(dataDir, 'appearance.json');
+  const allStyles = ['glass', 'deepseek', 'codex', 'black', 'white', 'industrial'];
+  const originalPicker = dialog.showOpenDialog;
   const source = ['<!doctype html>', '<html lang="zh-CN">', '<head><style>',
     '.panel { color: #24743c; padding: 12px; }', '</style></head>', '<body>',
     '<h1 class="panel">界面风格预览</h1>', '<script>', '// Highlighted text stays separate from editable text.',
@@ -18,7 +20,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
   const independentFields = ['backgroundImage', 'backgroundName', 'backgroundPreset', 'backgroundTransparency',
     'panelFrost', 'panelTransparency', 'conversationTextColor'];
   let child, other, originalAppearance, stage = 'create isolated material fixture';
-  const samples = {}, screenshots = [], layoutCases = {}, paletteSamples = {};
+  const samples = {}, screenshots = [], layoutCases = {}, paletteSamples = {}, backgroundSamples = {};
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const js = (code, target = child) => target.webContents.executeJavaScript(code);
   const call = (method, value, target = child) => js(`window.forge[${JSON.stringify(method)}](${value === undefined ? '' : JSON.stringify(value)})`, target);
@@ -50,7 +52,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       try {
         child.webContents.invalidate(); await wait(150 * attempt);
         const image = await child.webContents.capturePage(); assert.equal(image.isEmpty(), false);
-        await fs.writeFile(path.join(output, filename), image.toPNG()); screenshots.push(filename); return;
+        await fs.writeFile(path.join(output, filename), image.toPNG()); screenshots.push(filename); return image;
       } catch (error) { if (attempt === 4 || !/UnknownVizError/.test(String(error))) throw error; }
     }
   };
@@ -58,7 +60,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     const material = selector => {
       const node=document.querySelector(selector);if(!node)return null;
       const s=getComputedStyle(node),r=node.getBoundingClientRect();
-      return {background:s.backgroundColor,color:s.color,image:s.backgroundImage,blur:s.backdropFilter,
+      return {background:s.backgroundColor,color:s.color,image:s.backgroundImage,blur:s.backdropFilter,opacity:Number(s.getPropertyValue('--background-opacity')),pointerEvents:s.pointerEvents,
         webkitBlur:s.webkitBackdropFilter||s.backdropFilter,borderRadius:s.borderRadius,fill:s.webkitTextFillColor,
         caret:s.caretColor,display:s.display,visible:node.checkVisibility(),position:s.position,
         margin:{left:parseFloat(s.marginLeft),right:parseFloat(s.marginRight),top:parseFloat(s.marginTop),bottom:parseFloat(s.marginBottom)},
@@ -70,7 +72,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       buttons:[...document.querySelectorAll('#ui-style-options [data-ui-style]')].map(n=>({style:n.dataset.uiStyle,pressed:n.getAttribute('aria-pressed')})),
       surfaces:Object.fromEntries(['body','.workspace-layout','.sidebar','.conversation','#preview-panel','#sidebar-resizer','#editor-resizer','.composer','#settings-dialog','#appearance-dialog',
         '#app-menu-popup','#permission-popup','#reasoning-popup','.file-code-editor','#file-highlight','#file-content',
-        '#file-line-numbers','#app-background','.message.assistant .message-body','.message.assistant .message-paragraph',
+        '#file-line-numbers','#app-background','#conversation-background','.message.assistant .message-body','.message.assistant .message-paragraph',
         '.message.assistant .message-code','.message.assistant .message-code-label','.message.assistant .message-code pre code',
         '#session-rounds','#generation-speed','#session-cache','#session-cache-value','#session-total','#session-total-value',
         '#session-context-value'].map(s=>[s,material(s)])),
@@ -103,7 +105,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     const workspace = value.surfaces['.workspace-layout'], sidebar = value.surfaces['.sidebar'];
     const conversation = value.surfaces['.conversation'], preview = value.surfaces['#preview-panel'];
     const tolerance = .15;
-    const expected = style === 'glass' ? 9 : style === 'industrial' ? 0 : 3;
+    const expected = style === 'glass' ? 9 : ['industrial', 'deepseek'].includes(style) ? 0 : style === 'codex' ? 6 : 3;
     const actual = { sidebarGap: value.layout.sidebarHidden ? null : conversation.box.left - sidebar.box.right,
       previewGap: !value.layout.previewHidden && preview.position !== 'absolute' ? preview.box.left - conversation.box.right : null,
       outerMargins: workspace.margin, previewPosition: preview.position, sidebarHidden: value.layout.sidebarHidden,
@@ -190,7 +192,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     const current = await call('getAppearance');
     for (const field of independentFields) assert.deepEqual(current[field], originalAppearance[field], 'Changing material must preserve ' + field);
     assert.equal(nativeTheme.themeSource, style === 'white' ? 'light' : 'dark');
-    const nativeBackground = { glass: '#101010', black: '#000000', white: '#e9ebee', industrial: '#16191d' }[style];
+    const nativeBackground = { glass: '#101010', black: '#000000', white: '#e9ebee', industrial: '#16191d', deepseek: '#141414', codex: '#191919' }[style];
     for (const targetWindow of [win, child, other]) assert.equal(targetWindow.getBackgroundColor().toLowerCase().replace(/^#ff(?=[0-9a-f]{6}$)/, '#'), nativeBackground,
       'Native window background must follow the global material');
   };
@@ -246,7 +248,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     await initialize(child); await initialize(other);
     for (const target of [child, other]) { target.setContentSize(1440, 1000); target.setOpacity(0); target.showInactive(); }
     await openEditor();
-    for (const style of ['glass', 'black', 'white', 'industrial']) {
+    for (const style of allStyles) {
       stage = 'native ' + style + ' material, persistence and global sync';
       await openAppearance(child, true); await chooseStyle(style);
       const value = await inspect(); assertMaterial(value, style); verifyDialogBounds(value);
@@ -309,7 +311,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       && (await call('getAppearance', undefined, other)).selectionColor === '#dbb254'
       && await js(`document.documentElement.dataset.selectionColor==='custom'`, other));
     assert.ok(await js(`window.__paletteSelections.some(event=>event.color==='#dbb254'&&event.trusted)`));
-    for (const style of ['glass', 'black', 'white', 'industrial']) {
+    for (const style of ['glass', 'deepseek', 'codex', 'black', 'white', 'industrial']) {
       await chooseStyle(style);
       const selected = await js(`(() => {const node=document.querySelector('.file-row.selected');if(!node)throw new Error('Selected file missing');const s=getComputedStyle(node);
         return {background:s.backgroundColor,color:s.color,icon:getComputedStyle(node.querySelector('.file-icon')).color,
@@ -351,12 +353,74 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
       await capture('ui-style-' + style + '-compact-appearance.png'); await click('#appearance-close'); await settle();
       assertMaterial(await inspect(), style); await capture('ui-style-' + style + '-compact-editor.png');
     }
+    stage = 'imported backgrounds stay inside each solid conversation while glass stays global';
+    child.setContentSize(1440, 1000); await wait(100);
+    const bitmap = Buffer.alloc(64 * 64 * 4);
+    for (let index = 0; index < bitmap.length; index += 4) { bitmap[index] = 117; bitmap[index + 1] = 41; bitmap[index + 2] = 211; bitmap[index + 3] = 255; }
+    const importedPng = nativeImage.createFromBitmap(bitmap, { width: 64, height: 64 }).toPNG();
+    let nextPick;
+    dialog.showOpenDialog = async (...args) => {
+      assert.equal(args.at(-1).title, '导入背景图');
+      assert.ok(nextPick && path.dirname(nextPick) === project, 'Only the isolated image fixture can be picked');
+      const filename = nextPick; nextPick = null;
+      return { canceled: false, filePaths: [filename] };
+    };
+    const pixel = (image, x, y) => {
+      const size = image.getSize(), bytes = image.toBitmap(), offset = (Math.floor(y) * size.width + Math.floor(x)) * 4;
+      return [...bytes.subarray(offset, offset + 3)];
+    };
+    const distance = (left, right) => Math.max(...left.map((value, index) => Math.abs(value - right[index])));
+    for (const style of allStyles) {
+      stage = 'native imported conversation background ' + style;
+      await call('resetBackground'); await settle();
+      await openAppearance(); await chooseStyle(style);
+      const controls = await js(`['background-import','background-reset','background-transparency'].map(id=>({id,visible:$(id).checkVisibility({visibilityProperty:true,opacityProperty:true})}))`);
+      assert.ok(controls.every(control => control.visible), 'All materials need visible background import/reset/transparency controls');
+      await click('#appearance-close'); await settle();
+      const before = await inspect();
+      assert.equal(before.surfaces['#conversation-background'].display, 'none', 'No built-in preset may become a solid material photo');
+      const cleanImage = await capture('ui-style-' + style + '-without-import.png');
+      nextPick = path.join(project, style + '-background.png'); await fs.writeFile(nextPick, importedPng);
+      const filename = nextPick;
+      await openAppearance(); await click('#background-import');
+      await until('native image is imported in ' + style, async () => (await call('getAppearance')).backgroundName === path.basename(filename)
+        && await js("$('appearance-dialog').getAttribute('aria-busy')==='false'&&document.documentElement.classList.contains('custom-background')"));
+      await fs.unlink(filename);
+      await click('#appearance-close'); await settle();
+      const current = await inspect(), layer = current.surfaces['#conversation-background'], global = current.surfaces['#app-background'];
+      assert.match(layer.image, /data:image\/png;base64,/u);
+      assert.ok(Math.abs(layer.opacity - .72) < .001); assert.ok(Math.abs(global.opacity - .72) < .001);
+      assert.equal(layer.pointerEvents, 'none');
+      if (style === 'glass') { assert.equal(layer.display, 'none'); assert.notEqual(global.display, 'none'); assert.equal(layer.image, global.image); }
+      else {
+        assert.equal(global.display, 'none'); assert.notEqual(layer.display, 'none');
+        const area = current.surfaces['.conversation'].box;
+        for (const edge of ['left', 'right', 'top', 'bottom']) assert.ok(Math.abs(layer.box[edge] - area[edge]) <= 1, 'Photo escaped conversation at ' + edge);
+      }
+      const image = await capture('ui-style-' + style + '-conversation-background.png');
+      const area = current.surfaces['.conversation'].box, inside = { x: area.left + area.width * .12, y: area.top + area.height * .56 };
+      const outside = [{ x: 45, y: 500 }, { x: 800, y: 20 }, { x: 1400, y: 500 }];
+      if (style !== 'glass') {
+        for (const point of outside) assert.ok(distance(pixel(cleanImage, point.x, point.y), pixel(image, point.x, point.y)) <= 2, 'Imported image recolored an unrelated panel in ' + style);
+        assert.ok(distance(pixel(cleanImage, inside.x, inside.y), pixel(image, inside.x, inside.y)) >= 10, 'Imported image is covered by conversation content in ' + style);
+      }
+      if (['deepseek', 'codex'].includes(style)) {
+        child.webContents.reload(); await wait(50); await initialize(child); await openEditor();
+        const restored = await inspect(); assert.equal(restored.style, style);
+        assert.match(restored.surfaces['#conversation-background'].image, /data:image\/png;base64,/u);
+        assert.notEqual(restored.surfaces['#conversation-background'].display, 'none');
+      }
+      backgroundSamples[style] = { conversation: layer, global, commonControlsVisible: controls, sourceDeletedAfterImport: true };
+      await call('resetBackground'); await settle();
+      assert.equal((await inspect()).surfaces['#conversation-background'].display, 'none');
+    }
     assert.deepEqual((await inspect()).unexpectedEvents, []); assert.deepEqual((await inspect(other)).unexpectedEvents, []);
     const initialNativeSelections = Object.values(samples).at(-1).nativeSelections;
-    for (const style of ['glass', 'black', 'white', 'industrial']) assert.ok(initialNativeSelections.some(event => event.style === style && event.trusted), style + ' must be selected by real native click');
+    for (const style of allStyles) assert.ok(initialNativeSelections.some(event => event.style === style && event.trusted), style + ' must be selected by real native click');
     const result = { status: 'completed', version: require('../../package.json').version, realApi: false, realCommands: false,
-      nativeFourMaterialSelection: true, independentGlassPreferencesPreserved: true, version7DiskPersistence: true,
-      softenedWhiteGrayLayers: true, nativePaletteSelectionAcrossFourMaterials: true, selectionTextAndIconsContrast: true,
+      nativeSixMaterialSelection: true, independentGlassPreferencesPreserved: true, version7DiskPersistence: true,
+      softenedWhiteGrayLayers: true, nativePaletteSelectionAcrossSixMaterials: true, selectionTextAndIconsContrast: true,
+      importedImageOnlyInsideFiveSolidConversations: true, glassRetainsGlobalImage: true, backgroundSamples,
       customColorInputPersistsAcrossReload: true, crossWindowPaletteSync: true, nativePaletteReset: true, paletteSamples,
       rendererReloadRestoresIndustrial: true, crossWindowNativeSelectionAndEvents: true,
       solidPanelsMenusDialogsHaveNoBlur: true, whiteAndDarkTextContrast: true, sixOrMoreSyntaxColours: true,
@@ -373,6 +437,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
     await fs.writeFile(path.join(output, 'ui-styles-smoke-result.json'), JSON.stringify(failure, null, 2) + '\n');
     throw new Error('UI styles smoke failed at ' + stage + ': ' + error.message, { cause: error });
   } finally {
+    dialog.showOpenDialog = originalPicker;
     if (originalAppearance && !win.isDestroyed()) {
       await call('setAppearance', { uiStyle: originalAppearance.uiStyle, selectionColor: originalAppearance.selectionColor ?? null }, win).catch(() => {});
       await js('window.synoraAppearance.settled()', win).catch(() => {});

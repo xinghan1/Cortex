@@ -41,6 +41,29 @@ test('an explicitly configured completion role authorizes its own account while 
   assert.equal(incomplete.requests.length, 0);
 });
 
+test('DeepSeek completion keeps account generations and refuses cross-account, API and ChatGPT history reuse', async () => {
+  for (const [owner, current] of [['main-deepseek', 'replacement-deepseek'], ['main-deepseek', null], [null, 'new-deepseek']]) {
+    const data = fixture({ getConfig: () => ({ ...config, provider: 'deepseek',
+      authMode: current ? 'deepseek-account' : 'apiKey', deepseekProfileId: current }) });
+    data.snapshot.deepseekProfileId = owner;
+    await assert.rejects(data.controller.complete(data.input()), /账号已变化/);
+    assert.equal(data.requests.length, 0);
+  }
+  const matching = fixture({ getConfig: captured => {
+    assert.equal(captured.deepseekProfileId, 'current-generation');
+    return { ...config, provider: 'deepseek', authMode: 'deepseek-account', deepseekProfileId: 'current-generation' };
+  } });
+  matching.snapshot.deepseekProfileId = 'current-generation';
+  await matching.controller.complete(matching.input());
+  assert.equal(matching.requests[0].deepseekProfileId, 'current-generation');
+  const role = fixture({ getConfig: () => ({ ...config, provider: 'deepseek', authMode: 'deepseek-account',
+    modelRole: 'completion', deepseekProfileId: 'role-generation' }) });
+  role.snapshot.deepseekProfileId = 'main-generation';
+  await role.controller.complete(role.input()); assert.equal(role.requests[0].deepseekProfileId, 'role-generation');
+  const missing = fixture({ getConfig: () => ({ ...config, provider: 'deepseek', authMode: 'deepseek-account' }) });
+  await assert.rejects(missing.controller.complete(missing.input()), /DeepSeek 账号信息不完整/);
+});
+
 test('completion preserves the exact draft and bills an independent request without mutating conversation or exposing private provider state', async () => {
   const data = fixture();
   data.snapshot.messages.push({ role: 'tool', content: 'PRIVATE_TOOL_RESULT' }, { role: 'system', content: 'PRIVATE_SYSTEM' },
@@ -243,21 +266,31 @@ test('main-process completion config enforces real session ownership before disp
   const sideChatStart = main.indexOf('\nconst sideChat =', wiringStart);
   const wiring = main.slice(wiringStart, sideChatStart >= 0 ? sideChatStart : main.indexOf('\nfunction publicSettings()'));
   const configSource = main.slice(main.indexOf('async function currentRequestConfig('), main.indexOf('\nasync function recordRunUsage('));
-  for (const [owner, authMode, profile, history, allowed] of [
+  for (const [owner, authMode, profile, history, allowed, ownerKind = 'chatgpt'] of [
     ['account-a', 'chatgpt', 'account-b', true, false], ['account-a', 'apiKey', null, true, false],
     [undefined, 'chatgpt', 'account-b', true, false], [null, 'apiKey', null, true, true],
     ['account-a', 'chatgpt', 'account-a', true, true], ['account-a', 'chatgpt', 'account-b', false, true],
+    ['deepseek-a', 'deepseek-account', 'deepseek-b', true, false, 'deepseek'],
+    ['deepseek-a', 'deepseek-account', 'deepseek-a', true, true, 'deepseek'],
+    ['deepseek-a', 'apiKey', null, true, false, 'deepseek'],
+    [null, 'deepseek-account', 'deepseek-a', true, false, 'deepseek'],
+    ['deepseek-a', 'deepseek-account', 'deepseek-b', false, true, 'deepseek'],
+    ['deepseek-a', 'chatgpt', 'chatgpt-a', true, false, 'deepseek'],
   ]) {
     const context = {}, calls = [], usage = [];
-    const currentSession = { id: randomUUID(), chatgptProfileId: owner,
+    const currentSession = { id: randomUUID(), chatgptProfileId: ownerKind === 'chatgpt' ? owner : null,
+      deepseekProfileId: ownerKind === 'deepseek' ? owner : null,
       messages: history ? [{ role: 'user', content: 'PRIVATE_ACCOUNT_HISTORY' }] : [] };
-    const selected = { ...config, provider: 'openai', authMode }, connection = { key: `key-${authMode}-${profile}`, authMode,
+    const selected = { ...config, provider: authMode === 'deepseek-account' ? 'deepseek' : 'openai', authMode }, connection = { key: `key-${authMode}-${profile}`, authMode,
       account: { session: { profileId: profile, status: 'connected', sharing: true } } };
     const sandbox = vm.createContext({ createPromptCompletionController, DOMException,
       requireSharedReady() {}, shuttingDown: false, quitting: false, localOperation: false, promptPreflights: 0,
       win: { isDestroyed: () => false }, host: { active: context }, context, currentSession,
       workspaceId: 'workspace', configRevision: 1, publicSettings: () => selected, catalogContext: async () => connection,
       capabilitiesFor: () => ({ supportsTools: true }), resolvedReasoningEffort: () => 'default',
+      isAccountMode: mode => mode === 'chatgpt' || mode === 'deepseek-account',
+      accountLabel: mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT',
+      accountBaseUrl: mode => mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1',
       permissionMode: 'request', uiPreferences: null, store: { key: () => 'fake-key' }, roleModels: { isEnabled: () => false },
       dispatchModelRequest: async request => { calls.push(request); return reply('，并验证边界。'); },
       recordRunUsage: async record => { usage.push(record); }, redact: value => value,
@@ -268,6 +301,7 @@ test('main-process completion config enforces real session ownership before disp
     if (allowed) {
       assert.ok((await pending).text.startsWith('继续完善')); assert.equal(calls.length, 1); assert.equal(usage.length, 1);
       assert.equal(calls[0].chatgptProfileId, authMode === 'chatgpt' ? profile : null);
+      assert.equal(calls[0].deepseekProfileId, authMode === 'deepseek-account' ? profile : null);
     } else {
       await assert.rejects(pending, { message: '会话模型账号已变化，请新建会话后再补全提示词。' });
       assert.equal(calls.length, 0); assert.equal(usage.length, 0);

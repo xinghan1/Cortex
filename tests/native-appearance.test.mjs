@@ -9,6 +9,8 @@ const defaults = {
   black: { background: '#000000', caption: '#000000', symbol: '#ededed', theme: 'dark' },
   white: { background: '#e9ebee', caption: '#f2f3f5', symbol: '#1b2026', theme: 'light' },
   industrial: { background: '#16191d', caption: '#242a30', symbol: '#edb64c', theme: 'dark' },
+  deepseek: { background: '#141414', caption: '#1c1c1c', symbol: '#91add6', theme: 'dark' },
+  codex: { background: '#191919', caption: '#202123', symbol: '#e3e3e8', theme: 'dark' },
 };
 
 test('native title bars preserve every material default and safe fallback', () => {

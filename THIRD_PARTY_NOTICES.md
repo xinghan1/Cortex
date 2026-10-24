@@ -20,6 +20,12 @@
 
 上游采用 MIT License，Copyright (c) 2026 PC2005-cloud。完整许可与来源声明见 `src/vendor/dsh-pet/LICENSE` 和 `src/vendor/dsh-pet/NOTICE.md`，随安装包一并保留。
 
+## DeepSeek 账号授权协议
+
+Synora code 的 DeepSeek 账号接入参考 [DeepSeek Harness 官方账号授权实现](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/deepseek-account-platform) 和 [账号模型适配](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/llm/llm-deepseek-account)，使用本软件自己的客户端标识与独立实现。
+
+上游采用 MIT License，Copyright (c) 2026 DeepSeek。许可与来源说明位于 `src/vendor/deepseek-account/LICENSE` 和 `src/vendor/deepseek-account/NOTICE.md`，随程序保留。
+
 ## 其他依赖
 
 应用的 npm 依赖及精确版本见 `package.json` 与 `package-lock.json`。安装后各依赖目录内保留其许可文件。Windows 便携构建复制 Electron 运行时随附的 `LICENSE`、`LICENSES.chromium.html` 及运行依赖的许可文件。

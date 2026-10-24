@@ -1,0 +1,10 @@
+.deepseek-login-panel { padding: 15px; margin: 12px 0 18px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--ui-radius, 12px); background: var(--ui-control, var(--panel2)); color: var(--ui-text, var(--text)); }
+.deepseek-login-status-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.deepseek-login-status-row strong { font-size: 13px; }
+.deepseek-login-status-row > span { color: var(--ui-muted, var(--muted)); font-size: 11px; overflow-wrap: anywhere; }
+.deepseek-login-sharing, .deepseek-login-message { margin: 10px 0; font-size: 12px; line-height: 1.65; }
+.deepseek-login-sharing { color: var(--ui-muted, var(--muted)); }
+.deepseek-login-url { display: block; overflow-wrap: anywhere; font: 11px var(--mono, Consolas, monospace); color: var(--ui-muted, var(--muted)); }
+.deepseek-login-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
+.deepseek-login-message { margin-bottom: 0; color: var(--ui-bad, #ffb4c2); }
+.deepseek-login-panel [hidden], #deepseek-auth-mode-field[hidden], #deepseek-login-panel[hidden] { display: none; }

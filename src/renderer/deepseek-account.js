@@ -39,7 +39,8 @@
     return '';
   }
   function render(message) {
-    panel.hidden = provider.value !== 'deepseek' || dialog.classList.contains('role-model-settings');
+    panel.hidden = provider.value !== 'deepseek' || dialog.classList.contains('role-model-settings')
+      || $('deepseek-auth-mode')?.value === 'deepseek-account';
     const reason = unavailable();
     query.disabled = panel.hidden || !dialog.open || loading || !!reason;
     query.textContent = loading ? '查询中…' : '查询余额';

@@ -17,14 +17,17 @@ const validToken = value => Number.isSafeInteger(value) && value >= 0;
 
 function assertSessionOwner(snapshot, config) {
   const profile = config.authMode === 'chatgpt' ? config.chatgptProfileId || null : null;
+  const deepseekProfile = config.authMode === 'deepseek-account' ? config.deepseekProfileId || null : null;
   if (config.authMode === 'chatgpt' && !profile) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
+  if (config.authMode === 'deepseek-account' && !deepseekProfile) throw new Error('DeepSeek 账号信息不完整，请重新登录。');
   // Only the main process can designate an explicitly configured completion
   // connection. Choosing that role authorizes its own account for this request.
   if (config.modelRole === 'completion') return;
   // Match startTask's history boundary in both directions: official account
   // A cannot disclose its history to B or API mode; unowned/API history must
   // likewise not be transferred to an official account by a Tab request.
-  if (snapshot.hasConversation && (snapshot.chatgptProfileId || null) !== profile)
+  if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profile
+      || (snapshot.deepseekProfileId || null) !== deepseekProfile))
     throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
 }
 
@@ -146,7 +149,7 @@ export function createPromptCompletionController({ getSnapshot, getConfig, valid
       abort();
       const record = { input: { ...input }, snapshot: { ...snapshot, messages: undefined,
         hasConversation: Array.isArray(snapshot.messages) && snapshot.messages.length > 0,
-        chatgptProfileId: snapshot.chatgptProfileId || null }, conversation,
+        chatgptProfileId: snapshot.chatgptProfileId || null, deepseekProfileId: snapshot.deepseekProfileId || null }, conversation,
         controller: new AbortController(), usageId: randomUUID(), usageRunId: randomUUID() };
       active = record;
       const promise = perform(record).then(result => {

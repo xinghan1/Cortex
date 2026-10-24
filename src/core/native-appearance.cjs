@@ -5,6 +5,8 @@ const palettes = Object.freeze({
   black: Object.freeze({ background: '#000000', caption: '#000000', symbol: '#ededed', theme: 'dark' }),
   white: Object.freeze({ background: '#e9ebee', caption: '#f2f3f5', symbol: '#1b2026', theme: 'light' }),
   industrial: Object.freeze({ background: '#16191d', caption: '#242a30', symbol: '#edb64c', theme: 'dark' }),
+  deepseek: Object.freeze({ background: '#141414', caption: '#1c1c1c', symbol: '#91add6', theme: 'dark' }),
+  codex: Object.freeze({ background: '#191919', caption: '#202123', symbol: '#e3e3e8', theme: 'dark' }),
 });
 const validColor = value => typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value);
 const channels = color => [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16));

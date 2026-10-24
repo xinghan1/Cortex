@@ -34,6 +34,7 @@ async function fixture(t) {
 
 function runtime(preferences) {
   const value = { approvalReviewerPreferences: preferences, approvalReviewerConnectionKey,
+    isAccountMode: mode => mode === 'chatgpt' || mode === 'deepseek-account',
     tools: { root: project }, approvalReviewerModel: null, approvalReviewerScope: null, approvalReviewerConnectionCache: null,
     localOperation: false, promptPreflights: 0, shuttingDown: false, quitting: false, connection: connection(), reads: 0, reconciles: 0,
     catalogSnapshots: new Map([['catalog-openai', { models: [{ id: 'reviewer-a' }, { id: 'reviewer-b' }] }]]),
@@ -65,6 +66,15 @@ test('reviewer connection identity survives transient official-account state, to
   assert.notEqual(approvalReviewerConnectionKey(original, 'different-key'), key);
   const ollama = connection('ollama');
   assert.equal(approvalReviewerConnectionKey(ollama), approvalReviewerConnectionKey({ ...ollama, config: { ...ollama.config, contextWindowTokens: 32768 } }));
+});
+
+test('DeepSeek reviewer choices bind to the signed-in account generation and remain separate from API keys', () => {
+  const context = { provider: 'deepseek', authMode: 'deepseek-account', account: { session: { profileId: 'grant-one', status: 'connected', sharing: true } } };
+  const savedKey = approvalReviewerConnectionKey(context);
+  assert.equal(approvalReviewerConnectionKey({ ...context, account: { session: { profileId: 'grant-one', status: 'connecting', sharing: false } } }), savedKey);
+  assert.notEqual(approvalReviewerConnectionKey({ ...context, account: { session: { profileId: 'grant-two' } } }), savedKey);
+  assert.notEqual(approvalReviewerConnectionKey(connection('deepseek'), 'key'), savedKey);
+  assert.throws(() => approvalReviewerConnectionKey({ ...context, provider: 'relay' }));
 });
 
 test('project, empty window and provider identities independently persist model and explicit follow-current selections', async t => {

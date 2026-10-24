@@ -57,6 +57,12 @@ function preparePortableMigration() {
 
 let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
+let deepseek;
+const roleDeepseekAccounts = new Map();
+const isAccountMode = mode => mode === 'chatgpt' || mode === 'deepseek-account';
+const accountLabel = mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
+const accountController = mode => mode === 'deepseek-account' ? deepseek : chatgpt;
+const accountBaseUrl = mode => mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
 const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
@@ -181,27 +187,33 @@ function pluginDeveloperFiles() {
 function redact(value) {
   let clean = store.redact(value);
   if (chatgpt) clean = chatgpt.redact(clean);
+  if (deepseek) clean = deepseek.redact(clean);
   if (roleModels) clean = roleModels.redact(clean);
   for (const account of roleAccounts.values()) clean = account.redact(clean);
+  for (const account of roleDeepseekAccounts.values()) clean = account.redact(clean);
   return clean;
 }
 function requireGlobalIdle() {
   if ([...windows.values()].some(context => context.busy || context.hasPendingPrompts)) throw new Error('请先停止所有窗口的任务，并发送或移除待发送消息，再更改共享配置。');
 }
 function requireSharedReady() { if (sharedMutations) throw new Error('共享配置或账号正在更新，请稍后启动任务。'); }
-function roleAccount(role) {
-  if (!ROLE_KEYS.includes(role) || !roleAccounts.has(role)) throw new Error('模型用途无效。');
-  return roleAccounts.get(role);
+function roleAccount(role, provider = 'openai') {
+  const accounts = provider === 'deepseek' ? roleDeepseekAccounts : roleAccounts;
+  if (!ROLE_KEYS.includes(role) || !accounts.has(role)) throw new Error('模型用途无效。');
+  return accounts.get(role);
 }
 function cancelAccountSignIns() {
   chatgpt?.cancelSignIn();
+  deepseek?.cancelSignIn();
   for (const account of roleAccounts.values()) account.cancelSignIn();
+  for (const account of roleDeepseekAccounts.values()) account.cancelSignIn();
 }
-async function publishRoleAccount(role) {
-  const state = await roleAccount(role).publicState();
+async function publishRoleAccount(role, provider = 'openai') {
+  const state = await roleAccount(role, provider).publicState();
+  const identityKey = provider === 'deepseek' ? `deepseek:${role}` : role;
   const identity = JSON.stringify([state.session.status, state.session.profileId, state.session.sharing]);
-  const previous = roleAccountIdentities.get(role);
-  roleAccountIdentities.set(role, identity);
+  const previous = roleAccountIdentities.get(identityKey);
+  roleAccountIdentities.set(identityKey, identity);
   if (previous !== undefined && previous !== identity) roleRuntime?.invalidate(role);
   await broadcastAllStates();
 }
@@ -363,22 +375,26 @@ const promptCompletion = createPromptCompletionController({
     if (shuttingDown || quitting || win?.isDestroyed() || host.active !== context || localOperation || promptPreflights)
       throw new Error('会话正在切换或关闭，请稍后补全提示词。');
     return { sessionId: currentSession?.id, workspaceId, messages: currentSession?.messages,
-      chatgptProfileId: currentSession?.chatgptProfileId || null, configRevision };
+      chatgptProfileId: currentSession?.chatgptProfileId || null, deepseekProfileId: currentSession?.deepseekProfileId || null, configRevision };
   },
   isCurrent: snapshot => !shuttingDown && !quitting && !win?.isDestroyed() && host.active === context
     && currentSession?.id === snapshot.sessionId && configRevision === snapshot.configRevision
-    && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId,
+    && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId
+    && (currentSession?.deepseekProfileId || null) === snapshot.deepseekProfileId,
   async getConfig(snapshot, signal) {
     signal.throwIfAborted();
     if (roleModels.isEnabled('completion')) return roleRequestConfig('completion', { controller: { signal } });
     const connection = await catalogContext();
     signal.throwIfAborted();
     const profileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
-    if (snapshot.hasConversation && (snapshot.chatgptProfileId || null) !== profileId)
+    const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
+    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
     const config = await currentRequestConfig({ controller: { signal }, connectionKey: connection.key,
-      chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null }, publicSettings().model);
-    return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null };
+      chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null,
+      deepseekProfileId: snapshot.hasConversation ? snapshot.deepseekProfileId : null }, publicSettings().model);
+    return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null,
+      deepseekProfileId: config.authMode === 'deepseek-account' ? deepseekProfileId : null };
   },
   async validateConfig(config, snapshot, signal) {
     signal.throwIfAborted();
@@ -393,7 +409,9 @@ const promptCompletion = createPromptCompletionController({
     signal.throwIfAborted();
     if (connection.key !== config.connectionKey || configRevision !== snapshot.configRevision
         || config.authMode === 'chatgpt' && (!connection.account?.session?.profileId
-          || connection.account.session.profileId !== config.chatgptProfileId))
+          || connection.account.session.profileId !== config.chatgptProfileId)
+        || config.authMode === 'deepseek-account' && (!connection.account?.session?.profileId
+          || connection.account.session.profileId !== config.deepseekProfileId))
       throw new DOMException('模型连接已变化，提示词补全已取消。', 'AbortError');
   },
   requestModel: dispatchModelRequest, onUsage: recordRunUsage, redact,
@@ -755,7 +773,7 @@ async function approve(request, { signal } = {}) {
 }
 function dispatchModelRequest(config) {
   if (config.modelRole) return roleRuntime.dispatch(config);
-  return config.authMode === 'chatgpt' ? chatgpt.requestModel({ ...config, requestModel }) : requestModel(config);
+  return isAccountMode(config.authMode) ? accountController(config.authMode).requestModel({ ...config, requestModel }) : requestModel(config);
 }
 async function roleRequestConfig(role, run, modelOverride) {
   if (!roleModels.isEnabled(role)) return currentRequestConfig(run, modelOverride);
@@ -768,17 +786,19 @@ async function currentRequestConfig(run, modelOverride) {
   if (settings.provider === 'ollama' && !catalogSnapshots.has(context.key)) await fetchModelCatalog();
   run.controller.signal.throwIfAborted();
   if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
-  const account = settings.provider === 'openai' && settings.authMode === 'chatgpt';
+  const account = isAccountMode(settings.authMode);
   if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing
-      || run.chatgptProfileId && run.chatgptProfileId !== context.account.session.profileId)) throw new Error('ChatGPT 授权已变更，请停止后重新开始任务。');
+      || (settings.authMode === 'chatgpt' ? run.chatgptProfileId : run.deepseekProfileId)
+        && (settings.authMode === 'chatgpt' ? run.chatgptProfileId : run.deepseekProfileId) !== context.account.session.profileId)) throw new Error(`${accountLabel(settings.authMode)} 授权已变更，请停止后重新开始任务。`);
   const apiKey = account ? '' : store.key(settings.provider);
   if (!account && settings.provider !== 'ollama' && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
   const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
   if (!model) throw new Error('请先选择模型。');
   if (!modelOverride && modelCapabilities.supportsTools === false) throw new Error('所选模型不支持编程工具调用。');
   if (!modelOverride && modelCapabilities.supportsImages === false && currentSession.messages.some(message => message.attachments?.length)) throw new Error('当前会话包含图片，请选择支持图片的模型。');
-  return { provider: settings.provider, apiKey, authMode: account ? 'chatgpt' : 'apiKey',
-    baseUrl: account ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: account ? 'responses' : settings.apiProtocol,
+  return { provider: settings.provider, apiKey, authMode: account ? settings.authMode : 'apiKey',
+    baseUrl: account ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: account ? settings.authMode === 'chatgpt' ? 'responses' : 'chat-completions' : settings.apiProtocol,
+    ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
     model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
     permissionMode, connectionKey: context.key, configRevision,
     contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000 };
@@ -807,8 +827,9 @@ async function reviewOperation(request, { signal, runId }) {
 }
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
+  const deepseekAccount = deepseek ? await deepseek.publicState() : null;
   const roleState = await roleRuntime.publicState(publicSettings());
-  const context = await catalogContext({}, account);
+  const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount });
   restoreApprovalReviewer(context);
   if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
@@ -823,7 +844,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, textScale: uiPreferences?.textScale ?? 100, contextCompressionTriggerTokens: uiPreferences?.contextCompressionTriggerTokens ?? 850000, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -832,14 +853,14 @@ async function catalogContext(arg = {}, account) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const config = settings.providers[provider];
   const authMode = arg.authMode ?? config.authMode;
-  if (!['apiKey','chatgpt'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai')) throw new Error('此服务商不支持所选的连接方式。');
-  const chatgptState = authMode === 'chatgpt' ? account ?? await chatgpt.publicState() : null;
+  if (!['apiKey','chatgpt','deepseek-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek')) throw new Error('此服务商不支持所选的连接方式。');
+  const chatgptState = isAccountMode(authMode) ? account?.[authMode === 'chatgpt' ? 'chatgpt' : 'deepseek'] ?? await accountController(authMode).publicState() : null;
   const key = catalogConnectionKey(provider, authMode, config, chatgptState);
   return { provider, authMode, config, account: chatgptState, key };
 }
 function catalogConnectionKey(provider, authMode, config, account) {
-  const credential = authMode === 'chatgpt' ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId] : store.settings.providers[provider].encryptedKey || '';
-  return createHash('sha256').update(JSON.stringify([provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl, credential,
+  const credential = isAccountMode(authMode) ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId] : store.settings.providers[provider].encryptedKey || '';
+  return createHash('sha256').update(JSON.stringify([provider, authMode, isAccountMode(authMode) ? 'official' : config.baseUrl, credential,
     ...(provider === 'ollama' ? [config.contextWindowTokens] : [])])).digest('hex');
 }
 function reviewerConnectionKey(connection) {
@@ -847,11 +868,11 @@ function reviewerConnectionKey(connection) {
   // Cache by encrypted credential/config identity so periodic UI broadcasts do
   // not repeatedly decrypt keys. The persisted digest uses the stable secret,
   // not random encrypted bytes or transient ChatGPT connection status.
-  const fingerprint = JSON.stringify([provider, authMode, authMode === 'chatgpt' ? account?.session?.profileId || null
+  const fingerprint = JSON.stringify([provider, authMode, isAccountMode(authMode) ? account?.session?.profileId || null
     : [config.baseUrl, config.apiProtocol, store.settings.providers[provider].encryptedKey || '']]);
   if (approvalReviewerConnectionCache?.fingerprint === fingerprint) return approvalReviewerConnectionCache.key;
   try {
-    const key = approvalReviewerConnectionKey(connection, authMode === 'chatgpt' ? '' : store.key(provider));
+    const key = approvalReviewerConnectionKey(connection, isAccountMode(authMode) ? '' : store.key(provider));
     approvalReviewerConnectionCache = { fingerprint, key };
     return key;
   } catch { return null; /* Unreadable credentials must not break the settings UI. */ }
@@ -887,7 +908,7 @@ async function modelSettingsDraft(arg) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const authMode = arg.authMode ?? settings.providers[provider].authMode;
   const input = { provider, authMode, model: '' };
-  if (authMode !== 'chatgpt') {
+  if (!isAccountMode(authMode)) {
     for (const field of ['baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens']) if (Object.hasOwn(arg, field)) input[field] = arg[field];
   }
   // Validate the draft with exactly the same rules as a saved connection, while
@@ -897,14 +918,14 @@ async function modelSettingsDraft(arg) {
   validator.write = async () => {};
   const validated = await validator.saveSettings(input);
   const config = validated.providers[provider];
-  const account = authMode === 'chatgpt' ? await chatgpt.publicState() : null;
-  if (authMode === 'chatgpt' && (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId)) throw new Error('请先连接 ChatGPT 并授权套餐用量，再获取模型目录。');
-  const apiKey = authMode === 'chatgpt' ? '' : validator.key(provider);
-  if (authMode !== 'chatgpt' && provider !== 'ollama' && !apiKey) throw new Error('请填写 API Key，再获取模型目录。');
+  const account = isAccountMode(authMode) ? await accountController(authMode).publicState() : null;
+  if (account && (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId)) throw new Error(`请先连接 ${accountLabel(authMode)} 并完成授权，再获取模型目录。`);
+  const apiKey = isAccountMode(authMode) ? '' : validator.key(provider);
+  if (!isAccountMode(authMode) && provider !== 'ollama' && !apiKey) throw new Error('请填写 API Key，再获取模型目录。');
   const connection = createHash('sha256').update(JSON.stringify([
-    workspaceId, provider, authMode, authMode === 'chatgpt' ? 'official' : config.baseUrl,
+    workspaceId, provider, authMode, isAccountMode(authMode) ? 'official' : config.baseUrl,
     authMode === 'chatgpt' ? 'responses' : config.apiProtocol || 'responses',
-    authMode === 'chatgpt' ? account.session.profileId : apiKey,
+    isAccountMode(authMode) ? account.session.profileId : apiKey,
     ...(provider === 'ollama' ? [config.contextWindowTokens] : []),
   ])).digest('hex');
   return { input, provider, authMode, config, account, apiKey, connection };
@@ -916,6 +937,9 @@ async function previewModelSettingsCatalog(arg) {
   if (draft.authMode === 'chatgpt') {
     const models = (await chatgpt.listModels({ force: true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
     result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+  } else if (draft.authMode === 'deepseek-account') {
+    const models = await deepseek.listModels({ force: true });
+    result = { models, fetchedAt: new Date().toISOString(), source: 'deepseek-account' };
   } else result = await modelCatalog.list({ provider: draft.provider, baseUrl: draft.config.baseUrl, apiKey: draft.apiKey, contextWindowTokens: draft.config.contextWindowTokens, force: true });
   if ((await modelSettingsDraft(arg)).connection !== draft.connection) throw new Error('连接配置或账号已变更，请重新获取目录。');
   let safeResult = redact(JSON.stringify({ ...result, provider: draft.provider, authMode: draft.authMode }));
@@ -953,6 +977,9 @@ async function fetchModelCatalog(arg = {}) {
       if (!context.account.session.sharing) throw new Error('请先授权 ChatGPT 套餐用量，再获取模型目录。');
       const models = (await chatgpt.listModels({ force: arg.force === true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
       result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+    } else if (context.authMode === 'deepseek-account') {
+      const models = await deepseek.listModels({ force: arg.force === true });
+      result = { models, fetchedAt: new Date().toISOString(), source: 'deepseek-account' };
     } else {
       const apiKey = store.key(context.provider);
       if (context.provider !== 'ollama' && !apiKey) throw new Error('请先保存此服务商的 API Key，再获取模型目录。');
@@ -1045,6 +1072,7 @@ async function startTask(input) {
   const settings = publicSettings();
   const provider = settings.provider;
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
+  const useDeepSeekAccount = provider === 'deepseek' && settings.authMode === 'deepseek-account';
   const modelContext = await catalogContext();
   if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
   metricsConnectionKey = modelContext.key;
@@ -1053,6 +1081,7 @@ async function startTask(input) {
   // narrow those choices, including an explicit empty list for no adjustment.
   const reasoningEffort = resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort);
   let chatgptProfileId = null;
+  let deepseekProfileId = null;
   let apiKey = '';
   if (!demo) {
     if (!settings.model) throw new Error('请先在模型设置中填写模型 ID。');
@@ -1065,14 +1094,19 @@ async function startTask(input) {
       if (!account.session.sharing) throw new Error('ChatGPT 已登录，但尚未授权套餐用量；请在模型设置中连接套餐。');
       chatgptProfileId = account.session.profileId;
       if (!chatgptProfileId) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
+    } else if (useDeepSeekAccount) {
+      const account = await deepseek.publicState();
+      if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先在模型设置中登录并授权 DeepSeek 账号。');
+      deepseekProfileId = account.session.profileId;
     } else {
       apiKey = store.key(provider);
       if (provider !== 'ollama' && !apiKey) throw new Error('请先在模型设置中填写 API Key。');
     }
   }
   if (!demo) {
-    if (currentSession.messages.length && (currentSession.chatgptProfileId || null) !== chatgptProfileId) await createSession({ temporary: currentSession.temporary === true });
+    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId)) await createSession({ temporary: currentSession.temporary === true });
     currentSession.chatgptProfileId = chatgptProfileId;
+    currentSession.deepseekProfileId = deepseekProfileId;
   }
   if (loadedSnapshot) {
     const sourceSessionId = currentSession.id;
@@ -1100,6 +1134,7 @@ async function startTask(input) {
   run.fileChangeCount = 0;
   run.connectionKey = modelContext.key;
   run.chatgptProfileId = chatgptProfileId;
+  run.deepseekProfileId = deepseekProfileId;
   run.demo = demo;
   run.messageStartIndex = currentSession.messages.length - 1;
   activeRun = run;
@@ -1117,7 +1152,7 @@ async function startTask(input) {
           emit(event);
         }, approve });
       } else {
-        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : 'apiKey', connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT ? 'https://api.openai.com/v1' : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : 'apiKey', deepseekProfileId, connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT || useDeepSeekAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
           if (name === 'read_url' || name.startsWith('browser_')) {
             if (name !== 'read_url' && !(name === 'browser_navigate' && isXmlURL(args.url))) emit({ type: 'browser-open' });
             return browser.execute(name, args, { ...options, approve });
@@ -1499,6 +1534,16 @@ function buildHandlers() {
     roleChatgptOpenUsage: async arg => {
       roleAccount(arg?.role); await shell.openExternal('https://chatgpt.com/settings/usage'); return null;
     },
+    roleDeepseekSignIn: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'deepseek').signIn(); await broadcastAllStates(); return state();
+    }),
+    roleDeepseekCancelSignIn: arg => { requireGlobalIdle(); void roleAccount(arg?.role, 'deepseek').cancelSignIn(); return null; },
+    roleDeepseekDisconnect: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'deepseek').disconnect(); await broadcastAllStates(); return state();
+    }),
+    roleDeepseekRetryStorage: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'deepseek').retryLocalRead(); await broadcastAllStates(); return state();
+    }),
     sideChatOpen: () => { requireSharedReady(); return sideChat.open(); },
     sideChatSend: arg => {
       requireSharedReady();
@@ -1526,6 +1571,16 @@ function buildHandlers() {
       return balance;
     },
     openDeepSeekAccount: async () => { await shell.openExternal('https://platform.deepseek.com/'); return null; },
+    deepseekSignIn: () => mutateShared(async () => {
+      await deepseek.signIn(); await broadcastAllStates(); return state();
+    }),
+    deepseekCancelSignIn: () => { requireGlobalIdle(); void deepseek.cancelSignIn(); return null; },
+    deepseekDisconnect: () => mutateShared(async () => {
+      await deepseek.disconnect(); await broadcastAllStates(); return state();
+    }),
+    deepseekRetryStorage: () => mutateShared(async () => {
+      await deepseek.retryLocalRead(); await broadcastAllStates(); return state();
+    }),
     chatgptSignIn: async arg => {
       requireIdle();
       if (arg !== undefined && (!arg || typeof arg !== 'object' || Array.isArray(arg))) throw new Error('登录参数无效。');
@@ -2056,8 +2111,14 @@ async function boot() {
     notify: notifyPlugin, onError: event => { try { notifyPlugin(event); } catch {} } });
   nativeTheme.themeSource = nativeAppearance(appearance.snapshot()).theme;
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
+  const { DeepSeekConnection } = await import('./core/deepseek-login.mjs');
+  const deepseekNetwork = electronSession.fromPartition('synora-deepseek-account', { cache: false });
+  const deepseekFetch = (input, options) => deepseekNetwork.fetch(input, options);
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await chatgpt.init();
+  deepseek = new DeepSeekConnection({ dataDir, safeStorage, version: app.getVersion(), fetchImpl: deepseekFetch,
+    openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
+  await deepseek.init();
   roleModels = await new RoleModels(dataDir, safeStorage).init();
   for (const role of ROLE_KEYS) {
     const account = new ChatGPTConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage,
@@ -2065,9 +2126,12 @@ async function boot() {
         publishRoleAccount(role).catch(() => {});
       } });
     roleAccounts.set(role, account); await account.init();
+    const deepseekAccount = new DeepSeekConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage, version: app.getVersion(), fetchImpl: deepseekFetch,
+      openExternal: url => shell.openExternal(url), onChange: () => { publishRoleAccount(role, 'deepseek').catch(() => {}); } });
+    roleDeepseekAccounts.set(role, deepseekAccount); await deepseekAccount.init();
   }
   const { RoleModelRuntime } = await import('./core/role-model-runtime.mjs');
-  roleRuntime = new RoleModelRuntime({ configs: roleModels, accounts: roleAccounts, catalog: modelCatalog,
+  roleRuntime = new RoleModelRuntime({ configs: roleModels, accounts: roleAccounts, deepseekAccounts: roleDeepseekAccounts, catalog: modelCatalog,
     deriveCapabilities: deriveModelCapabilities, requestModel, redact });
   updateEnabled = !smoke && app.isPackaged && isInstalledBuild && process.platform === 'win32' && process.arch === 'x64';
   const updateSession = electronSession.fromPartition('synora-updates', { cache: false });
@@ -2131,6 +2195,16 @@ async function smokeTest() {
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
     await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
     console.log('SYNORA_UPDATER_SMOKE_OK ' + JSON.stringify(result));
+    app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'deepseek-login') {
+    const result = { version: app.getVersion(), deepseekLogin: await require('./core/smoke-deepseek-login.cjs')({
+      win, output, dataDir, store, readConnection: () => deepseek, writeConnection: value => { deepseek = value; },
+      broadcastState: broadcastAllStates, requestModel, roleModels, roleRuntime, roleDeepseekAccounts,
+    }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_DEEPSEEK_LOGIN_SMOKE_OK ' + JSON.stringify(result));
     app.quit(); return;
   }
   if (['scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'deepseek-easter-egg', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
@@ -2470,6 +2544,8 @@ app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
   clearTimeout(updateTimer); clearInterval(updateInterval);
   clearInterval(petPointerTimer);
+  void deepseek?.dispose();
+  for (const account of roleDeepseekAccounts.values()) void account.dispose();
   pluginRuntime?.dispose();
   void appUpdater?.dispose();
 });

@@ -85,7 +85,7 @@ const DEFAULTS = {
   provider: 'deepseek',
   providers: {
     openai: { model: '', modelsByAuth: { apiKey: '', chatgpt: '' }, baseUrl: 'https://api.openai.com/v1', reasoningEffort: 'default', authMode: 'apiKey', apiProtocol: 'responses' },
-    deepseek: { model: '', baseUrl: 'https://api.deepseek.com', reasoningEffort: 'default' },
+    deepseek: { model: '', baseUrl: 'https://api.deepseek.com', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'deepseek-account': '' } },
     anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default' },
     relay: { model: '', baseUrl: '', reasoningEffort: 'default', apiProtocol: 'chat-completions' },
     ollama: { model: '', baseUrl: 'http://localhost:11434', reasoningEffort: 'default', contextWindowTokens: 32768 },
@@ -129,13 +129,16 @@ class Store {
       if (!['apiKey', 'chatgpt'].includes(this.settings.providers.openai.authMode)) this.settings.providers.openai.authMode = 'apiKey';
       const openai = this.settings.providers.openai;
       openai.modelsByAuth = { apiKey: '', chatgpt: '', ...openai.modelsByAuth, [openai.authMode]: openai.model };
+      const deepseek = this.settings.providers.deepseek;
+      if (!['apiKey', 'deepseek-account'].includes(deepseek.authMode)) deepseek.authMode = 'apiKey';
+      deepseek.modelsByAuth = { apiKey: '', 'deepseek-account': '', ...deepseek.modelsByAuth, [deepseek.authMode]: deepseek.model };
       if (migrated) await this.write('settings.json', this.settings);
     } catch (error) { if (error.code !== 'ENOENT') throw new Error('设置文件损坏，请备份 data/settings.json 后重试。'); }
     await this.initUsage();
   }
   publicSettings() {
     const providers = {};
-    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: name === 'openai' ? value.authMode || 'apiKey' : 'apiKey', ...(name === 'openai' ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
+    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
     return { provider: this.settings.provider, ...providers[this.settings.provider], providers };
   }
   async saveSettings(input) {
@@ -143,8 +146,8 @@ class Store {
     if (input.apiProtocol !== undefined && (!API_PROTOCOLS.includes(input.apiProtocol)
         || (!['openai', 'relay'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
     const previous = this.settings.providers[input.provider];
-    const authMode = input.provider === 'openai' ? input.authMode ?? previous.authMode : 'apiKey';
-    const model = String(input.model ?? (input.provider === 'openai' ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
+    const authMode = ['openai', 'deepseek'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
+    const model = String(input.model ?? (['openai', 'deepseek'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
     const baseUrl = String(input.baseUrl === undefined ? previous.baseUrl : input.baseUrl || DEFAULTS.providers[input.provider].baseUrl).trim();
     if (model.length > 200 || /[\r\n]/.test(model)) throw new Error('模型 ID 格式不正确。');
     let parsed;
@@ -158,14 +161,16 @@ class Store {
     const next = structuredClone(this.settings);
     const value = next.providers[input.provider];
     if (ollama && input.contextWindowTokens !== undefined) value.contextWindowTokens = input.contextWindowTokens;
-    if (input.authMode !== undefined && (!['apiKey', 'chatgpt'].includes(input.authMode) || (input.provider !== 'openai' && input.authMode !== 'apiKey'))) throw new Error('此服务商不支持所选的登录方式。');
-    if (input.provider === 'openai' && input.authMode !== undefined) value.authMode = input.authMode;
+    if (input.authMode !== undefined && !(input.authMode === 'apiKey'
+        || input.provider === 'openai' && input.authMode === 'chatgpt'
+        || input.provider === 'deepseek' && input.authMode === 'deepseek-account')) throw new Error('此服务商不支持所选的登录方式。');
+    if (['openai', 'deepseek'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
     if (['openai', 'relay'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
     const reasoningEffort = input.reasoningEffort === undefined ? value.reasoningEffort || 'default' : input.reasoningEffort;
     if (!EFFORTS[input.provider].includes(reasoningEffort)) throw new Error('此供应商不支持所选的思考强度。');
     value.reasoningEffort = reasoningEffort;
     value.model = model; value.baseUrl = baseUrl;
-    if (input.provider === 'openai') value.modelsByAuth[value.authMode] = model;
+    if (['openai', 'deepseek'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
     if (input.clearKey === true) delete value.encryptedKey;
     const key = String(input.apiKey || '').trim();
     if (key) {

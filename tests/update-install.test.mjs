@@ -45,7 +45,9 @@ function fixture({ completions = [], restoreFlush, failLaunches = 0 } = {}) {
     pluginManager: { settled: async () => { calls.push('flush:plugins'); } },
     dshPet: { settled: async () => { calls.push('flush:pet'); } },
     chatgpt: { cancelSignIn: () => calls.push('cancel-signin') },
+    deepseek: { cancelSignIn: () => calls.push('cancel-deepseek-signin') },
     roleAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-signin') }]]),
+    roleDeepseekAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-deepseek-signin') }]]),
     spawn(filename, args, options) {
       spawns.push({ filename, args: [...args], options: { ...options } }); calls.push('spawn');
       const child = new EventEmitter(); child.unref = () => calls.push('unref');
@@ -89,6 +91,8 @@ test('installer launch receives only the verified path and NSIS flags with shell
     options: { detached: true, stdio: 'ignore', windowsHide: true, shell: false } }]);
   assert.equal(f.calls.filter(value => value === 'unref').length, 1);
   assert.equal(f.calls.filter(value => value === 'quit').length, 1);
+  assert.equal(f.calls.filter(value => value === 'cancel-deepseek-signin').length, 1);
+  assert.equal(f.calls.filter(value => value === 'cancel-role-deepseek-signin').length, 1);
 });
 
 test('spawn failure keeps the app open, restores each original window state and permits an explicit retry', async () => {

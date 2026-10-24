@@ -53,7 +53,8 @@ class RoleModels {
 
   #requiresKey(store) {
     const { provider, providers } = store.settings;
-    return provider !== 'ollama' && !(provider === 'openai' && providers.openai.authMode === 'chatgpt');
+    return provider !== 'ollama' && !(provider === 'openai' && providers.openai.authMode === 'chatgpt')
+      && !(provider === 'deepseek' && providers.deepseek.authMode === 'deepseek-account');
   }
 
   async #draft(role, input) {
@@ -71,7 +72,12 @@ class RoleModels {
     if (!exactKeys(saved, ['provider', 'providers']) || !providers.includes(saved.provider)
         || !exactKeys(saved.providers, providers)) throw new Error('Invalid role settings');
     for (const provider of providers) {
-      const value = saved.providers[provider], baseline = defaults.providers[provider];
+      const value = structuredClone(saved.providers[provider]), baseline = defaults.providers[provider];
+      // Version-one role files written before account login have no DeepSeek
+      // auth fields. Preserve their model, endpoint and independent API key.
+      if (provider === 'deepseek' && object(value) && !Object.hasOwn(value, 'authMode') && !Object.hasOwn(value, 'modelsByAuth')) {
+        value.authMode = 'apiKey'; value.modelsByAuth = { apiKey: value.model, 'deepseek-account': '' };
+      }
       const keys = Object.keys(baseline);
       if (!object(value) || !keys.every(key => Object.hasOwn(value, key))
           || Object.keys(value).some(key => !keys.includes(key) && key !== 'encryptedKey')
@@ -86,6 +92,10 @@ class RoleModels {
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'chatgpt'].includes(value.authMode)
           || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
+      if (provider === 'deepseek' && (!exactKeys(value.modelsByAuth, ['apiKey', 'deepseek-account'])
+          || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
+          || !['apiKey', 'deepseek-account'].includes(value.authMode)
+          || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
       // An untouched relay has no endpoint. Store validates only the selected
       // provider, so do not turn this legitimate default into a corrupt file.
       if (provider === 'relay' && value.baseUrl === ''
@@ -96,6 +106,11 @@ class RoleModels {
         for (const authMode of ['apiKey', 'chatgpt']) {
           await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
         }
+        input.authMode = value.authMode;
+      }
+      if (provider === 'deepseek') {
+        for (const authMode of ['apiKey', 'deepseek-account'])
+          await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
         input.authMode = value.authMode;
       }
       if (provider === 'relay') input.apiProtocol = value.apiProtocol;

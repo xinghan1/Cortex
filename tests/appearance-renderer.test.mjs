@@ -28,7 +28,7 @@ async function fixture() {
     nodes.set(id, value);
     return value;
   };
-  const cssRules = [':root', '#app-background', '.appearance-preview'].map(selectorText => ({ selectorText, style:{ setProperty:(key, value) => rules.set(selectorText + key, value) } }));
+  const cssRules = [':root', '#app-background', '#conversation-background', '.appearance-preview'].map(selectorText => ({ selectorText, style:{ setProperty:(key, value) => rules.set(selectorText + key, value) } }));
   const pending = (kind, patch) => new Promise((resolve, reject) => requests.push({ kind, patch:patch && { ...patch }, resolve, reject }));
   const window = { forge:{
     getAppearance:async () => state,
@@ -51,7 +51,7 @@ async function fixture() {
   const presetButtons = presetIds.map(preset => {
     const button = node('preset-' + preset); button.dataset.backgroundPreset = preset; return button;
   });
-  const styleButtons = ['glass', 'black', 'white', 'industrial'].map(style => {
+  const styleButtons = ['glass', 'black', 'white', 'industrial', 'deepseek', 'codex'].map(style => {
     const button = node('style-' + style); button.dataset.uiStyle = style; return button;
   });
   const selectionButtons = ['#6b9eff','#4cbfc3','#63b77b','#dbb254','#e69a5c','#de737d','#a28ae7','#d382bd'].map(color => {
@@ -215,7 +215,7 @@ test('selection palette previews instantly, survives stale commits and follows c
   f.requests[0].resolve({ ...defaults, selectionColor: '#dbb254' }); await turn();
   assert.deepEqual(f.requests[1].patch, { selectionColor: '#010203' });
   f.complete(f.requests[1]); await f.window.synoraAppearance.settled();
-  for (const uiStyle of ['glass', 'black', 'white', 'industrial']) {
+  for (const uiStyle of ['glass', 'black', 'white', 'industrial', 'deepseek', 'codex']) {
     f.broadcast({ uiStyle });
     assert.equal(f.node('selection-color-input').value, '#010203');
     assert.equal(f.rules.get(':root--custom-selection-color'), '#010203');
@@ -251,7 +251,7 @@ test('custom accent labels remain readable after material changes without changi
     return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
   };
   for (const selectionColor of ['#010203', '#fefefe', '#de737d']) {
-    for (const [uiStyle, background] of Object.entries({ glass: '#28334b', black: '#171717', white: '#e8eaed', industrial: '#2b3138' })) {
+    for (const [uiStyle, background] of Object.entries({ glass: '#28334b', black: '#171717', white: '#e8eaed', industrial: '#2b3138', deepseek: '#202226', codex: '#292a2d' })) {
       f.broadcast({ selectionColor, uiStyle });
       assert.equal(f.rules.get(':root--custom-selection-color'), selectionColor);
       const foreground = f.rules.get(':root--custom-accent-text');
@@ -310,4 +310,67 @@ test('built-in backgrounds replace imported images immediately without changing 
   f.broadcast({backgroundImage:'data:image/png;base64,V0hJVEU=',backgroundName:'new.png'});
   assert.equal(f.node('preset-ocean')['aria-pressed'], 'false');
   assert.equal(f.node('html').classList.contains('custom-background'), true);
+});
+
+test('all six style choices persist only their style while retaining imported image and independent settings', async () => {
+  const f = await fixture();
+  const image = 'data:image/png;base64,V0hJVEU=';
+  f.broadcast({ backgroundImage: image, backgroundName: 'saved.png', backgroundTransparency: 61, panelFrost: 18, selectionColor: '#4cbfc3' });
+  for (const uiStyle of ['deepseek', 'codex', 'black', 'white', 'industrial', 'glass']) {
+    const before = f.requests.length;
+    await f.node('style-' + uiStyle).emit('click'); await turn();
+    assert.equal(f.node('html').dataset.uiStyle, uiStyle);
+    assert.equal(f.node('style-' + uiStyle)['aria-pressed'], 'true');
+    assert.equal(f.node('glass-appearance-settings').hidden, uiStyle !== 'glass');
+    assert.deepEqual(f.requests[before].patch, { uiStyle });
+    f.complete(f.requests[before]); await f.window.synoraAppearance.settled();
+    assert.equal(f.state().backgroundImage, image);
+    assert.equal(f.node('background-name').textContent, 'saved.png');
+    assert.equal(f.node('background-transparency').value, '61');
+    assert.equal(f.node('panel-frost').value, '18');
+    assert.equal(f.node('selection-color-input').value, '#4cbfc3');
+    for (const selector of ['#app-background', '#conversation-background']) {
+      assert.equal(f.rules.get(selector + 'background-image'), `url("${image}")`);
+      assert.equal(f.rules.get(selector + '--background-opacity'), '0.39');
+    }
+  }
+});
+
+test('each solid style can import and reset its conversation image without switching the chosen material', async () => {
+  for (const uiStyle of ['black', 'white', 'industrial', 'deepseek', 'codex']) {
+    const f = await fixture();
+    f.broadcast({ uiStyle, panelFrost: 25, panelTransparency: 44 });
+    const importing = f.window.synoraAppearance.importBackground(); await turn();
+    assert.equal(f.requests[0].kind, 'import');
+    const image = 'data:image/png;base64,V0hJVEU=';
+    f.requests[0].resolve({ ...f.state(), backgroundImage: image, backgroundName: `${uiStyle}.png` });
+    await importing;
+    assert.equal(f.node('html').dataset.uiStyle, uiStyle);
+    assert.equal(f.node('html').classList.contains('custom-background'), true);
+    assert.equal(f.rules.get('#conversation-backgroundbackground-image'), `url("${image}")`);
+    assert.doesNotMatch(f.node('appearance-status').textContent, /切换.*玻璃/u);
+    const resetting = f.node('background-reset').emit('click'); await turn();
+    assert.equal(f.requests[1].kind, 'reset');
+    f.complete(f.requests[1]); await resetting;
+    assert.equal(f.node('html').dataset.uiStyle, uiStyle);
+    assert.equal(f.node('html').classList.contains('custom-background'), false);
+    assert.equal(f.node('background-transparency').value, '28');
+    assert.equal(f.node('panel-frost').value, '25');
+    assert.equal(f.node('panel-transparency').value, '44');
+  }
+});
+
+test('newer cross-window image and style events cannot be replaced by an older transparency response', async () => {
+  const f = await fixture();
+  f.broadcast({ uiStyle: 'deepseek', backgroundImage: 'data:image/png;base64,QUFBQQ==', backgroundName: 'old.png' });
+  await f.edit('background-transparency', 75);
+  f.broadcast({ uiStyle: 'codex', backgroundImage: 'data:image/png;base64,QkJCQg==', backgroundName: 'new.png', backgroundTransparency: 75 });
+  f.requests[0].resolve({ ...defaults, uiStyle: 'deepseek', backgroundImage: 'data:image/png;base64,QUFBQQ==', backgroundName: 'old.png', backgroundTransparency: 75 });
+  await f.window.synoraAppearance.settled();
+  assert.equal(f.node('html').dataset.uiStyle, 'codex');
+  assert.equal(f.node('background-name').textContent, 'new.png');
+  for (const selector of ['#app-background', '#conversation-background']) {
+    assert.equal(f.rules.get(selector + 'background-image'), 'url("data:image/png;base64,QkJCQg==")');
+    assert.equal(f.rules.get(selector + '--background-opacity'), '0.25');
+  }
 });

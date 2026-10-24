@@ -11,7 +11,7 @@ const CONVERSATION_TEXT_COLORS = Object.freeze(['red', 'yellow', 'green', 'blue'
 const DEFAULT_BACKGROUND_PRESET = 'aurora';
 const BACKGROUND_PRESETS = Object.freeze(['aurora', 'rose', 'amber', 'forest', 'ocean', 'snow', 'midnight', 'orange', 'purple', 'olive', 'pink', 'magenta', 'cyan']);
 const DEFAULT_UI_STYLE = 'glass';
-const UI_STYLES = Object.freeze(['glass', 'black', 'white', 'industrial']);
+const UI_STYLES = Object.freeze(['glass', 'black', 'white', 'industrial', 'deepseek', 'codex']);
 const DEFAULT_SELECTION_COLOR = null;
 const validSelectionColor = value => value === null || typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value);
 const LEGACY_FROST_FIELDS = Object.freeze(['sidebarFrost', 'conversationFrost', 'previewFrost']);

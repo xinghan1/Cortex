@@ -896,7 +896,9 @@ function initializeTextScaling() {
 }
 
 function currentAuthMode(settings = appState?.settings || {}) {
-  return settings.provider === 'openai' && (settings.authMode || settings.providers?.openai?.authMode) === 'chatgpt' ? 'chatgpt' : 'apiKey';
+  const mode = settings.authMode || settings.providers?.[settings.provider]?.authMode;
+  return settings.provider === 'openai' && mode === 'chatgpt' ? 'chatgpt'
+    : settings.provider === 'deepseek' && mode === 'deepseek-account' ? 'deepseek-account' : 'apiKey';
 }
 
 function modelSettingsScope() { return window.ForgeRoleModels.scope(appState, settingsRole); }
@@ -920,8 +922,10 @@ function renderModelSettingsScope() {
 
 function catalogIdentity(provider, authMode, state = appState) {
   const config = state?.settings?.providers?.[provider] || {};
-  const account = provider === 'openai' && authMode === 'chatgpt';
-  const identity = [provider, authMode, account ? '' : config.baseUrl || '', account ? state?.chatgpt?.session?.profileId || '' : !!config.hasKey, account ? state?.chatgpt?.session?.status || '' : '', account ? !!state?.chatgpt?.session?.sharing : false];
+  const account = provider === 'openai' && authMode === 'chatgpt' ? state?.chatgpt
+    : provider === 'deepseek' && authMode === 'deepseek-account' ? state?.deepseek : null;
+  const identity = [provider, authMode, account ? '' : config.baseUrl || '', account ? account.session?.profileId || '' : !!config.hasKey,
+    account ? account.session?.status || '' : '', account ? account.session?.sharing === true : false];
   if (provider === 'ollama') identity.push(config.contextWindowTokens ?? 32768);
   return JSON.stringify(identity);
 }
@@ -955,6 +959,7 @@ function invalidateCatalogs() {
 
 function savedConnectionReady(provider, authMode, state = appState) {
   if (provider === 'openai' && authMode === 'chatgpt') return state?.chatgpt?.session?.status === 'connected' && state?.chatgpt?.session?.sharing === true;
+  if (provider === 'deepseek' && authMode === 'deepseek-account') return state?.deepseek?.session?.status === 'connected' && state?.deepseek?.session?.sharing === true;
   if (provider === 'ollama') return true;
   return state?.settings?.providers?.[provider]?.hasKey === true;
 }
@@ -976,8 +981,9 @@ function modelSettingsDraft() {
 
 function modelSettingsDraftSnapshot() {
   const draft = modelSettingsDraft();
-  const session = modelSettingsChatGPT().session;
-  return { ...draft, role: settingsRole, profileId: draft.authMode === 'chatgpt' ? session?.profileId || '' : '', accountStatus: draft.authMode === 'chatgpt' ? session?.status || '' : '', sharing: draft.authMode === 'chatgpt' && session?.sharing === true };
+  const account = draft.authMode === 'chatgpt' || draft.authMode === 'deepseek-account';
+  const session = draft.authMode === 'deepseek-account' ? modelSettingsScope().deepseek?.session : modelSettingsChatGPT().session;
+  return { ...draft, role: settingsRole, profileId: account ? session?.profileId || '' : '', accountStatus: account ? session?.status || '' : '', sharing: account && session?.sharing === true };
 }
 
 function settingsCatalogMatches() {
@@ -1103,7 +1109,8 @@ async function fetchCurrentCatalog(force = false) {
   catalogError = '';
   renderModelList();
   try {
-    if (!savedConnectionReady(provider, authMode)) throw new Error(authMode === 'chatgpt' ? '请先在模型设置中连接并授权 ChatGPT。' : '请先在模型设置中保存 API Key。');
+    if (!savedConnectionReady(provider, authMode)) throw new Error(authMode === 'chatgpt' ? '请先在模型设置中连接并授权 ChatGPT。'
+      : authMode === 'deepseek-account' ? '请先在模型设置中登录并授权 DeepSeek。' : '请先在模型设置中保存 API Key。');
     if (typeof bridge.listModels !== 'function') throw new Error('当前版本不支持模型目录，请更新软件后重试。');
     const result = await bridge.listModels({ provider, authMode, force });
     if (request !== catalogRequest || key !== activeCatalogIdentity()) return;
@@ -1132,6 +1139,7 @@ async function fetchSettingsCatalog(force = true) {
   refreshControlLocks();
   try {
     if (authMode === 'chatgpt' && !savedConnectionReady(provider, authMode, modelSettingsScope())) throw new Error('请先连接 ChatGPT 并同意使用套餐用量。');
+    if (authMode === 'deepseek-account' && !savedConnectionReady(provider, authMode, modelSettingsScope())) throw new Error('请先登录并授权 DeepSeek 账号。');
     if (provider === 'ollama' && (!Number.isInteger(draft.contextWindowTokens) || draft.contextWindowTokens < 4096 || draft.contextWindowTokens > 2097152)) throw new Error('模型上下文必须为 4096 至 2097152 之间的整数 Token。');
     const result = await modelSettingsAction('preview', draft);
     const current = modelSettingsDraftSnapshot();
@@ -1261,11 +1269,15 @@ function count(value) {
 }
 
 function isChatGPTBusy() {
-  return chatgptBusy || appState?.chatgpt?.session?.status === 'connecting' || !!settingsRole && modelSettingsChatGPT().session?.status === 'connecting';
+  return chatgptBusy || window.synoraDeepSeekLogin?.isBusy() || appState?.chatgpt?.session?.status === 'connecting'
+    || appState?.deepseek?.session?.status === 'connecting' || !!settingsRole && (modelSettingsChatGPT().session?.status === 'connecting'
+      || modelSettingsScope().deepseek?.session?.status === 'connecting');
 }
 
 function selectedAuthMode() {
-  return $('provider-select').value === 'openai' && $('openai-auth-mode').value === 'chatgpt' ? 'chatgpt' : 'apiKey';
+  const provider = $('provider-select').value;
+  return provider === 'openai' && $('openai-auth-mode').value === 'chatgpt' ? 'chatgpt'
+    : provider === 'deepseek' && $('deepseek-auth-mode')?.value === 'deepseek-account' ? 'deepseek-account' : 'apiKey';
 }
 
 function restoreChatGPTControls() {
@@ -1304,24 +1316,25 @@ function refreshControlLocks() {
   $('attachment-input').disabled = $('attach-images').disabled;
   refreshFileLocks();
   const settingsLocked = busy || settingsSaving;
-  ['provider-select', 'openai-auth-mode'].forEach((id) => { $(id).disabled = settingsLocked; });
+  ['provider-select', 'openai-auth-mode', 'deepseek-auth-mode'].forEach((id) => { if ($(id)) $(id).disabled = settingsLocked; });
   $('chatgpt-model-select').disabled = settingsLocked || settingsCatalogLoading || !settingsCatalogMatches();
   $('save-settings').disabled = settingsLocked || settingsCatalogLoading || !selectedSettingsModel();
-  $('base-url-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
-  $('api-protocol-select').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
+  $('base-url-input').disabled = settingsLocked || selectedAuthMode() !== 'apiKey';
+  $('api-protocol-select').disabled = settingsLocked || selectedAuthMode() !== 'apiKey';
   $('ollama-context-window-input').disabled = settingsLocked || $('provider-select').value !== 'ollama';
-  $('api-key-input').disabled = settingsLocked || selectedAuthMode() === 'chatgpt';
+  $('api-key-input').disabled = settingsLocked || selectedAuthMode() !== 'apiKey';
   $('settings-model-refresh').disabled = settingsLocked || settingsCatalogLoading;
   $('close-settings').disabled = settingsSaving;
   renderModelSettingsScope();
   if (isChatGPTBusy()) {
     document.querySelectorAll('button,input,select,textarea').forEach((control) => {
-      if (control.id === 'chatgpt-cancel-sign-in') return;
+      if (['chatgpt-cancel-sign-in', 'deepseek-login-cancel'].includes(control.id)) return;
       if (!chatgptDisabledControls.has(control)) chatgptDisabledControls.set(control, control.disabled);
       control.disabled = true;
     });
   }
   $('chatgpt-cancel-sign-in').disabled = chatgptCancelling;
+  window.synoraDeepSeekLogin?.render();
   renderPendingPrompts();
   notifyMenuState();
 }
@@ -1331,6 +1344,7 @@ function syncAuthModeVisibility() {
   const relay = $('provider-select').value === 'relay';
   const ollama = $('provider-select').value === 'ollama';
   const account = openai && selectedAuthMode() === 'chatgpt';
+  const deepseekAccount = $('provider-select').value === 'deepseek' && selectedAuthMode() === 'deepseek-account';
   $('openai-auth-mode-field').hidden = !openai;
   $('api-protocol-field').hidden = !(openai || relay) || account;
   $('api-protocol-help').textContent = $('api-protocol-select').value === 'chat-completions'
@@ -1343,10 +1357,12 @@ function syncAuthModeVisibility() {
   $('ollama-context-window-input').required = ollama;
   $('chatgpt-panel').hidden = !account;
   $('chatgpt-model-field').hidden = false;
-  $('base-url-field').hidden = account;
-  $('api-key-field').hidden = account;
-  $('settings-footer-hint').textContent = ollama ? '本机服务无需密钥 · 支持自建地址' : account ? '个人本机预览 · 额度取决于账号' : '支持自定义 API 地址';
+  $('base-url-field').hidden = account || deepseekAccount;
+  $('api-key-field').hidden = account || deepseekAccount;
+  $('settings-footer-hint').textContent = ollama ? '本机服务无需密钥 · 支持自建地址' : account ? '个人本机预览 · 额度取决于账号'
+    : deepseekAccount ? 'DeepSeek 官方账号连接' : '支持自定义 API 地址';
   $('settings-dialog').classList.toggle('chatgpt-mode', account);
+  window.synoraDeepSeekLogin?.render();
 }
 
 function renderChatGPTModels() {
@@ -2297,8 +2313,9 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   const settings = state.settings || {};
   const provider = settings.provider || 'openai';
   const model = settings.model || settings.providers?.[provider]?.model;
-  const account = provider === 'openai' && (settings.authMode || settings.providers?.openai?.authMode) === 'chatgpt';
-  $('provider-hint').textContent = account ? `ChatGPT 账号 · ${model || '尚未选择模型'}` : model ? `${providerNames[provider] || provider} · ${model}` : '尚未配置模型';
+  const account = currentAuthMode(settings);
+  $('provider-hint').textContent = account === 'chatgpt' ? `ChatGPT 账号 · ${model || '尚未选择模型'}`
+    : account === 'deepseek-account' ? `DeepSeek 账号 · ${model || '尚未选择模型'}` : model ? `${providerNames[provider] || provider} · ${model}` : '尚未配置模型';
   fillReasoningOptions($('reasoning-effort'), provider, settings.reasoningEffort || settings.providers?.[provider]?.reasoningEffort || 'default');
   setReasoningDisabled(modelControlBusy() || reasoningSaving);
   renderUsageStats(state.usageStats);
@@ -4111,6 +4128,7 @@ function fillProvider(provider) {
   const config = settings.providers?.[provider] || {};
   const current = settings.provider === provider;
   $('openai-auth-mode').value = provider === 'openai' && (config.authMode || (current ? settings.authMode : '')) === 'chatgpt' ? 'chatgpt' : 'apiKey';
+  window.synoraDeepSeekLogin?.fill(provider === 'deepseek' && (config.authMode || (current ? settings.authMode : '')) === 'deepseek-account' ? 'deepseek-account' : 'apiKey');
   $('api-protocol-select').value = config.apiProtocol || (provider === 'relay' ? 'chat-completions' : 'responses');
   $('base-url-input').value = config.baseUrl || (current ? settings.baseUrl : '') || (provider === 'ollama' ? 'http://localhost:11434' : '');
   $('ollama-context-window-input').value = String(config.contextWindowTokens ?? 32768);
@@ -4313,7 +4331,7 @@ function bindUI() {
   $('settings-model-refresh').addEventListener('click', () => fetchSettingsCatalog(true));
   $('settings-dialog').addEventListener('close', () => {
     if ($('settings-dialog').open) return;
-    invalidateSettingsCatalog(); $('api-key-input').value = ''; settingsRole = null; chatgptLocalError = ''; ++catalogRequest; catalogLoading = false;
+    invalidateSettingsCatalog(); $('api-key-input').value = ''; settingsRole = null; chatgptLocalError = ''; window.synoraDeepSeekLogin?.clearError(); ++catalogRequest; catalogLoading = false;
   });
   $('settings-role-reset').addEventListener('click', async () => {
     const role = settingsRole;
@@ -4418,9 +4436,20 @@ async function initialize() {
       && !modelSaving && !settingsSaving && !isChatGPTBusy() && !approvals.size ? {
         sessionId, workspaceId: currentWorkspaceId(), model: appState.settings.model, provider: appState.settings.provider,
         authMode: appState.settings.authMode, catalog: currentCatalogKey, reasoning: appState.settings.reasoningEffort,
+        account: activeCatalogIdentity(appState),
+        completionConnection: appState.roleModels?.completion?.enabled ? catalogIdentity(appState.roleModels.completion.settings?.provider,
+          currentAuthMode(appState.roleModels.completion.settings), appState.roleModels.completion) : '',
+        completionModel: appState.roleModels?.completion?.enabled ? appState.roleModels.completion.settings?.model || '' : '',
       } : null,
     request: args => bridge.completePrompt(args), cancel: args => bridge.cancelPromptCompletion(args),
   });
+  if (window.ForgeDeepSeekLogin && bridge) window.synoraDeepSeekLogin = window.ForgeDeepSeekLogin.create({ document, bridge,
+    getScope: modelSettingsScope, getRole: () => settingsRole,
+    isBusy: () => contextBusy() || settingsSaving || reasoningSaving || chatgptBusy,
+    onState: updateState, onChange: renderChatGPTState,
+    onInvalidate: role => { if (role) invalidateSettingsCatalog(); else invalidateCatalogs(); promptCompletion?.cancel(); },
+    onModeChange: () => { invalidateSettingsCatalog(); $('api-key-input').value = ''; $('settings-error').hidden = true; renderChatGPTState(); },
+    onRefreshModels: refreshChatGPTModels });
   bindUI();
   if (!bridge) {
     notice('桌面桥接未就绪，请通过 Synora code 桌面应用启动此界面。', true);

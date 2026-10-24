@@ -30,7 +30,9 @@
   <link rel="stylesheet" href="./usage-dashboard.css">
   <link rel="stylesheet" href="./context-settings.css">
   <link rel="stylesheet" href="./deepseek-account.css">
+  <link rel="stylesheet" href="./deepseek-login.css">
   <link rel="stylesheet" href="./ui-styles.css">
+  <link rel="stylesheet" href="./conversation-background.css">
   <link rel="stylesheet" href="./round-navigator.css">
   <link rel="stylesheet" href="./explorer-selection.css">
   <link rel="stylesheet" href="./chat-selection-menu.css">
@@ -72,6 +74,7 @@
   <script src="./pet-overlay.js" defer></script>
   <script src="./extensions.js" defer></script>
   <script src="./pet-settings.js" defer></script>
+  <script src="./deepseek-login.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
@@ -123,6 +126,7 @@
       <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin="160" aria-valuemax="420" aria-valuenow="208" tabindex="0" title="拖动调整宽度；左右键微调；双击恢复默认"></div>
 
       <main class="conversation">
+        <div id="conversation-background" aria-hidden="true"></div>
         <nav id="round-navigator" aria-label="对话轮次导航" hidden></nav>
         <div class="conversation-header"><div class="conversation-heading"><h1 id="conversation-title">新的对话</h1><span id="temporary-indicator" class="temporary-indicator" title="仅保留当前窗口会话，不写入历史" hidden>临时聊天</span></div><div class="conversation-controls"><span id="run-status" class="run-status">准备就绪</span><button id="toggle-preview" class="button subtle" title="打开文件与变更抽屉" aria-label="打开文件与变更抽屉" aria-expanded="false">文件 / 变更</button></div></div>
         <form id="find-bar" class="find-bar" hidden><label for="find-input" class="sr-only">查找当前窗口文字</label><input id="find-input" type="search" placeholder="在当前窗口查找…" autocomplete="off"><span id="find-result" role="status"></span><button id="find-previous" class="icon-button small" type="button" title="上一个匹配" aria-label="上一个匹配">↑</button><button id="find-next" class="icon-button small" type="submit" title="下一个匹配" aria-label="下一个匹配">↓</button><button id="find-close" class="icon-button small" type="button" title="关闭查找" aria-label="关闭查找">×</button></form>
@@ -214,6 +218,8 @@
         <button class="ui-style-option" data-ui-style="black" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-black" aria-hidden="true"><span></span><span></span><span></span></span><strong>纯黑</strong><small>简洁深色</small></button>
         <button class="ui-style-option" data-ui-style="white" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-white" aria-hidden="true"><span></span><span></span><span></span></span><strong>纯白</strong><small>明亮清晰</small></button>
         <button class="ui-style-option" data-ui-style="industrial" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-industrial" aria-hidden="true"><span></span><span></span><span></span></span><strong>工业风</strong><small>石墨硬边</small></button>
+        <button class="ui-style-option" data-ui-style="deepseek" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-deepseek" aria-hidden="true"><span></span><span></span><span></span></span><strong>DeepSeek 风</strong><small>炭灰静蓝</small></button>
+        <button class="ui-style-option" data-ui-style="codex" type="button" aria-pressed="false"><span class="ui-style-swatch style-swatch-codex" aria-hidden="true"><span></span><span></span><span></span></span><strong>Codex 风</strong><small>中性柔和</small></button>
       </div>
     </section>
     <section class="selection-color-settings" aria-labelledby="selection-color-title">
@@ -233,11 +239,17 @@
         <output id="selection-color-value" class="selection-color-value" for="selection-color-input">默认</output>
       </div>
     </section>
-    <div id="glass-appearance-settings">
     <div class="appearance-hero">
       <div class="appearance-preview" aria-hidden="true"><div class="appearance-preview-glass"><span></span><span></span><span></span></div></div>
       <div class="appearance-meta"><strong id="background-name">极光 · 默认背景</strong><p id="background-description">柔和蓝紫渐变，专注于眼前的创作。</p></div>
     </div>
+
+    <div class="appearance-slider">
+      <div class="appearance-slider-heading"><label for="background-transparency">背景透明度</label><output id="background-transparency-value" for="background-transparency">28%</output></div>
+      <input id="background-transparency" type="range" min="0" max="100" step="1" value="28">
+      <div class="appearance-slider-labels"><span>鲜明</span><span>淡雅</span></div>
+    </div>
+    <div id="glass-appearance-settings">
     <section class="background-presets-settings" aria-labelledby="background-presets-title">
       <h3 id="background-presets-title">背景风格</h3>
       <div id="background-preset-options" class="background-preset-options" role="group" aria-labelledby="background-presets-title">
@@ -256,11 +268,6 @@
         <button class="background-preset-option" data-background-preset="cyan" type="button" aria-pressed="false"><span class="background-preset-swatch preset-cyan" aria-hidden="true"></span><span>青色</span></button>
       </div>
     </section>
-    <div class="appearance-slider">
-      <div class="appearance-slider-heading"><label for="background-transparency">背景透明度</label><output id="background-transparency-value" for="background-transparency">28%</output></div>
-      <input id="background-transparency" type="range" min="0" max="100" step="1" value="28">
-      <div class="appearance-slider-labels"><span>鲜明</span><span>淡雅</span></div>
-    </div>
     <section id="panel-frost-settings" class="panel-frost-settings" aria-labelledby="panel-frost-title">
       <div class="frost-settings-heading"><h3 id="panel-frost-title">面板磨砂</h3><button id="frost-reset" class="button subtle" type="button">恢复默认磨砂</button></div>
       <div class="appearance-slider frost-slider">
@@ -285,9 +292,9 @@
         <button class="text-color-option" data-text-color="black" type="button" aria-pressed="false"><span class="text-color-swatch text-color-black" aria-hidden="true"></span><span>黑色</span></button>
       </div>
     </section>
+    </div>
     <div class="appearance-actions"><button id="background-import" class="button solid" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5"/></svg>导入背景图…</button><button id="background-reset" class="button subtle" type="button">恢复默认背景</button></div>
     <p class="appearance-file-hint">支持 PNG、JPEG、WebP · 最大 12 MB · 仅用于本机界面</p>
-    </div>
     <p id="appearance-status" class="appearance-status" role="status" hidden></p>
   </dialog>
   <dialog id="role-models-dialog" class="settings-dialog role-models-dialog" aria-labelledby="role-models-title">

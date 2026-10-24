@@ -35,6 +35,7 @@ const DEFAULT_EVENT_LIMIT = 8 * 1024 * 1024;
 const DEFAULT_MODEL_PAYLOAD_LIMIT = 16 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES = 32 * 1024;
 const CHATGPT_ENDPOINT = 'https://api.openai.com/v1/responses';
+const DEEPSEEK_ACCOUNT_ENDPOINT = 'https://api.deepseek.com/anthropic/v1/messages';
 const CHATGPT_NAMESPACE = 'forge';
 const REASONING_LEVELS = Object.freeze({
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -494,7 +495,10 @@ function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint
       ...(tools.length ? { tools: tools.map(tool => ({ type: 'function', function: tool })) } : {}),
     };
   }
-  const reasoning = reasoningConfig(provider, model, reasoningEffort);
+  const reasoning = authMode === 'deepseek-account'
+    ? reasoningEffort === 'default' ? {} : reasoningEffort === 'none' ? { thinking: { type: 'disabled' } }
+      : { thinking: { type: 'enabled' }, output_config: { effort: reasoningEffort } }
+    : reasoningConfig(provider, model, reasoningEffort);
   if (provider === 'openai') {
     const plan = authMode === 'chatgpt';
     const instructions = messages.filter(message => message.role === 'system').map(message => message.content).join('\n\n');
@@ -1378,8 +1382,8 @@ function withErrorDetails(error, detail, includeHints = true) {
  * @param {object} options
  * @param {'openai'|'deepseek'|'anthropic'|'relay'|'ollama'} options.provider
  * @param {string} options.apiKey
- * @param {'apiKey'|'chatgpt'} [options.authMode='apiKey'] chatgpt accepts only the fixed official endpoint;
- * its apiKey argument contains the OAuth token managed by the privileged main process.
+ * @param {'apiKey'|'chatgpt'|'deepseek-account'} [options.authMode='apiKey'] Account modes accept only fixed official endpoints;
+ * their apiKey argument contains the account token managed by the privileged main process.
  * @param {'responses'|'chat-completions'} [options.apiProtocol] OpenAI API Key defaults to Responses;
  * relay defaults to Chat Completions. ChatGPT always uses the fixed official Responses route.
  * @param {string} options.model Explicit model ID from the user's settings.
@@ -1409,10 +1413,11 @@ export async function requestModel({
   maxEventBytes = DEFAULT_EVENT_LIMIT, maxModelPayloadBytes = DEFAULT_MODEL_PAYLOAD_LIMIT,
 } = {}) {
   if (!Object.hasOwn(DEFAULT_URLS, provider)) fail('不支持的模型供应商。', 'INVALID_MODEL_CONFIG');
-  if (!['apiKey', 'chatgpt'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai')) {
+  if (!['apiKey', 'chatgpt', 'deepseek-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai')
+      || (authMode === 'deepseek-account' && provider !== 'deepseek')) {
     fail('此供应商不支持所选的登录方式。', 'INVALID_AUTH_MODE');
   }
-  const transportProvider = provider === 'relay' ? 'openai' : provider;
+  const transportProvider = authMode === 'deepseek-account' ? 'anthropic' : provider === 'relay' ? 'openai' : provider;
   // A persisted API Key preference must never select a different OAuth route.
   const effectiveProtocol = authMode === 'chatgpt' ? 'responses' : apiProtocol;
   if (['openai', 'relay'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)) {
@@ -1421,7 +1426,7 @@ export async function requestModel({
   if (provider === 'ollama') {
     if (apiKey !== undefined && (typeof apiKey !== 'string' || apiKey.length > 4096 || /[\x00-\x1f\x7f]/u.test(apiKey))) fail('Ollama 可选凭据格式无效。', 'INVALID_MODEL_CONFIG');
     apiKey = apiKey?.trim() || '';
-  } else requireString(apiKey, authMode === 'chatgpt' ? 'ChatGPT 登录凭据' : 'API 密钥');
+  } else requireString(apiKey, authMode === 'chatgpt' ? 'ChatGPT 登录凭据' : authMode === 'deepseek-account' ? 'DeepSeek 登录凭据' : 'API 密钥');
   requireString(model, '模型名称');
   if (typeof fetchImpl !== 'function') fail('请求传输配置无效。', 'INVALID_MODEL_CONFIG');
   if (onTextDelta !== undefined && typeof onTextDelta !== 'function') fail('流式回调格式无效。', 'INVALID_MODEL_CONFIG');
@@ -1436,10 +1441,13 @@ export async function requestModel({
       || (maxOutputTokens !== undefined && (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1))) {
     fail('模型请求限制设置无效。', 'INVALID_MODEL_CONFIG');
   }
-  const endpoint = endpointFor(provider, baseUrl, effectiveProtocol);
+  const endpoint = authMode === 'deepseek-account' ? endpointFor('anthropic', baseUrl || 'https://api.deepseek.com/anthropic/v1', effectiveProtocol)
+    : endpointFor(provider, baseUrl, effectiveProtocol);
   if (authMode === 'chatgpt' && endpoint !== CHATGPT_ENDPOINT) {
     fail('ChatGPT 账号模式只能连接 OpenAI 官方 Responses 地址，不能使用自定义 API 地址。', 'INVALID_CHATGPT_BASE_URL');
   }
+  if (authMode === 'deepseek-account' && endpoint !== DEEPSEEK_ACCOUNT_ENDPOINT)
+    fail('DeepSeek 账号只能连接官方 Messages 地址，不能使用自定义 API 地址。', 'INVALID_DEEPSEEK_ACCOUNT_BASE_URL');
   // Locally generated status/partial-response explanations belong to the UI,
   // not the model transcript. In particular, they have no signed thinking or
   // DeepSeek reasoning_content and must not invalidate a later continuation.
@@ -1477,7 +1485,8 @@ export async function requestModel({
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: {
         'Content-Type': 'application/json', Accept: provider === 'ollama' ? 'application/x-ndjson, application/json' : authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
-        ...(provider === 'anthropic'
+        ...(authMode === 'deepseek-account' ? { 'x-dsh-auth-token': apiKey.trim(), 'anthropic-version': '2023-06-01' }
+          : provider === 'anthropic'
           ? { 'x-api-key': apiKey.trim(), 'anthropic-version': '2023-06-01' }
           : provider === 'ollama' && !apiKey ? {} : { Authorization: `Bearer ${apiKey.trim()}` }),
       },

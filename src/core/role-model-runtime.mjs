@@ -9,8 +9,8 @@ const roleName = role => {
 
 /** Independent connections share validation/catalog code, never the main credentials. */
 export class RoleModelRuntime {
-  constructor({ configs, accounts, catalog, deriveCapabilities, requestModel, redact = String }) {
-    Object.assign(this, { configs, accounts, catalog, deriveCapabilities, requestModel, redact });
+  constructor({ configs, accounts, deepseekAccounts = new Map(), catalog, deriveCapabilities, requestModel, redact = String }) {
+    Object.assign(this, { configs, accounts, deepseekAccounts, catalog, deriveCapabilities, requestModel, redact });
     this.grants = new SettingsCatalogSelections();
     this.previews = new Map(); this.snapshots = new Map();
     this.revisions = Object.fromEntries(MODEL_ROLES.map(role => [role, 0]));
@@ -22,6 +22,7 @@ export class RoleModelRuntime {
       const entry = result[role], settings = entry.enabled ? entry.settings : main;
       entry.effective = { provider: settings.provider, authMode: settings.authMode, model: settings.model };
       entry.chatgpt = await this.accounts.get(role).publicState();
+      entry.deepseek = await this.deepseekAccounts.get(role)?.publicState() || null;
     }
     return result;
   }
@@ -31,10 +32,12 @@ export class RoleModelRuntime {
     for (const key of ['authMode', 'baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens', 'reasoningEffort'])
       if (Object.hasOwn(arg, key)) input[key] = arg[key];
     const validator = await this.configs.draft(role, input);
-    const settings = validator.publicSettings(), account = await this.accounts.get(role).publicState();
-    const isAccount = settings.provider === 'openai' && settings.authMode === 'chatgpt';
-    if (isAccount && (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId))
-      throw new Error('请先连接此用途的 ChatGPT 账号，并授权套餐用量。');
+    const settings = validator.publicSettings();
+    const isDeepSeek = settings.provider === 'deepseek' && settings.authMode === 'deepseek-account';
+    const account = isDeepSeek ? await this.deepseekAccounts.get(role)?.publicState() : await this.accounts.get(role).publicState();
+    const isAccount = isDeepSeek || settings.provider === 'openai' && settings.authMode === 'chatgpt';
+    if (isAccount && (account?.session?.status !== 'connected' || !account.session.sharing || !account.session.profileId))
+      throw new Error(isDeepSeek ? '请先登录此用途的 DeepSeek 账号。' : '请先连接此用途的 ChatGPT 账号，并授权套餐用量。');
     const apiKey = isAccount ? '' : validator.key(settings.provider);
     if (!isAccount && settings.provider !== 'ollama' && !apiKey) throw new Error('请填写此用途的 API Key，再获取模型目录。');
     const connection = createHash('sha256').update(JSON.stringify([role, settings.provider, settings.authMode,
@@ -45,7 +48,10 @@ export class RoleModelRuntime {
   async preview(role, arg) {
     const draft = await this.draft(role, arg), settings = draft.settings;
     let result;
-    if (settings.authMode === 'chatgpt') {
+    if (settings.authMode === 'deepseek-account') {
+      result = { source: 'deepseek-account', fetchedAt: new Date().toISOString(),
+        models: await this.deepseekAccounts.get(role).listModels({ force: true }) };
+    } else if (settings.authMode === 'chatgpt') {
       const models = await this.accounts.get(role).listModels({ force: true });
       result = { source: 'chatgpt', fetchedAt: new Date().toISOString(), models: models.map(model => ({
         ...model, id: model.slug, ...this.deriveCapabilities('openai', model.slug, { ...model, officialSource: true }),
@@ -110,11 +116,12 @@ export class RoleModelRuntime {
     signal?.throwIfAborted();
     if (revision !== this.revisions[role] || !this.configs.isEnabled(role)) throw new DOMException('模型配置已变化。', 'AbortError');
     return { provider: saved.provider, apiKey: draft.apiKey, authMode: saved.authMode,
-      baseUrl: saved.authMode === 'chatgpt' ? 'https://api.openai.com/v1' : saved.baseUrl,
+      baseUrl: saved.authMode === 'chatgpt' ? 'https://api.openai.com/v1' : saved.authMode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : saved.baseUrl,
       apiProtocol: saved.authMode === 'chatgpt' ? 'responses' : saved.apiProtocol,
       model, modelCapabilities, reasoningEffort: saved.reasoningEffort, permissionMode,
       modelRole: role, connectionKey: key, roleConnectionRevision: revision,
-      chatgptProfileId: saved.authMode === 'chatgpt' ? draft.account.session.profileId : null };
+      chatgptProfileId: saved.authMode === 'chatgpt' ? draft.account.session.profileId : null,
+      deepseekProfileId: saved.authMode === 'deepseek-account' ? draft.account.session.profileId : null };
   }
   async dispatch(config) {
     const role = roleName(config.modelRole);
@@ -123,6 +130,13 @@ export class RoleModelRuntime {
       const account = this.accounts.get(role), state = await account.publicState();
       if (config.roleConnectionRevision !== this.revisions[role]) throw new DOMException('模型连接已变化，请重试。', 'AbortError');
       if (state.session.profileId !== config.chatgptProfileId || !state.session.sharing) throw new Error('此用途的 ChatGPT 账号授权已变化，请重新连接。');
+      return account.requestModel({ ...config, requestModel: this.requestModel });
+    }
+    if (config.authMode === 'deepseek-account') {
+      const account = this.deepseekAccounts.get(role), state = await account?.publicState();
+      if (config.roleConnectionRevision !== this.revisions[role]) throw new DOMException('模型连接已变化，请重试。', 'AbortError');
+      if (!account || state.session.profileId !== config.deepseekProfileId || !state.session.sharing)
+        throw new Error('此用途的 DeepSeek 账号授权已变化，请重新登录。');
       return account.requestModel({ ...config, requestModel: this.requestModel });
     }
     return this.requestModel(config);

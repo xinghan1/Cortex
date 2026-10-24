@@ -12,7 +12,7 @@
   const presetButtons = [...document.querySelectorAll('#background-preset-options [data-background-preset]')];
   const styleButtons = [...document.querySelectorAll('#ui-style-options [data-ui-style]')];
   const selectionButtons = [...document.querySelectorAll('#selection-color-options [data-selection-color]')];
-  const uiStyles = new Set(['glass', 'black', 'white', 'industrial']);
+  const uiStyles = new Set(['glass', 'black', 'white', 'industrial', 'deepseek', 'codex']);
   const normalizeStyle = value => uiStyles.has(value) ? value : 'glass';
   const normalizeSelection = value => typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value) ? value.toLowerCase() : null;
   const luminance = value => {
@@ -27,7 +27,7 @@
   const readableAccent = (value, style) => {
     // Filled controls keep the exact user color and use selectionInk. Small
     // transparent labels need a readable tint against the material itself.
-    const background = { white: '#e8eaed', black: '#171717', industrial: '#2b3138', glass: '#28334b' }[style];
+    const background = { white: '#e8eaed', black: '#171717', industrial: '#2b3138', deepseek: '#202226', codex: '#292a2d', glass: '#28334b' }[style];
     const backgroundLight = luminance(background);
     const contrast = color => (Math.max(luminance(color), backgroundLight) + 0.05) / (Math.min(luminance(color), backgroundLight) + 0.05);
     if (contrast(value) >= 4.5) return value;
@@ -116,6 +116,9 @@
     const background = ruleFor('#app-background');
     background?.style.setProperty('background-image', image);
     background?.style.setProperty('--background-opacity', String((100 - settings[0].value) / 100));
+    const conversationBackground = ruleFor('#conversation-background');
+    conversationBackground?.style.setProperty('background-image', image);
+    conversationBackground?.style.setProperty('--background-opacity', String((100 - settings[0].value) / 100));
     ruleFor('.appearance-preview')?.style.setProperty('background-image', image);
     const root = ruleFor(':root');
     for (const setting of settings) {
@@ -153,8 +156,8 @@
     }
     $('background-name').textContent = imported ? persisted.backgroundName : preset.name;
     $('background-description').textContent = imported
-      ? '已保存在本机，应用于左侧栏、会话区和右侧窗口。'
-      : preset.description;
+      ? uiStyle === 'glass' ? '已保存在本机，应用于整个工作空间。' : '已保存在本机，仅应用于会话区域。'
+      : uiStyle === 'glass' ? preset.description : '导入自定义图片，作为会话背景。';
   }
 
   function apply(value) {
@@ -243,7 +246,7 @@
       const next = await bridge.importBackground();
       acceptReply(next, eventsAtRequest);
       if (before !== persisted.backgroundImage) status(persisted.uiStyle === 'glass'
-        ? '背景图已导入，重启后仍会保留。' : '背景图已保存，切换为玻璃风后显示。');
+        ? '背景图已导入，重启后仍会保留。' : '会话背景已导入，重启后仍会保留。');
     } catch (error) { status(readableError(error, '背景图导入失败，请重试。'), true); }
     finally { setBusy(false); }
   }

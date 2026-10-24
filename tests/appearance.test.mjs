@@ -242,7 +242,7 @@ test('all interface styles persist independently from imported backgrounds, text
   const { dataDir, file, store, image } = await fixture(t);
   await store.setAppearance({ backgroundPreset: 'ocean', backgroundTransparency: 41, panelFrost: 22, panelTransparency: 63, conversationTextColor: 'green' });
   const imported = await store.importFile(await image());
-  for (const uiStyle of ['black', 'white', 'industrial', 'glass']) {
+  for (const uiStyle of ['black', 'white', 'industrial', 'deepseek', 'codex', 'glass']) {
     const saved = await store.setAppearance({ uiStyle });
     assert.deepEqual(saved, { ...imported, uiStyle });
     assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 7, ...saved });
@@ -278,7 +278,7 @@ test('custom selection color accepts the full color range, survives resets and s
     assert.deepEqual((await new AppearanceStore({ dataDir, decodeImage: decoder }).init()).snapshot(), saved);
   }
   await store.importFile(await image());
-  for (const uiStyle of ['glass', 'black', 'white', 'industrial']) {
+  for (const uiStyle of ['glass', 'black', 'white', 'deepseek', 'codex', 'industrial']) {
     assert.equal((await store.setAppearance({ uiStyle })).selectionColor, '#de737d');
   }
   assert.equal((await store.resetBackground()).selectionColor, '#de737d');
