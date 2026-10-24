@@ -4,6 +4,9 @@
     GEMINI_STORAGE_UNREADABLE: '无法读取本机保存的 Google 连接信息，原信息已保留，请重试读取。',
     GEMINI_CLI_UNAVAILABLE: 'Gemini 登录组件暂不可用，请重新检测或更新软件。',
     GEMINI_CLI_INCOMPATIBLE: 'Gemini 登录组件版本不匹配，请更新软件。',
+    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务。请使用官方 Antigravity，或在 Synora 中改用 Gemini API Key。',
+    GEMINI_REGION_UNAVAILABLE: 'Google 服务明确提示当前地区不可用，请按 Google 官方要求使用可用服务。',
+    GEMINI_ACCESS_DENIED: '当前 Google 账号被拒绝访问 Gemini 服务，请检查账号权限。',
     GEMINI_CLI_REQUEST_FAILED: 'Gemini 账号服务请求失败，请检查当前账号额度或网络后重试。',
     GEMINI_CLI_EXITED: 'Gemini 登录组件意外退出，请重新连接。',
     GEMINI_PROXY_FAILED: '无法读取或应用当前网络代理，请检查代理设置后重试。',
@@ -63,7 +66,7 @@
     mode.value = 'apiKey'; modeField.append(el('span', '', '', '连接方式'), mode); $('openai-auth-mode-field').after(modeField);
     const panel = el('section', 'gemini-login-panel', 'gemini-login-panel'); panel.hidden = true; panel.setAttribute('aria-label', 'Google 账号连接');
     const status = el('strong', 'gemini-login-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-    const help = el('p', 'gemini-login-help', 'gemini-login-help', '使用官方 Gemini CLI 账号额度。可用模型与额度以当前账号为准。');
+    const help = el('p', 'gemini-login-help', 'gemini-login-help', '个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务已停用，请使用官方 Antigravity。Synora 可通过 Gemini API Key 连接。');
     const actions = el('div', '', 'gemini-login-actions'), buttons = {};
     const addButton = (name, label, callback, className = 'button') => {
       const button = el('button', 'gemini-login-' + name, className, label); button.type = 'button'; button.addEventListener('click', callback); actions.append(button); buttons[name] = button;
@@ -74,6 +77,10 @@
     addButton('disconnect', '退出账号', () => run('disconnect'));
     addButton('retry', '重试读取', () => run('retry'));
     addButton('models', '刷新模型目录', () => { if (!buttons.models.disabled) return onRefreshModels(); }, 'text-button');
+    addButton('use-api-key', '使用 API Key', () => {
+      if (disposed || buttons['use-api-key'].disabled) return;
+      mode.value = 'apiKey'; changed();
+    });
     const message = el('p', 'gemini-login-message', 'gemini-login-message'); message.hidden = true; message.setAttribute('role', 'status');
     panel.append(status, help, actions, message); $('base-url-field').before(panel);
     let action = null, activeRole = null, cancelling = false, cancelRequested = false, localError = null, disposed = false;
@@ -108,8 +115,11 @@
       // An unencoded IPC error must not hide the structured phase/code sent by
       // the account state event after a failed authorization attempt.
       const richerPublished = (published.recognized || published.phase) && (!localError?.recognized || published.code === localError.code);
-      message.textContent = richerPublished ? published.message : localError?.message || published.message;
+      const displayError = richerPublished ? published : localError || published;
+      message.textContent = displayError.message;
       message.hidden = !message.textContent;
+      buttons['use-api-key'].hidden = panel.hidden || displayError.code !== 'GEMINI_CLIENT_UNSUPPORTED';
+      buttons['use-api-key'].disabled = locked;
     }
     function invoke(name, role) {
       const methods = { signin: ['geminiSignIn', 'roleGeminiSignIn'], cancel: ['geminiCancelSignIn', 'roleGeminiCancelSignIn'],

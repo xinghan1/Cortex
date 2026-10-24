@@ -8,7 +8,7 @@
 
 ## 主要功能
 
-- **多模型接入**：支持 OpenAI、DeepSeek、Gemini、Claude、兼容 API 中转和 Ollama；支持 ChatGPT、DeepSeek 及 Google 账号授权，模型分工可分别配置连接。
+- **多模型接入**：支持 OpenAI、DeepSeek、Gemini、Claude、兼容 API 中转和 Ollama；支持 ChatGPT、DeepSeek 账号授权，模型分工可分别配置连接。
 - **项目开发**：读取、搜索和编辑文件，运行命令，预览代码与修改，支持任务撤销、内置浏览器及子智能体。
 - **对话辅助**：多会话管理、图片输入、侧边临时问答、Tab 提示词补齐和每轮结束后的下一步建议。
 - **桌面宠物**：左键与“大肥鱼”聊天，动作优先使用模型回应，不可用时使用固定台词；明确的项目制作需求会润色后转交主会话，宠物可单独配置模型。
@@ -51,6 +51,6 @@ npm.cmd run build:installer   # 安装包及 SHA-256 文件，输出到 installe
 
 两种构建可分别执行；便携版需保留整个输出目录，重新构建前请改名留存同名旧目录。首次安装依赖或构建需要联网下载 Electron，构建不会自动发布 GitHub Release。
 
-Gemini API Key 使用 Google AI Studio 的原生接口。Google 账号登录由随软件附带的官方 Gemini CLI 完成，使用该账号的 CLI 额度；它与 Gemini API 计费分开。账号缓存由官方 CLI 保存在软件专用目录，不读取其他应用的登录信息。
+Gemini 使用 Google AI Studio 的原生 API Key 接口。Google 已于 [2026 年 6 月 18 日停止个人、AI Pro 和 Ultra 的旧 Gemini CLI 服务](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)；这些套餐无法通过 Synora 的旧 CLI 登录入口使用。Google 账号选项仅适用于服务端仍支持的账号，账号缓存由官方 CLI 保存在软件专用目录。个人订阅请使用 Google 官方 Antigravity；其个人额度目前不作为 Synora 的模型接口。
 
 ChatGPT 登录组件采用随附的非商业许可，其他组件及素材遵循各自许可，详见 [第三方组件说明](THIRD_PARTY_NOTICES.md)。

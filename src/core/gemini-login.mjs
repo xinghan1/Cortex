@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { classifyGeminiRpcError } from './gemini-auth-errors.mjs';
 
 export const GEMINI_CLI_VERSION = '0.65.0';
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu;
@@ -19,27 +20,25 @@ const MAX_LINE = 16 * 1024 * 1024, MAX_WIRE = 64 * 1024 * 1024, MAX_INPUT = 16 *
 const PROFILE_FILE = 'gemini-connection.json';
 
 function rpcFailure(method, error) {
-  // Inspect upstream diagnostics only for known categories. Do not retain or
-  // expose the original message, OAuth URL, account identity or error data.
-  const message = typeof error.message === 'string' ? error.message.slice(0, 16384) : '';
-  if (/invalid_grant|invalid_token|unauthenticated|credentials? (?:have |has )?expired/iu.test(message)) return unavailable();
-  if (/(?:GOOGLE_CLOUD_PROJECT|GOOGLE_CLOUD_PROJECT_ID|Google Cloud project).{0,100}(?:required|must|set|specif)|(?:set|specif|require).{0,100}(?:GOOGLE_CLOUD_PROJECT|Google Cloud project)/iu.test(message))
-    return failure('GEMINI_PROJECT_REQUIRED', '此 Google 账号需要配置 Google Cloud 项目，请使用个人账号或按官方认证要求配置。');
-  if (/Account validation required:/iu.test(message))
-    return failure('GEMINI_ACCOUNT_VALIDATION_REQUIRED', 'Google 要求额外验证此账号；网页授权尚未完成 Gemini 服务验证，请先完成官方账号验证后重试。');
-  if (/LoadCodeAssist returned empty response/iu.test(message))
-    return failure('GEMINI_SERVICE_UNAVAILABLE', 'Google 授权后，Code Assist 服务初始化未返回有效结果，请检查代理后重试。');
-  if (/terms of service|accept.{0,40}terms|tos[_ -]?(?:required|not[_ -]?accepted)/iu.test(message))
-    return failure('GEMINI_ACCOUNT_ACTION_REQUIRED', '请先在 Google 官方页面完成账号条款确认，再重新连接。');
-  if (/quota.{0,30}(?:exceed|exhaust)|resource_exhausted|rate.?limit|too many requests/iu.test(message))
-    return failure('GEMINI_QUOTA_EXCEEDED', 'Google 账号当前额度不足或请求受限，请稍后重试。');
-  if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|network error|unable to verify|certificate|socket hang up|proxy/iu.test(message))
-    return failure('GEMINI_NETWORK_ERROR', '浏览器授权后连接 Google 服务失败，请检查软件代理和网络后重试。');
-  return method === 'authenticate'
-    ? failure('GEMINI_AUTH_FAILED', '浏览器授权后，Gemini CLI 未能完成账号服务验证，请检查账号可用性和网络后重试。')
-    : method === 'session/new'
-      ? failure('GEMINI_SESSION_FAILED', 'Google 账号已连接，但 Gemini 会话创建失败，请刷新模型目录后重试。')
-      : failure('GEMINI_CLI_REQUEST_FAILED', 'Gemini CLI 请求未完成，请检查登录状态、套餐额度或网络后重试。');
+  const { code, diagnostic } = classifyGeminiRpcError(method, error);
+  const messages = {
+    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人、AI Pro 和 Ultra 账号使用旧 Gemini CLI。Synora 可改用 Gemini API Key；个人订阅请使用 Google 官方 Antigravity。',
+    GEMINI_SIGN_IN_REQUIRED: '请先通过官方 Gemini CLI 登录 Google 账号。',
+    GEMINI_PROJECT_REQUIRED: '此 Google 账号需要配置 Google Cloud 项目，请按官方认证要求配置。',
+    GEMINI_ACCOUNT_VALIDATION_REQUIRED: 'Google 要求额外验证此账号，请先完成官方账号验证后重试。',
+    GEMINI_ACCOUNT_ACTION_REQUIRED: '请先在 Google 官方页面完成账号条款确认，再重新连接。',
+    GEMINI_SERVICE_UNAVAILABLE: 'Google 账号服务暂不可用，请稍后重试。',
+    GEMINI_QUOTA_EXCEEDED: 'Google 账号当前额度不足或请求受限，请稍后重试。',
+    GEMINI_NETWORK_ERROR: '连接 Google 服务失败，请检查软件代理和网络后重试。',
+    GEMINI_PROXY_FAILED: '代理服务未接受当前连接，请检查代理配置后重试。',
+    GEMINI_ACCESS_DENIED: 'Google 拒绝了当前账号的服务访问，请核对账号服务权限。',
+    GEMINI_REGION_UNAVAILABLE: 'Google 服务返回当前地区不可用，请查看官方服务可用范围。',
+    GEMINI_TIMEOUT: 'Google 服务连接超时，请稍后重试。',
+    GEMINI_AUTH_FAILED: '浏览器授权后，Gemini CLI 未能完成账号服务验证，请检查账号可用性和网络后重试。',
+    GEMINI_SESSION_FAILED: 'Google 账号已连接，但 Gemini 会话创建失败，请刷新模型目录后重试。',
+    GEMINI_CLI_REQUEST_FAILED: 'Gemini CLI 请求未完成，请检查登录状态、套餐额度或网络后重试。',
+  };
+  return Object.assign(failure(code, messages[code]), diagnostic ? { diagnostic } : {});
 }
 
 function abortable(operation, signal) {
@@ -424,7 +423,7 @@ export class GeminiConnection {
           safe = caught?.name === 'GeminiConnectionError' ? caught
             : phase === 'storage' ? failure('GEMINI_STORAGE_UNREADABLE', 'Google 授权已确认，但无法保存本机连接信息，请检查软件数据目录后重试。')
               : failure('GEMINI_SIGN_IN_FAILED', 'Google 账号登录未完成，请重试。');
-          this.#failure = { code: safe.code, message: safe.message, phase };
+          this.#failure = { code: safe.code, message: safe.message, phase, ...(safe.diagnostic ? { diagnostic: safe.diagnostic } : {}) };
         }
         if (this.#profile !== id) await this.#removeHome(id).catch(() => {});
         throw controller.signal.aborted ? aborted() : safe;
@@ -465,7 +464,7 @@ export class GeminiConnection {
     try { current(); const result = await operation({ id, signal: controller.signal, current }); current(); return result; }
     catch (caught) {
       if (caught?.name === 'GeminiConnectionError' && /^GEMINI_/u.test(caught.code) && id === this.#profile && generation === this.#generation) {
-        this.#failure = { code: caught.code, message: caught.message, ...(caught.phase ? { phase: caught.phase } : {}) }; this.#changed();
+        this.#failure = { code: caught.code, message: caught.message, ...(caught.phase ? { phase: caught.phase } : {}), ...(caught.diagnostic ? { diagnostic: caught.diagnostic } : {}) }; this.#changed();
       }
       throw controller.signal.aborted ? aborted() : caught;
     } finally { this.#operations.delete(controller); signal?.removeEventListener('abort', abort); }

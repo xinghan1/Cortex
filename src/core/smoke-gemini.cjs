@@ -102,6 +102,7 @@ let result={};
 if(method==='initialize')result={protocolVersion:1,agentInfo:{name:'gemini-cli',version:'0.65.0'},authMethods:[{id:'oauth-personal'}]};
 else if(method==='authenticate'){
 if(fs.existsSync(path.join(__dirname,'hold-login')))return;
+if(fs.existsSync(path.join(__dirname,'consumer-retired'))){send({jsonrpc:'2.0',id,error:{code:-32000,message:'This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google/PRIVATE_UPSTREAM'}});return;}
 if(fs.existsSync(path.join(__dirname,'project-required'))){send({jsonrpc:'2.0',id,error:{code:-32000,message:'This account requires setting the GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID env var. PRIVATE_UPSTREAM'}});return;}
 }
 else if(method==='session/new'){
@@ -126,6 +127,13 @@ if(id!==undefined)send({jsonrpc:'2.0',id,result});});
     assert.equal(await js(`!$('gemini-login-cancel').hidden&&!$('gemini-login-cancel').disabled`),true);await click('#gemini-login-cancel');
     await until('native cancellation unlocks login',async()=>(await state()).gemini.session.status!=='connecting'&&await js(`!window.synoraGeminiLogin.isBusy()`));
     assert.equal((await state()).gemini.session.profileId,null);await fs.unlink(holdFile);
+    const consumerRetired=path.join(cliRoot,'consumer-retired');await fs.writeFile(consumerRetired,'isolated retired-consumer response');await click('#gemini-login-sign-in');
+    await until('real retirement response is actionable',async()=>(await state()).gemini.error?.code==='GEMINI_CLIENT_UNSUPPORTED'&&await js(`!window.synoraGeminiLogin.isBusy()&&!$('gemini-login-use-api-key').hidden`));
+    assert.equal(await js(`$('gemini-login-message').textContent.includes('PRIVATE_UPSTREAM')`),false);await capture('gemini-account-retired.png');
+    const hadApiKey=(await state()).settings.providers.gemini.hasKey;assert.equal(hadApiKey,true);await click('#gemini-login-use-api-key');
+    assert.equal(await js(`$('gemini-auth-mode').value==='apiKey'&&!$('api-key-field').hidden&&$('gemini-login-panel').hidden`),true);
+    assert.equal((await state()).settings.providers.gemini.hasKey,hadApiKey);await fs.unlink(consumerRetired);
+    await js(`$('gemini-auth-mode').value='gemini-account';$('gemini-auth-mode').dispatchEvent(new Event('change',{bubbles:true}));true`);
     const projectRequired=path.join(cliRoot,'project-required');await fs.writeFile(projectRequired,'isolated post-browser error');await click('#gemini-login-sign-in');
     await until('post-browser error is classified',async()=>(await state()).gemini.error?.code==='GEMINI_PROJECT_REQUIRED'&&await js(`!window.synoraGeminiLogin.isBusy()`));
     await until('classified error survives real Electron IPC',()=>js(`!$('gemini-login-message').hidden&&$('gemini-login-message').textContent.includes('Google Cloud')`));
@@ -157,6 +165,7 @@ if(id!==undefined)send({jsonrpc:'2.0',id,result});});
     const rpc=await authRecords(),homes=[...new Set(rpc.map(record=>record.home))];assert.ok(homes.length>=2);assert.ok(rpc.filter(record=>record.method==='session/prompt').length>=2);
     const accountEvidence={mock:true,realGoogleLogin:false,realNodeAcpProcess:true,nativeLoginAndCancel:true,actualAvailableModelsSelected:true,
       postBrowserErrorPreservedAcrossIpc:true,loginIndependentOfCatalog:true,catalogRetryKeepsProfile:true,
+      consumerRetirementExplicit:true,userCanSwitchToApiKeyWithoutChangingSavedKey:true,
       accountInferenceBypassesApiKey:true,independentRoleProfileAndHome:true,roleDisconnectKeepsMainAccount:true,model:'gemini-account-fixture',rpcMethods:[...new Set(rpc.map(record=>record.method))]};
     assert.deepEqual(problems,[]);
     const result={status:'completed',realApi:false,realCommands:false,localFixtureOnly:true,nativeGeminiProtocol:true,keyUsesHeaderNotQuery:true,

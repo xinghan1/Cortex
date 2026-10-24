@@ -273,6 +273,25 @@ test('a temporary service failure during cached authentication keeps a valid sav
   assert.equal((await f.connection.publicState()).error, null);
 });
 
+test('real consumer-client retirement and nested RPC service errors remain actionable without publishing upstream data', async t => {
+  const cases = [
+    [{ code: -32000, message: 'This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google/PRIVATE' },
+      'GEMINI_CLIENT_UNSUPPORTED', undefined],
+    [{ code: -32603, message: 'Internal error', data: { details: JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'PRIVATE upstream problem' } }) } },
+      'GEMINI_SERVICE_UNAVAILABLE', { httpStatus: 503, serverStatus: 'UNAVAILABLE' }],
+  ];
+  for (const [error, expected, diagnostic] of cases) {
+    const f = await fixture(t, { handler: ({ request: rpc, child }) => {
+      if (rpc.method === 'authenticate') { child.errorReply(rpc, error); return true; }
+    } });
+    await assert.rejects(f.connection.signIn(), { code: expected, phase: 'authenticate' });
+    const state = await f.connection.publicState();
+    assert.equal(state.error.code, expected); assert.deepEqual(state.error.diagnostic, diagnostic);
+    assert.equal(state.session.profileId, null); assert.equal(state.session.sharing, false);
+    assert.ok(!/PRIVATE|https:\/\//u.test(JSON.stringify(state)));
+  }
+});
+
 test('corrupt own profile metadata is preserved for recovery and cannot silently create a new connection', async t => {
   const f = await fixture(t); await fs.mkdir(path.dirname(f.file), { recursive: true }); await fs.writeFile(f.file, '{bad metadata');
   const restored = f.create(); t.after(() => restored.dispose()); await restored.init();
