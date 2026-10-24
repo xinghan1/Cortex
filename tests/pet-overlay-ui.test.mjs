@@ -66,10 +66,12 @@ function fixture({ initial = state(), methods = {}, reduced = false, composerTop
     }
   }
   view.matchMedia = () => motion; document.defaultView = view;
+  view.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  view.dispatchEvent = event => view.emit(event.type, event);
   const gaze = { active: false, points: [], destroyed: false };
   const ForgePetGaze = gazeEnabled ? { create: options => {
     gaze.options = options;
-    return { setActive(value) { gaze.active = value; }, point(value) { gaze.points.push(value && plain(value)); }, destroy() { gaze.destroyed = true; } };
+    return { setActive(value) { gaze.active = value; return value; }, point(value) { gaze.points.push(value && plain(value)); }, destroy() { gaze.destroyed = true; } };
   } } : undefined;
   const context = vm.createContext({ document, ForgePetGaze }); vm.runInContext(source, context);
   const calls = [], notices = [], configured = []; let current = initial; const events = new Set();
@@ -272,6 +274,48 @@ test('idle eye following receives in-window and desktop cursor positions and pau
 test('imported pets never use the bundled character eye geometry and a hidden pet does no gaze work', async () => {
   const imported = state(); imported.packId = imported.packs[0].id = 'local-123456789012345678901234';
   const f = fixture({ initial: imported, gazeEnabled: true }); await f.ui.ready; assert.equal(f.gaze.active, false);
+  assert.equal(f.node('pet-overlay').dataset.packId, imported.packId);
   f.emit({ type: 'pet-state', pet: state() }); assert.equal(f.gaze.active, true);
+  assert.equal(f.node('pet-overlay').dataset.packId, 'dsh-pet');
   f.emit({ type: 'pet-state', pet: state({ enabled: false }) }); assert.equal(f.gaze.active, false);
+});
+
+test('following freezes only the bundled idle video, pointer events never play a turn, and manual turn still works', async () => {
+  const f = fixture({ gazeEnabled: true }); await f.ui.ready;
+  const video = f.node('pet-overlay-video'); assert.equal(video.playCount, 0); assert.ok(video.pauseCount > 0);
+  for (let i = 0; i < 20; i++) f.document.emit('pointermove', { pointerType: 'mouse', clientX: i * 50, clientY: 20 });
+  assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(video.playCount, 0);
+  video.emit('contextmenu', { clientX: 900, clientY: 500 }); f.node('pet-overlay-turn').emit('click');
+  assert.equal(f.node('pet-overlay').dataset.animation, 'turn'); assert.ok(video.playCount > 0); assert.equal(f.gaze.active, false);
+  video.emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(f.gaze.active, true);
+  const plays = video.playCount; f.emit({ type: 'pet-state', pet: state({ followCursor: false }) }); assert.ok(video.playCount > plays);
+  f.ui.destroy();
+});
+
+test('local action notifications happen once per actual clip start, never for pointer tracking or video loops', async () => {
+  const f = fixture({ gazeEnabled: true }), actions = [];
+  f.view.addEventListener('synora:pet-action', event => actions.push(plain(event.detail)));
+  await f.ui.ready; assert.deepEqual(actions, [{ kind: 'idle', sequence: 1 }]);
+  f.emit({ type: 'state', state: { activeTask: { running: false } } });
+  f.document.emit('pointermove', { pointerType: 'mouse', clientX: 10, clientY: 20 });
+  f.node('pet-overlay-video').emit('ended'); assert.equal(actions.length, 1);
+  f.emit({ type: 'run-start' }); assert.equal(actions.at(-1).kind, 'thinking');
+  f.emit({ type: 'tool-start', toolCallId: 'one' }); assert.equal(actions.at(-1).kind, 'working');
+  const before = actions.length; f.emit({ type: 'tool-start', toolCallId: 'two' }); assert.equal(actions.length, before);
+  f.emit({ type: 'run-end', status: 'completed' }); assert.equal(actions.at(-1).kind, 'success');
+  f.node('pet-overlay-video').emit('ended'); assert.equal(actions.at(-1).kind, 'idle');
+  assert.deepEqual(actions.map(value => value.sequence), actions.map((_, index) => index + 1));
+  f.ui.destroy();
+});
+
+test('chat layout reserves the measured lower bubble once and restores normalized pet positioning after close', async () => {
+  const f = fixture({ composerTop: 600 }); await f.ui.ready;
+  assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 592);
+  f.view.emit('synora:pet-chat-layout', { detail: { open: true, height: 150 } }); f.flushFrames();
+  assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 442);
+  assert.equal(f.ui.snapshot().y, 1); assert.equal(f.calls.length, 1);
+  f.view.emit('synora:pet-chat-layout', { detail: { open: true, height: 150 } }); assert.equal(f.frames.size, 0);
+  f.view.emit('synora:pet-chat-layout', { detail: { open: false, height: 0 } }); f.flushFrames();
+  assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 592);
+  f.ui.destroy(); assert.equal(f.view.listeners.get('synora:pet-chat-layout').size, 0);
 });

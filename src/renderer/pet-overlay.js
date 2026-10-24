@@ -27,7 +27,7 @@
     let state = { enabled: false, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: '', packs: [] };
     let disposed = false, revision = 0, writeRevision = 0, animationIndex = 0, currentKind = '', currentURL = '', mediaFailed = false;
     let running = false, waiting = false, workspaceId = '', phase = 'idle', drag = null, selectedPack = null;
-    let transient = false;
+    let transient = false, chatReserve = 0, actionSequence = 0;
     const tools = new Set(), approvals = new Set(), listeners = new Set();
     const motion = view.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => motion?.matches === true;
@@ -37,7 +37,7 @@
       onVisible: visible => { if (visible) overlay.classList.add('gaze-active'); else overlay.classList.remove('gaze-active'); },
     });
     function syncGaze() {
-      gaze?.setActive(!disposed && state.followCursor && selectedPack?.id === 'dsh-pet'
+      return gaze?.setActive(!disposed && state.followCursor && selectedPack?.id === 'dsh-pet'
         && !overlay.hidden && !document.hidden && !reduced() && !mediaFailed
         && !drag && !transient && phase === 'idle' && !running && !waiting && !tools.size && currentKind === 'idle');
     }
@@ -54,6 +54,7 @@
         if (style?.display === 'none' || style?.visibility === 'hidden') continue;
         bottom = Math.min(bottom, Math.max(0, bounds.top - 8));
       }
+      bottom = Math.max(0, bottom - chatReserve);
       const minY = 46, size = Math.max(0, Math.min(state.size, width - 16, bottom - minY));
       return { size, noRoom: size < 48, minX: 8, minY,
         spanX: Math.max(0, width - size - 16), spanY: Math.max(0, bottom - size - minY) };
@@ -72,8 +73,8 @@
       if (restore && !overlay.hidden) video.focus?.({ preventScroll: true });
     }
     function playback() {
-      syncGaze();
-      if (overlay.hidden || document.hidden || reduced() || mediaFailed) { video.pause(); return; }
+      const following = syncGaze();
+      if (following || overlay.hidden || document.hidden || reduced() || mediaFailed) { video.pause(); return; }
       const result = video.play(); result?.catch?.(() => {});
     }
     function play(kind = 'idle', once = false, force = false) {
@@ -88,10 +89,13 @@
       video.loop = !once; mediaFailed = false; fallback.hidden = true; video.hidden = false;
       if (currentURL !== entry.url) { currentURL = entry.url; video.src = entry.url; video.load(); }
       else if (force) { try { video.currentTime = 0; } catch {} }
+      const CustomEvent = view.CustomEvent || root.CustomEvent;
+      if (typeof CustomEvent === 'function') view.dispatchEvent?.(new CustomEvent('synora:pet-action', { detail: { kind, sequence: ++actionSequence } }));
       playback();
     }
     function render() {
       selectedPack = state.packs.find(pack => pack.id === state.packId) || state.packs[0] || null;
+      overlay.dataset.packId = selectedPack?.id || '';
       overlay.hidden = !state.enabled || !selectedPack;
       video.setAttribute('aria-label', `${text(selectedPack?.name) || '宠物'}：拖动移动，点击互动，右键打开菜单`);
       video.setAttribute('aria-expanded', String(!menu.hidden));
@@ -235,6 +239,12 @@
     const visibility = () => playback();
     const motionChanged = () => playback();
     const cursorMoved = event => { if (event.pointerType !== 'touch') gaze?.point({ x: event.clientX, y: event.clientY }); };
+    const chatLayout = event => {
+      const detail = event.detail;
+      const next = detail?.open === true ? bounded(detail.height, 0, view.innerHeight || 768, 0) : 0;
+      if (next === chatReserve) return;
+      chatReserve = next; scheduleLayout();
+    };
     video.addEventListener('pointerdown', pointerDown); video.addEventListener('pointermove', pointerMove);
     video.addEventListener('pointerup', pointerEnd); video.addEventListener('pointercancel', pointerEnd);
     video.addEventListener('contextmenu', contextMenu); video.addEventListener('keydown', keyDown);
@@ -245,6 +255,7 @@
     // The main process also supplies desktop cursor coordinates. Losing focus
     // or crossing the window edge must not stop a still-visible idle pet.
     document.addEventListener('pointermove', cursorMoved, { passive: true });
+    view.addEventListener?.('synora:pet-chat-layout', chatLayout);
     motion?.addEventListener?.('change', motionChanged);
     const layoutObserver = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(scheduleLayout) : null;
     const layoutRegions = new Set([...inputRegions, document.getElementById?.('message-scroll'), document.querySelector?.('.conversation')].filter(Boolean));
@@ -262,6 +273,7 @@
         document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
         document.removeEventListener('visibilitychange', visibility); view.removeEventListener?.('resize', resized);
         document.removeEventListener('pointermove', cursorMoved); gaze?.destroy();
+        view.removeEventListener?.('synora:pet-chat-layout', chatLayout);
         motion?.removeEventListener?.('change', motionChanged); layoutObserver?.disconnect();
         if (layoutFrame !== null) { view.cancelAnimationFrame(layoutFrame); layoutFrame = null; }
         video.pause(); video.removeAttribute('src'); video.load();

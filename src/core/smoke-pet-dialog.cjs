@@ -14,8 +14,8 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
   const customAnswer = '使用单独的测试配置，并保留现有文件。';
   const phases = ['choice', 'custom', 'cancel', 'stop'];
   const prompts = Object.fromEntries(phases.map(name => [name, 'PET_QUESTION_' + name.toUpperCase() + '_' + nonce]));
-  const questions = Object.fromEntries(phases.map(name => [name, '请确认这次测试的处理方式：' + name]));
-  const answers = {}, records = [], problems = [], screenshots = [];
+  const questions = Object.fromEntries(phases.map(name => [name, name === 'cancel' ? '请逐项确认本次测试的处理方式。'.repeat(100) : '请确认这次测试的处理方式：' + name]));
+  const answers = {}, records = [], problems = [], screenshots = [], timing = [];
   let child, original, appearance, pet, configured = false, stage = 'initialize', casualCount = 0;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const js = (code, target = child) => target.webContents.executeJavaScript(code);
@@ -27,9 +27,17 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     throw new Error('Pet-dialog smoke timed out: ' + label);
   };
   const inspect = () => js(`(() => {
-    const panel=$('pet-dialog'),r=panel?.getBoundingClientRect(),input=$('pet-dialog-input');
+    const panel=$('pet-dialog'),r=panel?.getBoundingClientRect(),input=$('pet-dialog-input'),inputBubble=$('pet-dialog-input-bubble'),ir=inputBubble?.getBoundingClientRect(),pr=$('pet-overlay')?.getBoundingClientRect();
+    const scale=pr&&Math.min(pr.width/640,pr.height/360),offsetY=pr&&(pr.height-360*scale)/2;
     return {hidden:panel?.hidden,mode:panel?.dataset.mode,blocking:panel?.dataset.blocking,collapsed:panel?.dataset.collapsed,
-      question:$('pet-dialog-question')?.textContent,history:$('pet-dialog-messages')?.textContent,error:$('pet-dialog-error')?.textContent,
+      anchor:panel?.dataset.anchor,characterGeometry:pr&&{top:pr.top+offsetY+40*scale,bottom:pr.top+offsetY+340*scale},
+      question:$('pet-dialog-question')?.textContent,historyExists:!!$('pet-dialog-messages'),titleExists:!!$('pet-dialog-toggle'),error:$('pet-dialog-error')?.textContent,
+      phase:panel?.dataset.phase,duration:Number(panel?.dataset.duration),elapsed:performance.now()-Number(panel?.dataset.startedAt),
+      animation:getComputedStyle(panel).animationDuration,animationName:getComputedStyle(panel).animationName,
+      opacity:Number(getComputedStyle(panel).opacity),transform:getComputedStyle(panel).transform,
+      inputBubbleHidden:inputBubble?.hidden,inputMode:inputBubble?.dataset.mode,inputPhase:inputBubble?.dataset.phase,
+      inputGeometry:ir&&{top:ir.top,bottom:ir.bottom,left:ir.left,right:ir.right,height:ir.height},petGeometry:pr&&{top:pr.top,bottom:pr.bottom},
+      contentContained:[$('pet-dialog-question'),$('pet-dialog-options'),$('pet-dialog-cancel'),$('pet-dialog-stop')].filter(n=>n&&n.checkVisibility()).every(n=>{const b=n.getBoundingClientRect();return b.top>=r.top-1&&b.bottom<=r.bottom+1}),
       input:input?.value,inputDisabled:input?.disabled,mainDraft:$('task-input').value,
       selection:[$('task-input').selectionStart,$('task-input').selectionEnd],
       replaced:document.documentElement.classList.contains('pet-dialog-replaces-composer'),
@@ -55,6 +63,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     child.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers}); await wait(40);
   };
   const capture = async name => {
+    await js(`Promise.all(['pet-dialog','pet-dialog-input-bubble'].flatMap(id=>$(id)?.getAnimations()||[]).map(animation=>animation.finished.catch(()=>{}))).then(()=>true)`);
     for (let attempt = 1; attempt <= 4; attempt++) try {
       child.webContents.invalidate(); await wait(attempt * 120);
       const image = await child.webContents.capturePage(); assert.equal(image.isEmpty(),false);
@@ -93,7 +102,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
         const toolOutput=body.input.find(item=>item.type==='function_call_output'&&item.call_id==='question-'+phase);
         if(toolOutput) {
           answers[phase]=JSON.parse(toolOutput.output);output=[message('问题已处理 '+phase)];
-        } else output=[{type:'function_call',call_id:'question-'+phase,name:'ask_user_question',arguments:JSON.stringify({question:questions[phase],options:['先检查','使用独立配置']})}];
+        } else output=[{type:'function_call',call_id:'question-'+phase,name:'ask_user_question',arguments:JSON.stringify({question:questions[phase],options:phase==='cancel'?Array.from({length:8},(_,index)=>'选项 '+index+'：'+'保留现有配置并进行独立验证。'.repeat(8)):['先检查','使用独立配置']})}];
       }
       records.push({phase:phase||'completion',toolResult:!!answers[phase]});
       response.writeHead(200,{'Content-Type':'text/event-stream'});
@@ -120,15 +129,27 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     child=BrowserWindow.fromId((await call('newWindow',undefined,win)).id);assert.ok(child&&child.webContents.isOffscreen());
     child.setContentSize(1440,1000);child.setOpacity(0);child.showInactive();child.webContents.focus();
     await until('renderer ready',()=>js('Boolean(appState&&window.synoraPetDialog&&window.synoraPetOverlay&&!projectSwitching)'));
+    stage='one local welcome with real 5–10 second lifetime and 500ms transitions';
+    await until('local welcome',async()=>(await inspect()).question==='Hello！我是大肥鱼，今天你要做些什么呢？');
+    let welcome=await inspect();assert.equal(welcome.historyExists,false);assert.equal(welcome.titleExists,false);assert.ok(welcome.duration>=5000&&welcome.duration<=10000);
+    assert.equal(welcome.animation,'0.5s');assert.equal(welcome.animationName,'pet-bubble-enter');
+    await until('welcome settled',async()=>(await inspect()).phase==='visible');await wait(5000);
+    welcome=await inspect();assert.equal(welcome.hidden,false);assert.ok(welcome.elapsed>=5000);timing.push({sample:'welcome-visible-after-5s',elapsed:welcome.elapsed,phase:welcome.phase,duration:welcome.duration});
+    await until('welcome exits',async()=>(await inspect()).phase==='leaving');welcome=await inspect();assert.equal(welcome.animation,'0.5s');assert.equal(welcome.animationName,'pet-bubble-leave');
+    timing.push({sample:'welcome-leaving',elapsed:welcome.elapsed,phase:welcome.phase,duration:welcome.duration});await until('welcome gone',async()=>(await inspect()).hidden);
+    timing.push({sample:'welcome-hidden',elapsed:(await inspect()).elapsed});assert.equal(records.length,0,'Welcome must not call a model');
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);
     await until('project selected',async()=>(await state()).workspace?.root===project&&await js('!projectSwitching'));
     await call('saveSettings',{provider:'relay',authMode:'apiKey',apiProtocol:'responses',baseUrl,apiKey,model,reasoningEffort:'default'});configured=true;
-    await call('listModels',{force:true});await call('setPet',{enabled:true,size:180,x:1,y:1});
+    await call('listModels',{force:true});await call('setPet',{enabled:true,size:220,x:1,y:1});
     await js(`(()=>{const input=$('task-input');input.value=${JSON.stringify(draft)};input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();input.setSelectionRange(2,8);
       window.__petDialogInputs=[];$('pet-dialog-input').addEventListener('input',event=>window.__petDialogInputs.push({trusted:event.isTrusted,value:event.target.value}));return true;})()`);
 
     stage='visible pet real tool question and native choice';await ask('choice');
-    await until('pet bubble placement',async()=>(await inspect()).mode==='bubble');let value=await inspect();assertLayout(value);assert.equal(value.replaced,false);
+    await until('pet bubble placement',async()=>(await inspect()).mode==='bubble'&&(await inspect()).inputPhase==='visible');let value=await inspect();assertLayout(value);assert.equal(value.replaced,false);
+    assert.equal(value.historyExists,false);assert.equal(value.titleExists,false);assert.equal(value.anchor,'character');
+    assert.ok(Math.abs(value.inputGeometry.top-value.characterGeometry.bottom-8)<=1,'Chat input bubble stays just below the character feet');
+    assert.ok(Math.abs(value.geometry.bottom-value.characterGeometry.top+10)<=1,'Speech bubble stays close to the character head');
     assert.equal(value.stopVisible,true);await capture('pet-dialog-bubble.png');
     await click('.pet-dialog-choice[data-choice-index="1"]');await idle();
     assert.equal(answers.choice.answer,'使用独立配置');assert.equal(answers.choice.choiceIndex,1);assert.equal(answers.choice.source,'user');
@@ -149,7 +170,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     child.setContentSize(980,760);await wait(100);
     for(const uiStyle of ['glass','black','white','industrial','deepseek','codex']) {
       await call('setAppearance',{uiStyle});await until('material '+uiStyle,()=>js(`document.documentElement.dataset.uiStyle===${JSON.stringify(uiStyle)}`));
-      await wait(70);value=await inspect();assertLayout(value);assert.notEqual(value.textColor,value.background);
+      await wait(70);value=await inspect();assertLayout(value);assert.equal(value.contentContained,true,'Long question and eight options stay inside the speech bubble');assert.notEqual(value.textColor,value.background);
       await capture('pet-dialog-'+uiStyle+'.png');
     }
     await click('#pet-dialog-cancel');await idle();
@@ -164,14 +185,14 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await click('#pet-dialog-input');await child.webContents.insertText('你好，今天适合聊点什么？');await key('Enter');
     await until('casual completed',async()=>{const value=await call('getPetDialog');return !value.running&&value.messages.some(item=>item.role==='assistant'&&item.content.includes('独立的宠物回复'));});
     await until('casual answer visible',async()=>!(await inspect()).hidden&&(await inspect()).question.includes('独立的宠物回复'));
-    value=await inspect();assertLayout(value);assert.equal(value.replaced,false);assert.notEqual(value.mainDisplay,'none');
+    value=await inspect();assertLayout(value);assert.equal(value.replaced,false);assert.notEqual(value.mainDisplay,'none');assert.equal(value.input,'','Accepted first chat draft is cleared');
     const chatBefore=await call('getPetDialog');assert.equal(chatBefore.messages.length,2);await capture('pet-dialog-active-chat.png');
     await click('#pet-dialog-close');await until('casual closed',async()=>(await inspect()).hidden);
     assert.equal((await call('getPetDialog')).messages.length,2,'Closing panel keeps temporary chat until session or application exit');
     await click('#pet-dialog-launcher');await click('#pet-dialog-input');await child.webContents.insertText('再聊一句。');await key('Enter');
-    await until('pending casual',async()=>(await call('getPetDialog')).running);await click('#pet-dialog-close');
+    await until('pending casual',async()=>(await call('getPetDialog')).running);assert.equal((await inspect()).input,'','Accepted consecutive chat draft is cleared');await click('#pet-dialog-close');
     await until('background casual completes',async()=>!(await call('getPetDialog')).running);
-    await until('muted reply stays collapsed',async()=>(await inspect()).collapsed==='true');assert.equal((await inspect()).replaced,false);
+    await until('muted reply stays hidden',async()=>(await inspect()).hidden&&(await inspect()).inputBubbleHidden);assert.equal((await inspect()).replaced,false);
 
     stage='scope switch deletes temporary chat and rejects stale payload';const previous=await call('getPetDialog');await call('newSession');
     await until('new session clears pet chat',async()=>{const next=await call('getPetDialog');return next.sessionId!==previous.sessionId&&!next.messages.length&&!next.question;});
@@ -180,8 +201,9 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     const result={status:'completed',realApi:false,realCommands:false,localFixtureModelOnly:true,realBlockingTool:true,nativeChoiceAnswer:true,
       nativeCustomAnswer:true,composingEnterDoesNotSend:true,hiddenPetComposerFallback:true,originalDraftAndSelectionPreserved:true,
       cancellationNotAuthorization:true,stopCancelsBlockedTask:true,separateActiveCasualChat:true,casualDoesNotBlockMainDraft:true,
-      closeKeepsTemporaryHistory:true,mutedPendingReplyStaysCollapsed:true,sessionSwitchClearsTemporaryHistory:true,staleScopeRejected:true,
-      sixStyles:true,narrowWindow:true,answers,requests:records,screenshots};
+      closeKeepsTemporaryHistory:true,mutedPendingReplyStaysHidden:true,sessionSwitchClearsTemporaryHistory:true,staleScopeRejected:true,
+      speechAndInputAreSeparateBubbles:true,noHistoryWindow:true,inputBelowPet:true,bundledCharacterAnchor:true,ordinarySpeechLifetimeIncludes500msTransitions:true,timing,
+      acceptedConsecutiveChatDraftCleared:true,longQuestionEightChoicesContained:true,sixStyles:true,narrowWindow:true,answers,requests:records,screenshots};
     await fs.writeFile(path.join(output,'pet-dialog-smoke-result.json'),JSON.stringify(result,null,2)+'\n');return result;
   } catch(error) {
     const failure={status:'failed',stage,error:error.message,stack:error.stack,answers,records,problems};

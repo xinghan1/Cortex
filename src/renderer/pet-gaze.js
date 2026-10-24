@@ -1,10 +1,12 @@
 'use strict';
 (function (root) {
   // These measurements and the blue-iris detector belong to the bundled DSH
-  // idle clip, not arbitrary imported pets. All pixels outside the two local
-  // eye ellipses are copied unchanged from Chromium's decoded video frame.
+  // idle clip, not arbitrary imported pets. Cursor following uses its original
+  // front-facing frame; the clip itself contains sideways poses later on.
   const WIDTH = 640, HEIGHT = 360;
+  const FRONT_TIME = .5;
   const FACE = Object.freeze({ x: 256, y: 166, width: 116, height: 44 });
+  const HEAD = Object.freeze({ x: 204, y: 50, width: 220, height: 190 });
   const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
   function eyesIn(frame) {
     const { data, width, height } = frame, mask = new Uint8Array(width * height), components = [];
@@ -62,6 +64,27 @@
     }
     return frame;
   }
+  function warpHead(frame, horizontal, vertical) {
+    if (!horizontal && !vertical) return frame;
+    const source = new Uint8ClampedArray(frame.data), { data, width, height } = frame;
+    const centerX = 110, centerY = 95, radiusX = 104, radiusY = 92;
+    const yaw = clamp(horizontal, -1, 1), pitch = clamp(vertical, -1, 1), roll = yaw * .045;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const dx = x - centerX, dy = y - centerY, radius = (dx / radiusX) ** 2 + (dy / radiusY) ** 2;
+      if (radius >= 1) continue;
+      const weight = (1 - radius) ** 2;
+      const sx = clamp(x - (yaw * 10 - dy * roll) * weight, 0, width - 1);
+      const sy = clamp(y - (pitch * 6 + dx * roll) * weight, 0, height - 1);
+      const x0 = Math.floor(sx), y0 = Math.floor(sy), x1 = Math.min(width - 1, x0 + 1), y1 = Math.min(height - 1, y0 + 1);
+      const fx = sx - x0, fy = sy - y0, destination = (y * width + x) * 4;
+      for (let channel = 0; channel < 4; channel++) {
+        const top = source[(y0 * width + x0) * 4 + channel] * (1 - fx) + source[(y0 * width + x1) * 4 + channel] * fx;
+        const bottom = source[(y1 * width + x0) * 4 + channel] * (1 - fx) + source[(y1 * width + x1) * 4 + channel] * fx;
+        data[destination + channel] = top * (1 - fy) + bottom * fy;
+      }
+    }
+    return frame;
+  }
   function create({ document = root.document, video, canvas, bounds, onVisible = () => {} }) {
     const view = document.defaultView || root;
     let context;
@@ -80,6 +103,12 @@
       if (!active || disposed || failed || !context) return;
       scheduled = view.requestAnimationFrame(draw);
       if (timestamp - lastFrame < 1000 / 30 || video.readyState < 2 || video.videoWidth !== WIDTH || video.videoHeight !== HEIGHT) return;
+      video.pause();
+      if (video.seeking) return;
+      if (!Number.isFinite(video.currentTime) || Math.abs(video.currentTime - FRONT_TIME) > .01) {
+        try { video.currentTime = FRONT_TIME; } catch { /* Metadata can still be loading. */ }
+        return;
+      }
       lastFrame = timestamp;
       const box = bounds(), pictureHeight = box.width * HEIGHT / WIDTH;
       const centerX = box.left + box.width * .485, centerY = box.top + (box.height - pictureHeight) / 2 + pictureHeight * .525;
@@ -94,12 +123,15 @@
         if (canvas.width !== WIDTH) canvas.width = WIDTH;
         if (canvas.height !== HEIGHT) canvas.height = HEIGHT;
         context.clearRect(0, 0, WIDTH, HEIGHT); context.drawImage(video, 0, 0, WIDTH, HEIGHT);
+        const head = context.getImageData(HEAD.x, HEAD.y, HEAD.width, HEAD.height);
+        warpHead(head, x / 5.2, y / 3.2); context.putImageData(head, HEAD.x, HEAD.y);
         const frame = context.getImageData(FACE.x, FACE.y, FACE.width, FACE.height), eyes = eyesIn(frame);
         if (eyes.length && (Math.abs(x) > .01 || Math.abs(y) > .01)) {
           warpEyes(frame, eyes, x, y); context.putImageData(frame, FACE.x, FACE.y);
         }
         canvas.dataset.gaze = eyes.length ? 'tracking' : 'blink';
         canvas.dataset.gazeX = x.toFixed(3); canvas.dataset.gazeY = y.toFixed(3);
+        canvas.dataset.pose = 'front';
         show(true);
       } catch {
         // Decoder/readback failures degrade to the unmodified video, including
@@ -110,14 +142,15 @@
     return Object.freeze({
       setActive(value) {
         const next = value === true && !disposed && !failed && Boolean(context) && typeof view.requestAnimationFrame === 'function';
-        if (active === next) return;
+        if (active === next) return active;
         active = next;
         if (!active) { cancel(); x = y = lastFrame = 0; canvas.dataset.gaze = 'off'; show(false); }
-        else scheduled = view.requestAnimationFrame(draw);
+        else { video.pause(); scheduled = view.requestAnimationFrame(draw); }
+        return active;
       },
       point(point) { cursor = point && Number.isFinite(point.x) && Number.isFinite(point.y) ? { x: point.x, y: point.y } : null; },
       destroy() { disposed = true; active = false; cursor = null; cancel(); show(false); },
     });
   }
-  root.ForgePetGaze = Object.freeze({ create, eyesIn, warpEyes });
+  root.ForgePetGaze = Object.freeze({ create, eyesIn, warpEyes, warpHead });
 })(typeof globalThis === 'object' ? globalThis : this);

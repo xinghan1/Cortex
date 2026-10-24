@@ -96,6 +96,29 @@ test('a greeting is an optional independent text-only request; answering stays i
   assert.equal(new Set(f.events.map(event => event.petDialog.revision)).size, f.events.length);
 });
 
+test('the Big Fat Fish persona is applied only to explicitly requested casual calls, with a brief default and clear task boundaries', async () => {
+  const f = fixture();
+  await tick(); assert.equal(f.requests.length, 0); assert.equal(f.usage.length, 0);
+  assert.deepEqual(f.controller.snapshot().messages, [], 'Startup welcome and action lines are local UI, not model calls');
+  f.controller.greet(); await f.controller.settled();
+  const system = f.requests[0].messages[0].content, greeting = f.requests[0].messages.at(-1).content;
+  assert.match(system, /大肥鱼/); assert.match(system, /默认用中文/); assert.match(system, /俏皮.*不油腻/);
+  assert.match(system, /120.*5–10秒/s); assert.match(system, /不为字数截断实质回答/);
+  assert.match(system, /不能执行操作或代表用户给主任务授权/); assert.match(system, /不要暗示了解用户的项目/);
+  assert.match(greeting, /大肥鱼/); assert.match(greeting, /不要重复启动欢迎语/);
+  assert.match(greeting, /不要询问主任务决策、授权或进度/);
+  assert.deepEqual(f.requests[0].tools, []); assert.equal(f.usage.length, 1);
+});
+
+test('the short bubble persona does not truncate a substantive answer to the suggested 120-character default', async () => {
+  const answer = '这是用户要求的具体解释，需要保留完整的操作条件和注意事项。'.repeat(12);
+  assert.ok(answer.length > 120);
+  const f = fixture({ requestModel: async () => reply(answer) });
+  f.controller.send({ text: '请详细说明这个概念，保留必要的内容。' }); await f.controller.settled();
+  assert.equal(f.controller.snapshot().messages.at(-1).content, answer);
+  assert.equal(f.controller.snapshot().question.question, answer); assert.equal(f.usage[0].status, 'completed');
+});
+
 test('dismissing a casual greeting makes no choice, extra request, or main-task mutation', async () => {
   const f = fixture(); f.controller.greet(); await f.controller.settled();
   const id = f.controller.snapshot().question.id, messages = f.controller.snapshot().messages;

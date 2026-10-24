@@ -174,14 +174,30 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await js(`(async()=>{
       const video=document.getElementById('pet-overlay-video'),canvas=document.getElementById('pet-overlay-gaze');
       video.pause();video.currentTime=.5;await new Promise(resolve=>{if(!video.seeking)resolve();else video.addEventListener('seeked',resolve,{once:true})});
-      const fixture=window.nativePetGaze={video,canvas,moves:0,pointerEvents:[],left:null};
+      const fixture=window.nativePetGaze={video,canvas,moves:0,pointerEvents:[],actions:[],left:null};
       fixture.pointer=event=>{if(event.isTrusted)fixture.moves++};document.addEventListener('pointermove',fixture.pointer);
+      fixture.action=event=>fixture.actions.push(event.detail);window.addEventListener('synora:pet-action',fixture.action);
       fixture.off=window.forge.onEvent(event=>{if(event.type==='pet-pointer')fixture.pointerEvents.push({x:event.x,y:event.y,inside:event.inside})});return true;
     })()`);
     let desktopCursor = originalCursorPoint();
     screen.getCursorScreenPoint = () => desktopCursor;
     const desktopMove = (x, y = 300) => { const box = child.getContentBounds(), zoom = child.webContents.getZoomFactor(); desktopCursor = { x: Math.round(box.x + x * zoom), y: Math.round(box.y + y * zoom) }; };
-    const mouseMove = async x => { desktopMove(x); child.focus(); child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', x, y: 300 }); };
+    const mouseMove = async (x, y = 300) => { desktopMove(x, y); child.focus(); child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) }); };
+    const petBounds = (await inspectPet()).box;
+    const eyeCenter = { x: petBounds.left + petBounds.width * .485,
+      y: petBounds.top + (petBounds.height - petBounds.width * 360 / 640) / 2 + petBounds.width * 360 / 640 * .525 };
+    await mouseMove(eyeCenter.x, eyeCenter.y);
+    await wait(600);
+    await capture('pet-production-gaze-front.png');
+    await fs.writeFile(path.join(output, 'pet-head-front.png'), Buffer.from(await js("window.nativePetGaze.canvas.toDataURL('image/png').split(',')[1]"), 'base64'));
+    screenshots.push('pet-head-front.png');
+    const poseSamples = [];
+    for (let sample = 0; sample < 30; sample++) {
+      await wait(500);
+      const pose = await js("({time:window.nativePetGaze.video.currentTime,paused:window.nativePetGaze.video.paused,kind:document.getElementById('pet-overlay').dataset.animation,pose:window.nativePetGaze.canvas.dataset.pose,turns:window.nativePetGaze.actions.filter(e=>e.kind==='turn').length})");
+      assert.equal(pose.paused, true); assert.equal(pose.kind, 'idle'); assert.equal(pose.pose, 'front');
+      assert.ok(Math.abs(pose.time - .5) <= .01); assert.equal(pose.turns, 0); poseSamples.push(pose);
+    }
     await mouseMove(10);
     await until('real left mouse motion moves visible production irises left', () => js("window.nativePetGaze.moves>0&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-4"));
     await js("window.nativePetGaze.left=new Uint8ClampedArray(window.nativePetGaze.canvas.getContext('2d').getImageData(0,0,640,360).data);window.nativePetGaze.leftPNG=window.nativePetGaze.canvas.toDataURL('image/png');true");
@@ -191,22 +207,31 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await capture('pet-production-gaze-right.png');
     const gazeEvidence = await js(`(()=>{
       const f=window.nativePetGaze,right=f.canvas.getContext('2d').getImageData(0,0,640,360).data;
-      let changed=0,outsideEyeROI=0,alphaChanged=0;for(let i=0;i<right.length;i+=4){
+      let changed=0,outsideHeadROI=0,alphaChanged=0,bodyChanged=0;for(let i=0;i<right.length;i+=4){
         if(f.left[i]===right[i]&&f.left[i+1]===right[i+1]&&f.left[i+2]===right[i+2]&&f.left[i+3]===right[i+3])continue;
-        changed++;const pixel=i/4,x=pixel%640,y=Math.floor(pixel/640);if(x<256||x>=372||y<166||y>=210)outsideEyeROI++;
+        changed++;const pixel=i/4,x=pixel%640,y=Math.floor(pixel/640);if(x<204||x>=424||y<50||y>=240)outsideHeadROI++;
+        if(y>=240)bodyChanged++;
         if(f.left[i+3]!==right[i+3])alphaChanged++;
       }
-      return {changed,outsideEyeROI,alphaChanged,nativePointerMoves:f.moves,productionCanvas:true,petSize:window.synoraPetOverlay.snapshot().size,
+      return {changed,outsideHeadROI,bodyChanged,alphaChanged,nativePointerMoves:f.moves,productionCanvas:true,petSize:window.synoraPetOverlay.snapshot().size,
         injectedDesktopCoordinates:true,leftPNG:f.leftPNG,rightPNG:f.canvas.toDataURL('image/png')};
     })()`);
-    assert.ok(gazeEvidence.changed > 30); assert.equal(gazeEvidence.outsideEyeROI, 0); assert.equal(gazeEvidence.alphaChanged, 0); assert.ok(gazeEvidence.nativePointerMoves >= 2);
+    assert.ok(gazeEvidence.changed > 1000); assert.equal(gazeEvidence.outsideHeadROI, 0); assert.equal(gazeEvidence.bodyChanged, 0); assert.ok(gazeEvidence.nativePointerMoves >= 2);
     for (const [key, filename] of [['leftPNG', 'pet-eyes-left.png'], ['rightPNG', 'pet-eyes-right.png']]) { await fs.writeFile(path.join(output, filename), Buffer.from(gazeEvidence[key].split(',')[1], 'base64')); screenshots.push(filename); delete gazeEvidence[key]; }
     assert.equal(gazeEvidence.petSize, 220);
+    gazeEvidence.stableFrontSeconds = 15; gazeEvidence.poseSamples = poseSamples;
+    for (const [direction, y] of [['up', 20], ['down', 940]]) {
+      await mouseMove(eyeCenter.x, y);
+      await until('production head follows ' + direction, () => js(`window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeY)${direction === 'up' ? '<-2.8' : '>2.8'}`));
+      await wait(300); await capture('pet-production-gaze-' + direction + '.png');
+      const filename = 'pet-head-' + direction + '.png';
+      await fs.writeFile(path.join(output, filename), Buffer.from(await js("window.nativePetGaze.canvas.toDataURL('image/png').split(',')[1]"), 'base64')); screenshots.push(filename);
+    }
     const beforeBlur = await js('window.nativePetGaze.pointerEvents.length');
     child.blur(); win.focus(); desktopMove(-200, -100);
     await until('a visible unfocused pet follows desktop pointer IPC outside the window', async () => !child.isFocused() && await js(`window.nativePetGaze.pointerEvents.length>${beforeBlur}&&!document.hidden&&!document.getElementById('pet-overlay-gaze').hidden&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-4`));
     gazeEvidence.visibleWhileUnfocused = true; gazeEvidence.desktopOutsideWindow = true;
-    await js("(()=>{const f=window.nativePetGaze;document.removeEventListener('pointermove',f.pointer);f.off();f.video.play();delete window.nativePetGaze;return true})()");
+    await js("(()=>{const f=window.nativePetGaze;document.removeEventListener('pointermove',f.pointer);window.removeEventListener('synora:pet-action',f.action);f.off();delete window.nativePetGaze;return true})()");
     screen.getCursorScreenPoint = originalCursorPoint;
     child.focus(); child.webContents.focus();
     await updatePet({ x: dragged.x, y: dragged.y });
@@ -410,7 +435,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     dialog.showOpenDialog = originalOpenDialog; dialog.showMessageBox = originalMessageBox;
     if (panel && !panel.isDestroyed()) panel.destroy();
     if (child && !child.isDestroyed()) {
-      await js("(()=>{const f=window.nativePetGaze;if(!f)return;document.removeEventListener('pointermove',f.pointer);f.off?.();delete window.nativePetGaze})()").catch(() => {});
+      await js("(()=>{const f=window.nativePetGaze;if(!f)return;document.removeEventListener('pointermove',f.pointer);window.removeEventListener('synora:pet-action',f.action);f.off?.();delete window.nativePetGaze})()").catch(() => {});
       if (originalAppearance) await call('setAppearance', { uiStyle: originalAppearance.uiStyle, selectionColor: originalAppearance.selectionColor }).catch(() => {});
       child.destroy();
     }

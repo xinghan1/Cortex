@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = await fs.readFile(new URL('../src/renderer/pet-gaze.js', import.meta.url), 'utf8');
 const context = vm.createContext({ Uint8Array, Uint8ClampedArray }); vm.runInContext(source, context);
-const { eyesIn, warpEyes, create } = context.ForgePetGaze;
+const { eyesIn, warpEyes, warpHead, create } = context.ForgePetGaze;
 function face({ blink = false, shift = 0 } = {}) {
   const width = 116, height = 28, data = new Uint8ClampedArray(width * height * 4);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -58,7 +58,7 @@ function fixture({ readFails = false } = {}) {
     getContext: () => ({ clearRect() {}, drawImage: (...args) => draws.push(args),
       getImageData() { if (readFails) throw new Error('unavailable readback'); return face(); }, putImageData(frame, x, y) { canvas.lastFrame = { frame, x, y }; } }),
   };
-  const video = { readyState: 2, videoWidth: 640, videoHeight: 360 };
+  const video = { readyState: 2, videoWidth: 640, videoHeight: 360, currentTime: .5, pauseCount: 0, pause() { this.pauseCount++; } };
   const ui = create({ document: { defaultView: view }, video, canvas,
     bounds: () => ({ left: 100, top: 200, width: 220, height: 220 }), onVisible: value => visible.push(value) });
   return { ui, canvas, video, frames, draws, visible,
@@ -110,4 +110,31 @@ test('unsupported frames or canvas failures preserve the original video and clea
   const unavailable = { hidden: false, dataset: {}, setAttribute() {}, getContext() { throw new Error('no canvas'); } };
   const ui = create({ document: { defaultView: {} }, canvas: unavailable }); ui.setActive(true); ui.destroy();
   assert.equal(unavailable.hidden, true);
+});
+
+test('idle following holds the original front frame rather than advancing into the clip sideways poses', () => {
+  const f = fixture(); f.video.currentTime = 6;
+  f.ui.setActive(true); f.tick(); assert.equal(f.video.currentTime, .5); assert.equal(f.draws.length, 0);
+  f.tick(375); assert.equal(f.video.currentTime, .5); assert.ok(f.video.pauseCount > 300);
+  assert.equal(f.canvas.dataset.pose, 'front');
+  f.video.currentTime = 4; f.tick(); assert.equal(f.video.currentTime, .5);
+  f.ui.setActive(false); const pauses = f.video.pauseCount; f.tick(); assert.equal(f.video.pauseCount, pauses);
+  f.ui.destroy();
+});
+
+test('head direction remains bounded inside its feathered region without moving body pixels or clipping image edges', () => {
+  const width = 220, height = 190, data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 4; data.set([x, y, (x * 5 + y) % 256, x > 15 && x < 205 && y > 15 && y < 175 ? 255 : 0], i);
+  }
+  const original = { width, height, data }, left = warpHead(clone(original), -1, -.5), right = warpHead(clone(original), 1, .5);
+  let changed = 0;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 4, inside = ((x - 110) / 104) ** 2 + ((y - 95) / 92) ** 2 < 1;
+    if (!inside) assert.deepEqual(left.data.subarray(i, i + 4), original.data.subarray(i, i + 4));
+    if (left.data[i] !== original.data[i]) changed++;
+  }
+  assert.ok(changed > 1000); assert.notDeepEqual(left.data, right.data);
+  assert.deepEqual(warpHead(clone(original), -100, -100).data, warpHead(clone(original), -1, -1).data);
+  assert.deepEqual(warpHead(clone(original), 0, 0).data, original.data);
 });

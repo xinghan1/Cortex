@@ -1,32 +1,35 @@
-.pet-dialog { position: fixed; z-index: 110; box-sizing: border-box; display: flex; flex-direction: column; max-height: min(480px, calc(100vh - 64px)); padding: 13px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 14px); background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); box-shadow: 0 12px 36px rgb(0 0 0 / 22%); font-size: 13px; line-height: 1.6; text-align: left; -webkit-app-region: no-drag; }
-.pet-dialog[hidden], .pet-dialog [hidden] { display: none !important; }
-.pet-dialog[data-mode='composer'] { position: relative; flex-shrink: 0; width: 100%; margin-bottom: 8px; max-height: min(440px, calc(100vh - 90px)); }
+.pet-speech-bubble, .pet-input-bubble { position: fixed; z-index: 110; box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--ui-border, var(--line)); border-radius: 20px; background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); box-shadow: 0 5px 18px rgb(0 0 0 / 16%); font-size: 13px; line-height: 1.6; text-align: left; -webkit-app-region: no-drag; transform-origin: bottom right; }
+.pet-speech-bubble { display: flex; flex-direction: column; max-height: min(350px, calc(100vh - 76px)); overflow: visible; }
+.pet-input-bubble { padding: 10px 12px; transform-origin: top center; }
+.pet-speech-bubble::after, .pet-input-bubble::after { content: ''; position: absolute; width: 12px; height: 12px; background: inherit; border-right: 1px solid var(--ui-border, var(--line)); border-bottom: 1px solid var(--ui-border, var(--line)); pointer-events: none; }
+.pet-speech-bubble::after { right: 24px; bottom: -7px; transform: rotate(45deg); }
+.pet-input-bubble::after { left: calc(50% - 6px); top: -7px; transform: rotate(225deg); }
+.pet-speech-bubble[hidden], .pet-input-bubble[hidden], :is(.pet-speech-bubble, .pet-input-bubble) [hidden] { display: none !important; }
+:is(.pet-speech-bubble, .pet-input-bubble)[data-phase='entering'] { animation: pet-bubble-enter 500ms ease-out both; }
+:is(.pet-speech-bubble, .pet-input-bubble)[data-phase='leaving'] { animation: pet-bubble-leave 500ms ease-in both; pointer-events: none; }
+@keyframes pet-bubble-enter { from { opacity: 0; transform: translate(12px, 12px) scale(.97); } to { opacity: 1; transform: translate(0, 0) scale(1); } }
+@keyframes pet-bubble-leave { from { opacity: 1; transform: translate(0, 0) scale(1); } to { opacity: 0; transform: translate(12px, 12px) scale(.97); } }
+:is(.pet-speech-bubble, .pet-input-bubble)[data-mode='composer'] { position: relative; flex-shrink: 0; width: 100%; margin-bottom: 8px; }
+:is(.pet-speech-bubble, .pet-input-bubble)[data-mode='composer']::after { display: none; }
 html.pet-dialog-replaces-composer #task-form { display: none !important; }
-.pet-dialog-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 10px; }
-.pet-dialog-toggle, .pet-dialog-close { border: 0; background: transparent; color: inherit; cursor: pointer; }
-.pet-dialog-toggle { padding: 0; text-align: left; font: inherit; font-weight: 600; }
-.pet-dialog-close { padding: 1px 5px; font-size: 20px; line-height: 1; }
-.pet-dialog-details { display: flex; flex-direction: column; min-height: 0; }
-.pet-dialog-content { min-height: 0; overflow: auto; max-height: 220px; overscroll-behavior: contain; }
-.pet-dialog-question, .pet-dialog-message { margin: 9px 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.pet-dialog-message.user { padding-left: 9px; border-left: 2px solid var(--ui-accent, var(--accent)); color: var(--ui-muted, var(--muted)); }
-.pet-dialog-options { display: grid; gap: 6px; margin: 10px 0; }
-.pet-dialog-choice, .pet-dialog-button { border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 8px); background: var(--ui-control, var(--panel2)); color: inherit; padding: 7px 10px; cursor: pointer; font: inherit; }
+.pet-dialog-question { flex: 0 1 auto; min-height: 0; margin: 0; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; overscroll-behavior: contain; }
+.pet-dialog-options { display: grid; flex: 1 1 auto; min-height: 0; gap: 6px; max-height: 160px; overflow: auto; margin: 10px 0 0; overscroll-behavior: contain; }
+.pet-dialog-options:empty { display: none; }
+.pet-dialog-choice, .pet-dialog-button { border: 1px solid var(--ui-border, var(--line)); border-radius: 14px; background: var(--ui-control, var(--panel2)); color: inherit; padding: 6px 9px; cursor: pointer; font: inherit; }
 .pet-dialog-choice { text-align: left; overflow-wrap: anywhere; }
 .pet-dialog-choice:hover, .pet-dialog-button:hover, .pet-dialog-choice[aria-pressed='true'] { background: var(--ui-hover, var(--panel2)); border-color: var(--ui-accent, var(--accent)); }
-.pet-dialog-form { flex-shrink: 0; margin: 8px 0 0; }
-.pet-dialog-input { box-sizing: border-box; display: block; width: 100%; min-height: 58px; max-height: 110px; resize: vertical; padding: 8px 10px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 8px); background: var(--ui-control, var(--panel2)); color: inherit; font: inherit; }
+.pet-dialog-form { margin: 0; }
+.pet-dialog-input { box-sizing: border-box; display: block; width: 100%; min-height: 52px; max-height: 100px; resize: vertical; padding: 6px 8px; border: 0; border-radius: 10px; background: var(--ui-control, var(--panel2)); color: inherit; font: inherit; }
 .pet-dialog-input::placeholder { color: var(--ui-muted, var(--muted)); }
-.pet-dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.pet-dialog-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .pet-dialog-status { margin-right: auto; color: var(--ui-muted, var(--muted)); font-size: 11px; }
 .pet-dialog-error { margin: 6px 0; color: var(--ui-bad, #ef9b9b); font-size: 12px; overflow-wrap: anywhere; }
 .pet-dialog-send { background: var(--ui-accent, var(--accent)); border-color: var(--ui-accent, var(--accent)); color: var(--ui-accent-ink, #142039); }
-.pet-dialog-launcher { position: fixed; z-index: 111; max-width: 130px; padding: 6px 10px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--radius-control, 12px); background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); font: inherit; font-size: 11px; cursor: pointer; -webkit-app-region: no-drag; }
+.pet-dialog-launcher { position: fixed; z-index: 111; max-width: 130px; padding: 5px 9px; border: 1px solid var(--ui-border, var(--line)); border-radius: 20px; background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); font: inherit; font-size: 11px; cursor: pointer; -webkit-app-region: no-drag; }
 .pet-dialog-launcher[data-mode='composer'] { position: static; flex-shrink: 0; font-size: 12px; }
 .pet-dialog-launcher[hidden] { display: none; }
-.pet-dialog-launcher:focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
-.pet-dialog :is(button, textarea):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
-.pet-dialog :disabled { opacity: .65; cursor: default; }
-.pet-dialog[data-collapsed='true'] { padding: 10px 12px; }
-@media (max-height: 650px) { .pet-dialog-content { max-height: 140px; } .pet-dialog[data-mode='composer'] { max-height: calc(100vh - 72px); } }
-@media (forced-colors: active) { .pet-dialog { border-color: CanvasText; box-shadow: none; } }
+.pet-dialog-launcher:focus-visible, :is(.pet-speech-bubble, .pet-input-bubble) :is(button, textarea):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
+:is(.pet-speech-bubble, .pet-input-bubble) :disabled { opacity: .65; cursor: default; }
+@media (max-height: 650px) { .pet-dialog-question { max-height: 120px; } .pet-dialog-options { max-height: 100px; } .pet-dialog-input { max-height: 76px; } }
+@media (prefers-reduced-motion: reduce) { :is(.pet-speech-bubble, .pet-input-bubble)[data-phase] { animation: none; } }
+@media (forced-colors: active) { .pet-speech-bubble, .pet-input-bubble { border-color: CanvasText; box-shadow: none; } }
