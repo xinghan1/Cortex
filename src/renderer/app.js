@@ -4541,6 +4541,7 @@ window.aiCodeCommands = Object.freeze({
       case 'role-approval-settings': return window.synoraRoleModels?.open('approval');
       case 'role-completion-settings': return window.synoraRoleModels?.open('completion');
       case 'role-sidebar-settings': return window.synoraRoleModels?.open('sidebar');
+      case 'role-pet-settings': return window.synoraRoleModels?.open('pet');
       case 'import-background': return window.synoraAppearance?.importBackground();
       case 'appearance-settings': return window.synoraAppearance?.open();
       case 'toggle-sidebar': return toggleSidebar();

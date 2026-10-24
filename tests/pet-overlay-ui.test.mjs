@@ -66,7 +66,7 @@ function fixture({ initial = state(), methods = {}, reduced = false, composerTop
     }
   }
   view.matchMedia = () => motion; document.defaultView = view;
-  view.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+  view.CustomEvent = class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } };
   view.dispatchEvent = event => view.emit(event.type, event);
   const gaze = { active: false, points: [], destroyed: false };
   const ForgePetGaze = gazeEnabled ? { create: options => {
@@ -96,7 +96,7 @@ test('pet uses local transparent video with no model or plugin execution and an 
   assert.equal(overlay.hidden, false); assert.equal(overlay.style.width, '220px');
   assert.equal(overlay.style.left, '772px'); assert.equal(overlay.style.top, '572px');
   assert.equal(video.src, 'file:///D:/app/pet/idle.webm'); assert.equal(video.muted, true); assert.equal(video.playsInline, true);
-  assert.equal(video.attributes.role, 'button'); assert.match(video.attributes['aria-label'], /拖动移动/u);
+  assert.equal(video.attributes.role, 'button'); assert.match(video.attributes['aria-label'], /左键聊天，拖动移动，右键打开菜单/u);
   assert.equal(video.loop, true); assert.equal(video.playCount, 1);
   f.node('pet-overlay-video').emit('error');
   assert.equal(video.hidden, true); assert.equal(f.node('pet-overlay-fallback').hidden, false);
@@ -160,13 +160,37 @@ test('ResizeObserver notifications coalesce into one later frame and teardown ca
   observer.callback(); assert.equal(f.frames.size, 0, 'A late observer callback cannot schedule work after disposal');
 });
 
-test('click and keyboard interaction play only a short local animation and then return to the current task', async () => {
+test('left click and Enter or Space open chat without playing an action, while the context menu still pats the pet', async () => {
   const f = fixture(); await f.ui.ready;
+  const chats = [], actions = [], video = f.node('pet-overlay-video'), menu = f.node('pet-overlay-menu');
+  f.view.addEventListener('synora:pet-chat-open', event => { assert.equal(menu.hidden, true); chats.push(event); });
+  f.view.addEventListener('synora:pet-action', event => actions.push(event.detail));
+  video.emit('contextmenu', { clientX: 800, clientY: 600 }); assert.equal(menu.hidden, false);
   f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600);
-  assert.equal(f.node('pet-overlay').dataset.animation, 'clicks'); assert.equal(f.node('pet-overlay-video').loop, false);
-  f.node('pet-overlay-video').emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
-  f.node('pet-overlay-video').emit('keydown', { key: 'Enter' }); assert.equal(f.node('pet-overlay').dataset.animation, 'clicks');
-  assert.equal(f.calls.length, 1, 'Interaction never calls a model or changes stored project state');
+  assert.equal(chats.length, 1); assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(video.loop, true);
+  video.emit('contextmenu', { clientX: 800, clientY: 600 });
+  video.emit('keydown', { key: 'Enter' }); video.emit('keydown', { key: ' ' });
+  assert.equal(chats.length, 3); assert.equal(actions.length, 0);
+  video.emit('keydown', { key: 'Enter', repeat: true }); video.emit('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(chats.length, 3, 'Held keys and IME confirmation do not reopen chat');
+  video.emit('contextmenu', { clientX: 800, clientY: 600 }); f.node('pet-overlay-pat').emit('click');
+  assert.equal(f.node('pet-overlay').dataset.animation, 'clicks'); assert.equal(video.loop, false);
+  assert.equal(chats.length, 3); assert.deepEqual(actions.map(value => value.kind), ['clicks']);
+  video.emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
+  assert.equal(f.calls.length, 1, 'Overlay interaction only dispatches chat intent; it does not request a model or change stored state');
+});
+
+test('dragging, pointer cancellation, another pointer and secondary clicks never open chat', async () => {
+  const f = fixture(); await f.ui.ready; const chats = [];
+  f.view.addEventListener('synora:pet-chat-open', event => chats.push(event));
+  f.pointer('pointerdown', 800, 600); f.pointer('pointermove', 700, 500); f.pointer('pointerup', 700, 500);
+  f.pointer('pointerdown', 800, 600); f.pointer('pointercancel', 800, 600);
+  f.pointer('pointerdown', 800, 600); f.pointer('pointermove', 700, 500); f.pointer('pointercancel', 700, 500);
+  f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600, { pointerId: 99 }); f.pointer('pointercancel', 800, 600);
+  f.pointer('pointerdown', 800, 600, { button: 2 }); f.pointer('pointerup', 800, 600, { button: 2 });
+  assert.equal(chats.length, 0);
+  f.ui.destroy(); f.node('pet-overlay-video').emit('keydown', { key: 'Enter' });
+  assert.equal(chats.length, 0, 'A detached or hidden pet cannot reopen chat');
 });
 
 test('task states track parallel tools, approvals, results and completion only in the current workspace', async () => {
@@ -247,7 +271,9 @@ test('idle eye following receives in-window and desktop cursor positions and pau
   assert.equal(f.gaze.points.at(-1).x, -300); assert.equal(f.gaze.points.at(-1).y, 1200);
   f.pointer('pointerdown', 800, 600); assert.equal(f.gaze.active, false);
   f.pointer('pointercancel', 800, 600); assert.equal(f.gaze.active, true);
-  f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600); assert.equal(f.gaze.active, false);
+  f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600); assert.equal(f.gaze.active, true, 'Opening chat does not play a transient animation');
+  f.node('pet-overlay-video').emit('contextmenu', { clientX: 800, clientY: 600 });
+  f.node('pet-overlay-pat').emit('click'); assert.equal(f.gaze.active, false);
   f.node('pet-overlay-video').emit('ended'); assert.equal(f.gaze.active, true);
   f.emit({ type: 'run-start' }); assert.equal(f.gaze.active, false);
   f.emit({ type: 'pet-state', pet: state({ workStatus: false }) }); assert.equal(f.gaze.active, false, 'Disabling task animations does not pretend a running task is idle');

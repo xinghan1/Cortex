@@ -71,7 +71,7 @@ function normalizeUsage(record) {
     reported, partial: record.partial === true, status: record.status,
     ...(reported && validTokens(record.cachedInputTokens) && record.cachedInputTokens <= record.inputTokens
       ? { cachedInputTokens: record.cachedInputTokens } : {}),
-    ...(['context-compaction', 'approval-review', 'prompt-completion', 'side-chat', 'pet-chat'].includes(record.purpose) ? { purpose: record.purpose } : {}),
+    ...(['context-compaction', 'approval-review', 'prompt-completion', 'side-chat', 'pet-chat', 'pet-reaction'].includes(record.purpose) ? { purpose: record.purpose } : {}),
     ...(record.historicalApproximate === true ? { historicalApproximate: true } : {}),
   };
 }

@@ -58,6 +58,7 @@ function documentFixture() {
     ResizeObserver: class { constructor(callback) { this.callback = callback; } observe() {} unobserve() {} disconnect() {} },
   });
   document.defaultView = view;
+  document.addEventListener=(...args)=>view.addEventListener(...args);document.removeEventListener=(...args)=>view.removeEventListener(...args);
   const composer = document.createElement('div'); composer.className = 'composer-area';
   const taskForm = document.createElement('form'); taskForm.id = 'task-form';
   const draft = document.createElement('textarea'); draft.id = 'task-input'; draft.value = '原有草稿 <script>保留</script>'; draft.setSelectionRange(2, 5);
@@ -90,6 +91,7 @@ async function fixture(t, initial = asking(), options = {}) {
     answerPetDialog: async arg => { calls.push({ method: 'answer', ...arg }); if (options.answer) return options.answer(arg); current = empty(current.revision + 1); return envelope(current); },
     dismissPetDialog: async arg => { calls.push({ method: 'dismiss', ...arg }); current = empty(current.revision + 1); return envelope(current); },
     sendPetChat: async arg => { calls.push({ method: 'chat', ...arg }); if (options.chat) return options.chat(arg); current = { ...asking('chat-reply', false), revision: current.revision + 1 }; return envelope(current); },
+    reactPetAction: async arg => { calls.push({ method: 'react', ...arg }); if(options.react)return options.react(arg);return envelope({...empty(current.revision+1),running:true,activity:'reaction'}); },
     stopTask: async () => { calls.push({ method: 'stop' }); },
   };
   vm.runInNewContext(source, { window: dom.view });
@@ -164,7 +166,7 @@ test('casual speech is independent of draft and input bubbles, direct chat uses 
   assert.equal(h.node('pet-dialog').hidden, false); assert.equal(h.node('pet-dialog-input-bubble').hidden, true);
   assert.equal(h.node('pet-dialog-messages'), null); assert.equal(h.node('pet-dialog-toggle'), null);
   assert.equal(h.document.documentElement.classList.contains('pet-dialog-replaces-composer'), false);
-  const original = h.draft.value; h.node('pet-dialog-launcher').fire('click');
+  const original = h.draft.value; h.view.fire('synora:pet-chat-open');
   assert.equal(h.node('pet-dialog-input-bubble').hidden, false);
   h.node('pet-dialog-input').value = '直接和宠物聊天'; h.node('pet-dialog-form').fire('submit'); await tick();
   assert.equal(h.calls[0].method, 'chat'); assert.equal(h.calls[0].id, undefined); assert.equal(h.calls[0].text, '直接和宠物聊天');
@@ -199,10 +201,10 @@ test('a new blocking question waits for the original draft IME to finish before 
 test('active chat can start without a question or primary session and closing a pending reply only folds it', async t => {
   const h = await fixture(t, empty(), { hiddenPet: true });
   h.changeContext({ workspaceId: 'workspace-one', sessionId: null }); await tick(); h.flush();
-  h.node('pet-dialog-launcher').fire('click'); assert.equal(h.node('pet-dialog-input-bubble').hidden, false);
+  h.view.fire('synora:pet-chat-open'); assert.equal(h.node('pet-dialog-input-bubble').hidden, false);
   h.node('pet-dialog-input').value = '主动聊天'; h.node('pet-dialog-form').fire('submit'); await tick();
   assert.deepEqual(h.calls[0], { method: 'chat', workspaceId: 'workspace-one', sessionId: null, text: '主动聊天' });
-  h.emit({ ...empty(3), running: true }); h.node('pet-dialog-close').fire('click');
+  h.emit({ ...empty(3), running: true }); h.node('pet-dialog-input-bubble').fire('keydown',{key:'Escape'});
   assert.equal(h.node('pet-dialog').hidden, true); h.advance(500); h.flush(); assert.equal(h.node('pet-dialog-input-bubble').hidden, true);
   h.emit({ ...asking('late-casual', false), revision: 4 });
   assert.equal(h.node('pet-dialog').hidden, true); assert.equal(h.node('pet-dialog-stop').hidden, true);
@@ -228,17 +230,17 @@ test('ordinary queued speech cannot interrupt its minimum lifetime, local action
   const h = await fixture(t, { ...asking('long-casual',false), question:{...asking('long-casual',false).question,question:'字'.repeat(100)} });
   const action = (kind,sequence) => h.view.fire('synora:pet-action',{detail:{kind,sequence}});
   action('idle',1); assert.equal(h.calls.length,0);
-  for (const [index,kind] of ['clicks','drag','turn','actions','thinking'].entries()) { action(kind,index+2); if(index<4)h.advance(2000); }
+  for (const [index,kind] of ['drag','thinking','working','result','waiting'].entries()) { action(kind,index+2); if(index<4)h.advance(2000); }
   assert.equal(h.node('pet-dialog-question').textContent,'字'.repeat(100));
   h.advance(2000); const seen=[];
   while(!h.node('pet-dialog').hidden) { seen.push(h.node('pet-dialog-question').textContent); h.advance(Number(h.node('pet-dialog').dataset.duration)); }
-  assert.equal(seen.length,4); assert.match(seen[0],/摸摸头/); assert.ok(seen.every(text=>!text.includes('歪歪脑袋')));
+  assert.equal(seen.length,4); assert.match(seen[0],/搬家/); assert.ok(seen.every(text=>!text.includes('等你呀')));
   assert.equal(h.calls.length,0);
 });
 
 test('blocking speech survives timers and rejects action interruption, while ordinary expiry never discards focused chat input', async t => {
   const h = await fixture(t, empty());
-  h.node('pet-dialog-launcher').fire('click'); const input=h.node('pet-dialog-input'); input.focus(); input.value='尚未发出的聊天'; input.fire('compositionstart');
+  h.view.fire('synora:pet-chat-open'); const input=h.node('pet-dialog-input'); input.focus(); input.value='尚未发出的聊天'; input.fire('compositionstart');
   h.emit({...asking('casual-next',false),revision:2}); h.advance(30000); h.flush();
   assert.equal(input.value,'尚未发出的聊天'); assert.equal(h.document.activeElement,input); assert.equal(h.node('pet-dialog-input-bubble').hidden,false);
   h.emit({...asking('blocking-now'),revision:3}); h.view.fire('synora:pet-action',{detail:{kind:'clicks',sequence:100}}); h.advance(30000);
@@ -247,7 +249,7 @@ test('blocking speech survives timers and rejects action interruption, while ord
 });
 
 test('scope changes reset abandoned composition flags and clear all old speech, queues and timers', async t => {
-  const h=await fixture(t,empty()); h.node('pet-dialog-launcher').fire('click');
+  const h=await fixture(t,empty()); h.view.fire('synora:pet-chat-open');
   h.node('pet-dialog-input').fire('compositionstart'); h.draft.fire('compositionstart');
   h.changeContext({workspaceId:'fresh-workspace',sessionId:'fresh-session'}); await tick(); h.flush();
   h.pet.hidden=true; h.emit({...asking('fresh-blocking'),revision:2});
@@ -260,7 +262,7 @@ test('scope changes reset abandoned composition flags and clear all old speech, 
 
 test('open input bubble requests measured pet clearance and reserve-induced hiding latches composer fallback without a loop', async t => {
   const h=await fixture(t,empty()), changes=[]; h.view.addEventListener('synora:pet-chat-layout',event=>changes.push(event.detail));
-  h.node('pet-dialog-launcher').fire('click'); h.flush();
+  h.view.fire('synora:pet-chat-open'); h.flush();
   assert.equal(changes.at(-1).open,true); assert.equal(changes.at(-1).height,118);
   const bubble=h.node('pet-dialog-input-bubble').getBoundingClientRect(); assert.ok(bubble.top>=h.pet.rect.bottom);
   h.pet.hidden=true; h.notify(h.pet); h.flush(); assert.equal(changes.at(-1).open,false);
@@ -273,7 +275,7 @@ test('open input bubble requests measured pet clearance and reserve-induced hidi
 test('consecutive chat accepts clear only the submitted draft when launch events arrive before the IPC response', async t => {
   let pending=deferred();
   const h=await fixture(t,asking('previous-casual',false),{chat:()=>{h.emit({...empty(h.calls.length*2),running:true});return pending.promise;}});
-  h.node('pet-dialog-launcher').fire('click'); const input=h.node('pet-dialog-input');
+  h.view.fire('synora:pet-chat-open'); const input=h.node('pet-dialog-input');
   for(let index=1;index<=2;index++) {
     input.value='发送第'+index+'条'; h.node('pet-dialog-form').fire('submit');
     assert.equal(input.disabled,true); pending.resolve(h.envelope({...empty(index*2),running:true})); await tick();
@@ -289,7 +291,7 @@ test('consecutive chat accepts clear only the submitted draft when launch events
 
 test('explicitly reopening chat can reread the latest expired reply without loading a history window or calling a model', async t => {
   const h=await fixture(t,asking('expired-reply',false)); h.advance(11000); h.flush();
-  assert.equal(h.node('pet-dialog').hidden,true); h.node('pet-dialog-launcher').fire('click');
+  assert.equal(h.node('pet-dialog').hidden,true); h.view.fire('synora:pet-chat-open');
   assert.equal(h.node('pet-dialog').hidden,false); assert.match(h.node('pet-dialog-question').textContent,/选择一个处理方式/);
   assert.equal(h.node('pet-dialog-messages'),null); assert.equal(h.calls.length,0);
 });
@@ -326,4 +328,58 @@ test('entry animation transforms do not change the layout height used to anchor 
   const changes=[];h.view.addEventListener('synora:pet-chat-layout',event=>changes.push(event.detail));
   h.pet.rect={left:900,top:450,right:1100,bottom:650,width:200,height:200};h.notify(h.pet);h.flush();
   assert.equal(Number.parseFloat(panel.style.top),290);assert.equal(changes.length,0,'An unchanged real input height must not re-reserve animated dimensions');
+});
+
+test('pet-open replaces launch and close controls, while outside collapse preserves local draft and never dismisses backend history', async t => {
+  const h=await fixture(t,empty());assert.equal(h.node('pet-dialog-launcher'),null);assert.equal(h.node('pet-dialog-close'),null);
+  h.view.fire('synora:pet-chat-open');const input=h.node('pet-dialog-input'),bubble=h.node('pet-dialog-input-bubble');
+  assert.equal(h.node('pet-dialog-send').parentElement,input.parentElement);input.value='尚未发出的聊天';input.setSelectionRange(1,4);
+  for(const target of [input,bubble,h.pet,h.node('pet-dialog')])h.view.fire('pointerdown',{target});
+  assert.notEqual(bubble.dataset.phase,'leaving');
+  h.view.fire('pointerdown',{target:h.draft,composedPath:()=>[bubble]});assert.notEqual(bubble.dataset.phase,'leaving');
+  const event=h.view.fire('pointerdown',{target:h.draft});assert.equal(event.prevented,undefined);assert.equal(bubble.dataset.phase,'leaving');
+  h.advance(500);h.flush();assert.equal(bubble.hidden,true);assert.equal(input.value,'尚未发出的聊天');assert.deepEqual([input.selectionStart,input.selectionEnd],[1,4]);
+  assert.equal(h.calls.length,0);h.view.fire('synora:pet-chat-open');assert.equal(input.value,'尚未发出的聊天');assert.equal(bubble.hidden,false);
+});
+
+test('outside clicks leave a submitting or replying input open without consuming the main interface click', async t => {
+  const accepted=deferred(),h=await fixture(t,empty(),{chat:()=>accepted.promise});h.view.fire('synora:pet-chat-open');
+  h.node('pet-dialog-input').value='等待回复';h.node('pet-dialog-form').fire('submit');
+  let event=h.view.fire('pointerdown',{target:h.draft});assert.equal(event.prevented,undefined);assert.notEqual(h.node('pet-dialog-input-bubble').dataset.phase,'leaving');
+  accepted.resolve(h.envelope({...empty(2),running:true,activity:'chat'}));await tick();
+  event=h.view.fire('pointerdown',{target:h.draft});assert.equal(event.prevented,undefined);assert.notEqual(h.node('pet-dialog-input-bubble').dataset.phase,'leaving');
+  h.emit({...asking('completed-chat',false),revision:3});h.view.fire('pointerdown',{target:h.draft});
+  assert.equal(h.node('pet-dialog-input-bubble').dataset.phase,'leaving');assert.ok(h.calls.every(call=>call.method!=='dismiss'));
+});
+
+test('outside collapse waits for IME commit and blocking questions cannot collapse by an outside click', async t => {
+  const h=await fixture(t,empty());h.view.fire('synora:pet-chat-open');const input=h.node('pet-dialog-input');
+  input.fire('compositionstart');input.value='候选文字';h.view.fire('pointerdown',{target:h.draft});
+  assert.notEqual(h.node('pet-dialog-input-bubble').dataset.phase,'leaving');input.value='已提交文字';input.fire('compositionend');h.advance(500);h.flush();
+  assert.equal(input.value,'已提交文字');assert.equal(h.node('pet-dialog-input-bubble').hidden,true);
+  h.emit({...asking('must-answer'),revision:3});h.view.fire('pointerdown',{target:h.draft});
+  assert.equal(h.node('pet-dialog-input-bubble').hidden,false);assert.equal(h.calls.length,0);
+});
+
+test('three explicit menu actions use scoped model reactions without local canned text and manual typing is protected', async t => {
+  const h=await fixture(t,empty());h.advance(11000);h.flush();
+  for(const [index,kind] of ['clicks','turn','actions'].entries()) {
+    h.emit(empty(index*3+2));h.view.fire('synora:pet-action',{detail:{kind,sequence:index+100}});await tick();
+    assert.equal(h.calls.at(-1).method,'react');assert.equal(h.calls.at(-1).kind,kind);assert.equal(h.calls.at(-1).workspaceId,'workspace-one');
+    assert.equal(h.node('pet-dialog').hidden,true,'No fixed line should precede the model result');
+    h.emit({...asking('model-'+index,false),revision:index*3+4,question:{...asking('model-'+index,false).question,kind:'reaction',question:'模型回应 '+kind,fallback:false}});
+    assert.equal(h.node('pet-dialog-question').textContent,'模型回应 '+kind);h.advance(11000);h.flush();
+  }
+  h.emit(empty(20));h.view.fire('synora:pet-chat-open');h.node('pet-dialog-input').value='正在聊天';
+  h.view.fire('synora:pet-action',{detail:{kind:'turn',sequence:200}});await tick();assert.equal(h.calls.length,3);
+  h.node('pet-dialog-input').value='';h.view.fire('synora:pet-action',{detail:{kind:'turn',sequence:201}});await tick();
+  assert.equal(h.calls.length,4,'An empty open editor should not block an explicit menu action');
+});
+
+test('reaction activity keeps the chat editor available for a manual message and ignores stale reaction responses', async t => {
+  const pending=deferred(),h=await fixture(t,empty(),{react:()=>pending.promise});h.view.fire('synora:pet-action',{detail:{kind:'turn',sequence:1}});
+  h.emit({...empty(2),running:true,activity:'reaction'});h.view.fire('synora:pet-chat-open');assert.equal(h.node('pet-dialog-input').disabled,false);
+  h.changeContext({workspaceId:'next',sessionId:'next'});await tick();
+  pending.resolve({workspaceId:'workspace-one',sessionId:'session-one',...asking('old-reaction',false),revision:50});await tick();
+  assert.notEqual(h.node('pet-dialog-question').textContent,'<img onerror=unsafe> 选择一个处理方式？');
 });

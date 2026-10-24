@@ -111,14 +111,14 @@ module.exports = async function smokeRoleModels({ win, output, dataDir }) {
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);
     await until('project opened', async () => (await call('getState')).workspace.root === project && await js('!projectSwitching'));
     const original = await call('getState');
-    for (const role of ['subagent', 'approval', 'completion', 'sidebar']) assert.equal(original.roleModels[role].enabled, false);
+    for (const role of ['subagent', 'approval', 'completion', 'sidebar', 'pet']) assert.equal(original.roleModels[role].enabled, false);
     await call('saveSettings', { provider: 'deepseek', model: models.main, baseUrl, apiKey: keys.main, reasoningEffort: 'default', maxSteps: 4 });
     await call('listModels', { force: true }); mainSettings = (await call('getState')).settings;
 
     stage = 'settings menu and four default following roles';
     await click('#menu-settings'); await click('#app-menu-popup [data-action="role-settings"]');
     const list = await js(`[...document.querySelectorAll('#role-models-list .role-model-row')].map(n=>({role:n.dataset.role,text:n.textContent}))`);
-    assert.deepEqual(list.map(item => item.role), ['subagent', 'approval', 'completion', 'sidebar']); assert.ok(list.every(item => item.text.includes('跟随主模型')));
+    assert.deepEqual(list.map(item => item.role), ['subagent', 'approval', 'completion', 'sidebar', 'pet']); assert.ok(list.every(item => item.text.includes('跟随主模型')));
     assert.equal(await js(`Boolean(document.querySelector('#role-models-dialog .role-models-intro'))`), false);
     await capture('role-defaults.png'); await click('#role-models-close');
     await configure('sidebar');

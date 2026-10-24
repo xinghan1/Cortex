@@ -32,13 +32,15 @@ test('role configuration reads only its own saved keys and account even while fo
   assert.equal(roles.scope(value, 'completion').settings.providers.deepseek.hasKey, false);
   assert.equal(roles.scope(value, 'sidebar').settings.providers, undefined);
   assert.equal(roles.scope(value, 'sidebar').chatgpt.session, undefined);
+  assert.equal(roles.scope(value, 'pet').enabled, false);
+  assert.equal(roles.scope(value, 'pet').settings.providers, undefined);
   assert.throws(() => roles.scope(value, '__proto__'), /未识别/u);
 });
 
 test('only main and subagent require tool capability; text-only roles retain text compatibility checks', () => {
   const text = { id: 'text-model', compatible: false, textCompatible: true, supportsTools: false };
   for (const role of [null, 'subagent']) assert.equal(roles.selectable(role, text), false);
-  for (const role of ['approval', 'completion', 'sidebar']) {
+  for (const role of ['approval', 'completion', 'sidebar', 'pet']) {
     assert.equal(roles.selectable(role, text), true);
     assert.equal(roles.selectable(role, { compatible: false, textCompatible: false }), false);
     assert.equal(roles.selectable(role, { supportsTools: false }), true);
@@ -75,16 +77,19 @@ function listFixture(bridge = {}) {
 test('role list shows follow versus independent models and opens the existing form for exactly one role', async () => {
   const f = listFixture(), value = state(); value.approvalReviewer = { model: 'legacy-reviewer' };
   f.controller.update(value); f.controller.openList();
-  assert.equal(f.rows().length, 4);
+  assert.equal(f.rows().length, 5);
   assert.match(f.rows()[0].text, /跟随主模型.*main-model/u);
   assert.match(f.rows()[1].text, /独立配置.*approval-model/u);
   assert.match(f.rows()[2].text, /跟随主模型.*main-model/u);
+  assert.match(f.rows()[4].text, /宠物模型.*跟随主模型.*main-model/u);
+  await f.rows()[4].children[1].children[0].click(); assert.deepEqual(f.calls, ['pet']);
+  f.controller.openList();
   await f.rows()[1].children[1].children[0].click();
-  assert.deepEqual(f.calls, ['approval']); assert.equal(f.elements.get('role-models-dialog').open, false);
+  assert.deepEqual(f.calls, ['pet', 'approval']); assert.equal(f.elements.get('role-models-dialog').open, false);
   value.roleModels.approval.enabled = false; f.controller.update(value); f.controller.openList();
   assert.match(f.rows()[1].text, /当前连接.*legacy-reviewer/u);
   assert.equal(f.rows()[1].children[1].children[1].disabled, false);
-  f.busy(true); f.controller.open('sidebar'); assert.deepEqual(f.calls, ['approval']);
+  f.busy(true); f.controller.open('sidebar'); assert.deepEqual(f.calls, ['pet', 'approval']);
 });
 
 test('restore-follow saves only the chosen role, locks duplicate actions and retains configuration on failure', async () => {
@@ -130,6 +135,19 @@ test('the shared form opens role provider settings without inheriting the main s
   f.context.openSettings('approval'); assert.equal(f.node('base-url-input').value, 'https://role.invalid/v1');
   assert.equal(f.node('key-status').textContent, '已在本机保存');
   f.context.openSettings(); assert.equal(f.context.settingsRole, null); assert.equal(f.node('provider-select').value, 'openai');
+});
+
+test('the pet configuration opens the shared form with its own model and account and never inherits sidebar settings', () => {
+  const f = formFixture();
+  f.context.appState.roleModels.sidebar = { enabled: true, settings: { provider: 'relay', model: 'sidebar-only', providers: { relay: { hasKey: true } } } };
+  f.context.openSettings('pet');
+  assert.equal(f.context.settingsRole, 'pet'); assert.equal(f.node('key-status').textContent, '未配置');
+  f.context.appState.roleModels.pet = { enabled: true, settings: { provider: 'openai', authMode: 'chatgpt', model: 'pet-model',
+    providers: { openai: { hasKey: false, authMode: 'chatgpt', model: 'pet-model' } } }, chatgpt: { session: { profileId: 'pet-account' } } };
+  f.context.openSettings('pet');
+  assert.equal(f.context.modelSettingsConfig().model, 'pet-model');
+  assert.equal(f.context.modelSettingsChatGPT().session.profileId, 'pet-account');
+  assert.equal(f.node('api-key-input').value, '');
 });
 
 test('shared form saves the validated role catalog token through the role bridge without changing main settings', async () => {

@@ -5,6 +5,7 @@
     Object.freeze({ id: 'approval', name: '帮我批准', description: '判断操作是否符合任务范围' }),
     Object.freeze({ id: 'completion', name: 'TAB 提示词补齐', description: '生成输入框中的 Tab 补全建议' }),
     Object.freeze({ id: 'sidebar', name: '侧边问答', description: '在侧栏进行独立问答' }),
+    Object.freeze({ id: 'pet', name: '宠物模型', description: '与大肥鱼聊天和生成动作台词' }),
   ]);
   const names = { openai: 'OpenAI', deepseek: 'DeepSeek', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
   const roleInfo = role => roles.find(item => item.id === role);

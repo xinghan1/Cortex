@@ -74,7 +74,7 @@ test('native sign-in is explicit, duplicate sign-ins lock and cancellation remai
 });
 
 test('every independent role routes its own login, disconnect and storage retry without main-account calls', async () => {
-  for (const role of ['subagent', 'approval', 'completion', 'sidebar']) {
+  for (const role of ['subagent', 'approval', 'completion', 'sidebar', 'pet']) {
     const f = fixture({ role }); f.mode(); await f.node('deepseek-login-sign-in').click();
     f.update(connected(role + '-generation')); await f.node('deepseek-login-disconnect').click();
     f.update(account({ storageRecovery: true, error: { code: 'DEEPSEEK_STORAGE_UNREADABLE' } })); await f.node('deepseek-login-retry').click();

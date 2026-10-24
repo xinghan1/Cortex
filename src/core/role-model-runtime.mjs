@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SettingsCatalogSelections } from './settings-model-catalog.mjs';
 
-export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar']);
+export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar', 'pet']);
 const roleName = role => {
   if (!MODEL_ROLES.includes(role)) throw new Error('模型用途无效。');
   return role;

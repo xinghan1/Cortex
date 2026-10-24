@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   answerPetDialog: arg => call('answerPetDialog', arg),
   dismissPetDialog: arg => call('dismissPetDialog', arg),
   sendPetChat: arg => call('sendPetChat', arg),
+  reactPetAction: arg => call('reactPetAction', arg),
   cancelPromptCompletion: arg => call('cancelPromptCompletion', arg),
   managePendingPrompt: arg => call('managePendingPrompt', arg),
   resumePendingPrompts: () => call('resumePendingPrompts'),

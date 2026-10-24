@@ -478,6 +478,19 @@ function ollamaThink(effort, capabilities) {
   return { think: value };
 }
 
+function messagesOutputTokens(maxOutputTokens, authMode, reasoningEffort, modelCapabilities) {
+  if (maxOutputTokens !== undefined) return maxOutputTokens;
+  if (authMode !== 'deepseek-account') return 8192;
+  // Messages requires an explicit output budget. Match DeepSeek's published
+  // effort-tier defaults rather than applying the unrelated Claude 8K default.
+  // This is a bounded allowance, never a request for the model's full maximum.
+  // https://api-docs.deepseek.com/api/create-chat-completion/
+  // https://api-docs.deepseek.com/guides/anthropic_api/
+  const preferred = reasoningEffort === 'none' ? 8192 : reasoningEffort === 'max' ? 131072 : 65536;
+  const advertised = modelCapabilities?.maxOutputTokens;
+  return Number.isSafeInteger(advertised) && advertised > 0 ? Math.min(preferred, advertised) : preferred;
+}
+
 function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint, reasoningEffort, authMode, apiProtocol, modelCapabilities, contextWindowTokens) {
   if (provider === 'ollama') {
     const context = modelCapabilities?.contextWindow ?? contextWindowTokens ?? 32768;
@@ -526,7 +539,7 @@ function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint
     };
   }
   return {
-    model, stream: true, max_tokens: maxOutputTokens ?? 8192, ...anthropicMessages(messages, model, endpoint),
+    model, stream: true, max_tokens: messagesOutputTokens(maxOutputTokens, authMode, reasoningEffort, modelCapabilities), ...anthropicMessages(messages, model, endpoint),
     ...reasoning,
     ...(tools.length ? { tools: tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters })) } : {}),
   };
@@ -846,8 +859,11 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
   }
 
   function rejectIncomplete(reason) {
-    if (['max_tokens', 'length', 'max_output_tokens', 'model_context_window_exceeded'].includes(reason)) {
-      fail('模型输出达到长度限制，工具调用未执行；请缩短上下文或提高输出上限。', 'PROVIDER_TRUNCATED');
+    if (reason === 'model_context_window_exceeded') {
+      fail('模型上下文容量不足，工具调用未执行；请压缩上下文后重试。', 'PROVIDER_TRUNCATED');
+    }
+    if (['max_tokens', 'length', 'max_output_tokens'].includes(reason)) {
+      fail('单次模型输出达到长度限制，工具调用未执行；请拆分任务或降低思考档位后重试。', 'PROVIDER_TRUNCATED');
     }
     if (reason === 'content_filter' || reason === 'refusal') {
       fail('模型拒绝完成此请求，请调整任务内容。', 'PROVIDER_REFUSAL');

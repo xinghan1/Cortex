@@ -57,7 +57,7 @@ function preparePortableMigration() {
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
 }
 
-let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
+let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, createPetTaskHandoff, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
 let deepseek;
 const roleDeepseekAccounts = new Map();
@@ -441,10 +441,10 @@ const petDialog = createPetDialogController({
     const connection = await catalogContext(); signal.throwIfAborted();
     const chatgptProfileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
-    if (!roleModels.isEnabled('sidebar') && currentSession.messages.length
+    if (!roleModels.isEnabled('pet') && currentSession.messages.length
         && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再与宠物聊天。');
-    const config = await roleRequestConfig('sidebar', { controller: { signal }, connectionKey: connection.key,
+    const config = await roleRequestConfig('pet', { controller: { signal }, connectionKey: connection.key,
       chatgptProfileId, deepseekProfileId }, publicSettings().model);
     signal.throwIfAborted();
     if (shuttingDown || quitting || sessionId !== currentSession?.id || revision !== configRevision)
@@ -452,10 +452,8 @@ const petDialog = createPetDialogController({
     return { ...config, ...(config.modelRole ? {} : { chatgptProfileId, deepseekProfileId }),
       petSessionId: sessionId, petConfigRevision: revision };
   },
-  isConfigCurrent: config => !shuttingDown && !quitting && config.petSessionId === currentSession?.id
-    && config.petConfigRevision === configRevision && (config.modelRole
-      ? roleModels.isEnabled(config.modelRole) && roleRuntime.revisions[config.modelRole] === config.roleConnectionRevision
-      : !roleModels.isEnabled('sidebar')),
+  isConfigCurrent: currentPetConfig,
+  onTask: request => handoffPetTask(request),
   requestModel: dispatchModelRequest, redact, onUsage: recordRunUsage,
   emit: event => {
     if (win && !win.isDestroyed() && host.active === context)
@@ -463,6 +461,23 @@ const petDialog = createPetDialogController({
     else host.publishWorkspaces();
   },
 });
+function currentPetConfig(config) {
+  return !shuttingDown && !quitting && config.petSessionId === currentSession?.id
+    && config.petConfigRevision === configRevision && (config.modelRole
+      ? roleModels.isEnabled(config.modelRole) && roleRuntime.revisions[config.modelRole] === config.roleConnectionRevision
+      : !roleModels.isEnabled('pet'));
+}
+let petTaskHandoff;
+function handoffPetTask(request) {
+  if (!petTaskHandoff) petTaskHandoff = createPetTaskHandoff({
+    validate: value => {
+      if (!value.config || !currentPetConfig(value.config) || value.sessionId !== currentSession?.id
+          || host.active !== context || win?.isDestroyed()) throw new DOMException('项目、会话或模型已变化，制作需求未发送。', 'AbortError');
+    },
+    submit: (arg, options) => submitPrompt(arg, options),
+  });
+  return petTaskHandoff(request);
+}
 function publicPetDialog() { return { ...petDialog.snapshot(), workspaceId, sessionId: currentSession?.id || null }; }
 function validatePetDialogScope(arg, fields) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)
@@ -735,13 +750,14 @@ function scheduleNextPrompt() {
     pauseQueue(redact(error.message || '待发送队列已暂停。'));
   }));
 }
-async function submitPrompt(arg) {
+async function submitPrompt(arg, { validate, source } = {}) {
   promptCompletion.abort();
   const attachments = normalizeImageAttachments(arg?.attachments);
   if (typeof arg?.text !== 'string' || (!arg.text.trim() && !attachments.length) || arg.text.trim().length > 40000 || (arg.mode !== undefined && !['queue', 'steer'].includes(arg.mode))) throw new Error('请输入最多 40000 个字符的提示词或添加图片，并选择有效发送方式。');
   const createdAt = new Date().toISOString();
   const submissionGeneration = stopGeneration;
   return serializePrompts(async () => {
+    validate?.();
     if (shuttingDown || quitting || win?.isDestroyed()) throw new Error('窗口正在关闭或等待退出确认，消息未发送。');
     if (submissionGeneration !== stopGeneration) throw new Error('发送已取消，消息未发送，输入内容仍保留。');
     requireTools();
@@ -765,7 +781,7 @@ async function submitPrompt(arg) {
     }
     const immediately = !activeRun && !pendingPrompts.length && !queuePaused;
     const mode = arg.mode === 'steer' && activeRun && !activeRun.controller.signal.aborted ? 'steer' : 'queue';
-    const item = { id: randomUUID(), text: arg.text.trim(), mode, source: immediately ? 'direct' : 'queue', createdAt, ...(attachments.length ? { attachments } : {}) };
+    const item = { id: randomUUID(), text: arg.text.trim(), mode, source: source === 'pet' ? 'pet' : immediately ? 'direct' : 'queue', createdAt, ...(attachments.length ? { attachments } : {}) };
     pendingPrompts.push(item); emitQueue();
     const started = await dispatchNextPrompt();
     return { id: item.id, disposition: started ? 'started' : mode === 'steer' ? 'steering' : 'queued' };
@@ -1723,6 +1739,10 @@ function buildHandlers() {
       validatePetDialogScope(arg, ['text']);
       petDialog.send({ text: arg.text }, { sessionId: currentSession.id }); return publicPetDialog();
     },
+    reactPetAction: arg => {
+      validatePetDialogScope(arg, ['kind', 'sequence']);
+      petDialog.react({ kind: arg.kind, sequence: arg.sequence }, { sessionId: currentSession.id }); return publicPetDialog();
+    },
     cancelPromptCompletion: arg => promptCompletion.cancel(arg),
     stopTask: () => { ++stopGeneration; pauseQueue('任务已停止，待发送消息已暂停。'); activeRun?.controller.abort(); petDialog.stop(); return null; },
     stopSubagent: async arg => {
@@ -2168,6 +2188,7 @@ async function boot() {
   ({ createPromptCompletionController } = await import('./core/prompt-completion.mjs'));
   ({ createSideChatController } = await import('./core/side-chat.mjs'));
   ({ createPetDialogController, PET_QUESTION_TOOL } = await import('./core/pet-dialog.mjs'));
+  ({ createPetTaskHandoff } = await import('./core/pet-task-intent.mjs'));
   ({ runAgent, runDemo } = await import('./core/agent.mjs'));
   ({ requestModel } = await import('./core/providers.mjs'));
   ({ TerminalSession } = await import('./core/terminal.mjs'));
@@ -2347,7 +2368,7 @@ async function smokeTest() {
     console.log('SYNORA_DEEPSEEK_LOGIN_SMOKE_OK ' + JSON.stringify(result));
     app.quit(); return;
   }
-  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'pet-dialog', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'deepseek-easter-egg', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'pet-dialog', 'pet-task', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'deepseek-easter-egg', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));

@@ -97,7 +97,7 @@
       selectedPack = state.packs.find(pack => pack.id === state.packId) || state.packs[0] || null;
       overlay.dataset.packId = selectedPack?.id || '';
       overlay.hidden = !state.enabled || !selectedPack;
-      video.setAttribute('aria-label', `${text(selectedPack?.name) || '宠物'}：拖动移动，点击互动，右键打开菜单`);
+      video.setAttribute('aria-label', `${text(selectedPack?.name) || '宠物'}：左键聊天，拖动移动，右键打开菜单`);
       video.setAttribute('aria-expanded', String(!menu.hidden));
       position();
       if (overlay.hidden) { video.pause(); closeMenu(); return; }
@@ -181,6 +181,12 @@
       menu.style.top = `${bounded(clientY, 8, Math.max(8, (view.innerHeight || 768) - bounds.height - 8), 8)}px`;
       menu.children[0]?.focus?.({ preventScroll: true });
     }
+    function openChat() {
+      if (disposed || overlay.hidden) return;
+      closeMenu();
+      const CustomEvent = view.CustomEvent || root.CustomEvent;
+      if (typeof CustomEvent === 'function') view.dispatchEvent?.(new CustomEvent('synora:pet-chat-open'));
+    }
     const pointerDown = event => {
       if (event.button !== 0 || disposed) return;
       closeMenu(); event.preventDefault();
@@ -202,12 +208,12 @@
       const moved = drag.moved; drag = null; overlay.classList.remove('dragging');
       if (video.hasPointerCapture?.(event.pointerId)) video.releasePointerCapture(event.pointerId);
       if (moved) { transient = false; play(state.workStatus ? phase : 'idle', false, true); void save({ x: state.x, y: state.y }).catch(() => {}); }
-      else if (event.type !== 'pointercancel') play('clicks', true, true);
+      else if (event.type !== 'pointercancel') openChat();
       syncGaze();
     };
     const contextMenu = event => { event.preventDefault(); openMenu(event.clientX, event.clientY); };
     const keyDown = event => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); play('clicks', true, true); }
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!event.repeat && !event.isComposing) openChat(); }
       else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
         event.preventDefault(); const bounds = overlay.getBoundingClientRect(); openMenu(bounds.left, bounds.top);
       } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {

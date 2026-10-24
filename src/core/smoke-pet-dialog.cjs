@@ -15,8 +15,8 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
   const phases = ['choice', 'custom', 'cancel', 'stop'];
   const prompts = Object.fromEntries(phases.map(name => [name, 'PET_QUESTION_' + name.toUpperCase() + '_' + nonce]));
   const questions = Object.fromEntries(phases.map(name => [name, name === 'cancel' ? '请逐项确认本次测试的处理方式。'.repeat(100) : '请确认这次测试的处理方式：' + name]));
-  const answers = {}, records = [], problems = [], screenshots = [], timing = [];
-  let child, original, appearance, pet, configured = false, stage = 'initialize', casualCount = 0;
+  const answers = {}, records = [], problems = [], screenshots = [], timing = [], reactions = [];
+  let child, original, appearance, pet, configured = false, stage = 'initialize', casualCount = 0, heldCasual = null, failReaction = false;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const js = (code, target = child) => target.webContents.executeJavaScript(code);
   const call = (name, value, target = child) => js(`window.forge[${JSON.stringify(name)}](${value === undefined ? '' : JSON.stringify(value)})`, target);
@@ -32,6 +32,8 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     return {hidden:panel?.hidden,mode:panel?.dataset.mode,blocking:panel?.dataset.blocking,collapsed:panel?.dataset.collapsed,
       anchor:panel?.dataset.anchor,characterGeometry:pr&&{top:pr.top+offsetY+40*scale,bottom:pr.top+offsetY+340*scale},
       question:$('pet-dialog-question')?.textContent,historyExists:!!$('pet-dialog-messages'),titleExists:!!$('pet-dialog-toggle'),error:$('pet-dialog-error')?.textContent,
+      launcherExists:!!$('pet-dialog-launcher'),closeExists:!!$('pet-dialog-close'),
+      sendInsideInput:(()=>{const a=$('pet-dialog-send').getBoundingClientRect(),b=input.getBoundingClientRect();return a.left>=b.left&&a.right<=b.right&&a.top>=b.top&&a.bottom<=b.bottom})(),
       phase:panel?.dataset.phase,duration:Number(panel?.dataset.duration),elapsed:performance.now()-Number(panel?.dataset.startedAt),
       animation:getComputedStyle(panel).animationDuration,animationName:getComputedStyle(panel).animationName,
       opacity:Number(getComputedStyle(panel).opacity),transform:getComputedStyle(panel).transform,
@@ -48,15 +50,15 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
       viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth>innerWidth+1,
       nativeInputs:window.__petDialogInputs||[],sessionId:appState?.sessionId};
   })()`);
-  const click = async selector => {
+  const click = async (selector, button = 'left') => {
     const point = await until('native target ' + selector, () => js(`(() => {
       const node=document.querySelector(${JSON.stringify(selector)});if(!node||node.disabled||!node.checkVisibility({visibilityProperty:true}))return null;
       node.scrollIntoView({block:'nearest',behavior:'instant'});const r=node.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};
       return node.contains(document.elementFromPoint(p.x,p.y))?p:null;
     })()`));
     child.webContents.focus(); child.webContents.sendInputEvent({type:'mouseMove',...point});
-    child.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
-    child.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point}); await wait(60);
+    child.webContents.sendInputEvent({type:'mouseDown',button,clickCount:1,...point});
+    child.webContents.sendInputEvent({type:'mouseUp',button,clickCount:1,...point}); await wait(60);
   };
   const key = async (keyCode, modifiers = []) => {
     child.webContents.focus(); child.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
@@ -94,7 +96,16 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
         if(system.includes('输入框提示词补全助手')) output=[message(JSON.stringify({continuation:'请继续检查。'}))];
         else {
           assert.match(system,/宠物聊天伙伴/);assert.ok(!raw.includes(draft),'Pet chat never receives unsent main draft');
-          casualCount++;phase='casual';await wait(250);output=[message('这是独立的宠物回复 '+casualCount+'。')];
+          const reaction=user.includes('摸了摸大肥鱼')?'clicks':user.includes('转了个身')?'turn':user.includes('表演敲键盘')?'actions':null;
+          if(reaction){
+            reactions.push({kind:reaction,failed:failReaction});phase='reaction-'+reaction;await wait(150);
+            if(failReaction){response.writeHead(503,{'Content-Type':'application/json'});response.end(JSON.stringify({error:{message:'Isolated unavailable fixture'}}));return;}
+            output=[message('MODEL_REACTION_'+reaction+'：大肥鱼收到啦！')];
+          }else{
+            casualCount++;phase='casual';
+            if(user.includes('再聊一句'))await new Promise(resolve=>{heldCasual={resolve};});else await wait(250);
+            output=[message('99 + 11 = **110**。这是独立的宠物回复 '+casualCount+'。')];
+          }
         }
       } else {
         phase=phases.find(name=>user.includes(prompts[name]));assert.ok(phase,'Unexpected primary question request');
@@ -147,7 +158,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
 
     stage='visible pet real tool question and native choice';await ask('choice');
     await until('pet bubble placement',async()=>(await inspect()).mode==='bubble'&&(await inspect()).inputPhase==='visible');let value=await inspect();assertLayout(value);assert.equal(value.replaced,false);
-    assert.equal(value.historyExists,false);assert.equal(value.titleExists,false);assert.equal(value.anchor,'character');
+    assert.equal(value.historyExists,false);assert.equal(value.titleExists,false);assert.equal(value.launcherExists,false);assert.equal(value.closeExists,false);assert.equal(value.sendInsideInput,true);assert.equal(value.anchor,'character');
     assert.ok(Math.abs(value.inputGeometry.top-value.characterGeometry.bottom-8)<=1,'Chat input bubble stays just below the character feet');
     assert.ok(Math.abs(value.geometry.bottom-value.characterGeometry.top+10)<=1,'Speech bubble stays close to the character head');
     assert.equal(value.stopVisible,true);await capture('pet-dialog-bubble.png');
@@ -181,18 +192,37 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await until('stopped question removed',async()=>!(await call('getPetDialog')).question&&!(await inspect()).replaced);
     assert.equal(answers.stop,undefined,'Stop must not invent a question answer');
 
-    stage='active separate pet chat and nonblocking close';await click('#pet-dialog-launcher');
-    await click('#pet-dialog-input');await child.webContents.insertText('你好，今天适合聊点什么？');await key('Enter');
+    stage='left-click pet opens chat with internal send and outside collapse keeps drafts';await call('setPet',{enabled:true});await click('#pet-overlay-video');
+    await until('pet left click opens input',async()=>!(await inspect()).inputBubbleHidden&&(await inspect()).inputPhase==='visible');
+    assert.equal((await inspect()).sendInsideInput,true);await click('#pet-dialog-input');await child.webContents.insertText('你好，今天适合聊点什么？');await click('#pet-dialog-send');
     await until('casual completed',async()=>{const value=await call('getPetDialog');return !value.running&&value.messages.some(item=>item.role==='assistant'&&item.content.includes('独立的宠物回复'));});
     await until('casual answer visible',async()=>!(await inspect()).hidden&&(await inspect()).question.includes('独立的宠物回复'));
     value=await inspect();assertLayout(value);assert.equal(value.replaced,false);assert.notEqual(value.mainDisplay,'none');assert.equal(value.input,'','Accepted first chat draft is cleared');
+    assert.equal(value.question.includes('**'),false,'Pet chat is normalized to plain text');
     const chatBefore=await call('getPetDialog');assert.equal(chatBefore.messages.length,2);await capture('pet-dialog-active-chat.png');
-    await click('#pet-dialog-close');await until('casual closed',async()=>(await inspect()).hidden);
+    await click('#task-input');await until('casual outside close',async()=>(await inspect()).hidden&&(await inspect()).inputBubbleHidden);
     assert.equal((await call('getPetDialog')).messages.length,2,'Closing panel keeps temporary chat until session or application exit');
-    await click('#pet-dialog-launcher');await click('#pet-dialog-input');await child.webContents.insertText('再聊一句。');await key('Enter');
-    await until('pending casual',async()=>(await call('getPetDialog')).running);assert.equal((await inspect()).input,'','Accepted consecutive chat draft is cleared');await click('#pet-dialog-close');
-    await until('background casual completes',async()=>!(await call('getPetDialog')).running);
-    await until('muted reply stays hidden',async()=>(await inspect()).hidden&&(await inspect()).inputBubbleHidden);assert.equal((await inspect()).replaced,false);
+    await click('#pet-overlay-video');await click('#pet-dialog-input');await child.webContents.insertText('保留这段临时草稿');await click('#task-input');
+    await until('unsent draft folded',async()=>(await inspect()).inputBubbleHidden);await click('#pet-overlay-video');
+    assert.equal((await inspect()).input,'保留这段临时草稿');await click('#pet-dialog-input');await key('a',['control']);await child.webContents.insertText('再聊一句。');await click('#pet-dialog-send');
+    await until('pending held casual',async()=>heldCasual&&(await call('getPetDialog')).running);assert.equal((await inspect()).input,'','Accepted consecutive chat draft is cleared');
+    await click('#task-input');assert.equal((await inspect()).inputBubbleHidden,false);assert.notEqual((await inspect()).inputPhase,'leaving');
+    assert.equal(await js(`document.activeElement===$('task-input')`),true,'Outside click still performs its main interface action while reply remains open');
+    heldCasual.resolve();heldCasual=null;await until('background casual completes',async()=>!(await call('getPetDialog')).running);
+    await click('#task-input');await until('reply complete allows collapse',async()=>(await inspect()).hidden&&(await inspect()).inputBubbleHidden);assert.equal((await inspect()).replaced,false);
+
+    stage='three actual pet menu actions request model responses and unavailable model uses backend fallback';
+    for(const [kind,selector] of [['clicks','#pet-overlay-pat'],['turn','#pet-overlay-turn'],['actions','#pet-overlay-action']]){
+      await click('#pet-overlay-video','right');await click(selector);
+      await until('model reaction '+kind,async()=>{const current=await call('getPetDialog');return !current.running&&current.question?.kind==='reaction'&&current.question.reactionKind===kind&&current.question.question.includes('MODEL_REACTION_'+kind);});
+      await until('reaction bubble '+kind,async()=>(await inspect()).question.includes('MODEL_REACTION_'+kind));
+      assert.equal((await call('getPetDialog')).question.fallback,false);await click('#pet-overlay-video');await click('#task-input');await until('reaction folded',async()=>(await inspect()).inputBubbleHidden);
+      await wait(2100);
+    }
+    failReaction=true;await click('#pet-overlay-video','right');await click('#pet-overlay-pat');
+    await until('unavailable reaction fallback',async()=>{const current=await call('getPetDialog');return !current.running&&current.question?.kind==='reaction'&&current.question.reactionKind==='clicks'&&current.question.fallback===true;});
+    failReaction=false;
+    assert.ok((await call('getPetDialog')).question.question.length>0);assert.equal((await inspect()).inputBubbleHidden,true);
 
     stage='scope switch deletes temporary chat and rejects stale payload';const previous=await call('getPetDialog');await call('newSession');
     await until('new session clears pet chat',async()=>{const next=await call('getPetDialog');return next.sessionId!==previous.sessionId&&!next.messages.length&&!next.question;});
@@ -201,7 +231,9 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     const result={status:'completed',realApi:false,realCommands:false,localFixtureModelOnly:true,realBlockingTool:true,nativeChoiceAnswer:true,
       nativeCustomAnswer:true,composingEnterDoesNotSend:true,hiddenPetComposerFallback:true,originalDraftAndSelectionPreserved:true,
       cancellationNotAuthorization:true,stopCancelsBlockedTask:true,separateActiveCasualChat:true,casualDoesNotBlockMainDraft:true,
-      closeKeepsTemporaryHistory:true,mutedPendingReplyStaysHidden:true,sessionSwitchClearsTemporaryHistory:true,staleScopeRejected:true,
+      closeKeepsTemporaryHistory:true,outsideClosePreservesDraft:true,outsideDuringReplyKeepsInputOpen:true,outsideClickDoesNotConsumeMainAction:true,
+      nativePetLeftClickOpensChat:true,sendButtonInsideTextarea:true,noLaunchOrCloseButton:true,petChatPlainText:true,threeNativeMenuModelReactions:true,unavailableReactionBackendFallback:true,reactions,
+      sessionSwitchClearsTemporaryHistory:true,staleScopeRejected:true,
       speechAndInputAreSeparateBubbles:true,noHistoryWindow:true,inputBelowPet:true,bundledCharacterAnchor:true,ordinarySpeechLifetimeIncludes500msTransitions:true,timing,
       acceptedConsecutiveChatDraftCleared:true,longQuestionEightChoicesContained:true,sixStyles:true,narrowWindow:true,answers,requests:records,screenshots};
     await fs.writeFile(path.join(output,'pet-dialog-smoke-result.json'),JSON.stringify(result,null,2)+'\n');return result;
@@ -210,6 +242,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     if(child&&!child.isDestroyed())try{failure.ui=await inspect();failure.petDialog=await call('getPetDialog');await capture('pet-dialog-failure.png');}catch(diagnostic){failure.diagnosticError=diagnostic.message;}
     await fs.writeFile(path.join(output,'pet-dialog-smoke-result.json'),JSON.stringify(failure,null,2)+'\n');throw new Error('Pet-dialog smoke failed at '+stage+': '+error.message,{cause:error});
   } finally {
+    heldCasual?.resolve();
     const target=child&&!child.isDestroyed()?child:win;
     if(!target.isDestroyed()){
       await call('stopTask',undefined,target).catch(()=>{});if(appearance)await call('setAppearance',{uiStyle:appearance.uiStyle},target).catch(()=>{});

@@ -13,8 +13,7 @@
     const width = 220 * scale, height = 300 * scale;
     return { left, top, width, height, right: left + width, bottom: top + height };
   }
-  const actionLines = Object.freeze({ clicks: '嘿嘿，摸摸头，干活更有劲啦！', drag: '搬家咯！这里的风景也不错。',
-    turn: '转个身，换个角度看看。', actions: '小手准备好啦，陪你一起敲键盘。', thinking: '让我歪歪脑袋，想一想。',
+  const actionLines = Object.freeze({ drag: '搬家咯！这里的风景也不错。', thinking: '让我歪歪脑袋，想一想。',
     working: '认真模式开启，我就在这儿陪着你。', result: '探出脑袋，看看你在忙什么。', waiting: '我先乖乖坐好，等你呀。',
     success: '开心地转个圈，送你一朵小红花！', error: '皱皱眉，再拍拍小脑袋。' });
   function create({ document = root.document, bridge = root.forge } = {}) {
@@ -39,18 +38,16 @@
     input.placeholder = '和大肥鱼说点什么…'; input.setAttribute('aria-describedby', 'pet-dialog-status pet-dialog-error');
     const error = make('p', 'pet-dialog-error', 'pet-dialog-error'); error.hidden = true; error.setAttribute('role', 'status');
     const status = make('span', 'pet-dialog-status', 'pet-dialog-status'); status.setAttribute('role', 'status');
-    const footer = make('div', '', 'pet-dialog-actions');
-    const close = make('button', 'pet-dialog-close', 'pet-dialog-button', '收起'); close.type = 'button'; close.setAttribute('aria-label', '收起聊天输入气泡');
-    const send = make('button', 'pet-dialog-send', 'pet-dialog-button pet-dialog-send', '发送'); send.type = 'submit';
-    footer.append(status, close, send); form.append(label, input, error, footer); inputBubble.append(form);
-    const launcher = make('button', 'pet-dialog-launcher', 'pet-dialog-launcher', '和大肥鱼聊天'); launcher.type = 'button';
-    launcher.setAttribute('aria-label', '和大肥鱼聊天'); launcher.setAttribute('aria-controls', 'pet-dialog-input-bubble');
-    document.body.append(panel, inputBubble, launcher);
+    const editor = make('div', '', 'pet-dialog-editor');
+    const send = make('button', 'pet-dialog-send', 'pet-dialog-button pet-dialog-send', '↑'); send.type = 'submit';
+    editor.append(input, send); form.append(label, editor, error, status); inputBubble.append(form);
+    document.body.append(panel, inputBubble);
     let disposed = false, context = null, contextVersion = 0, stateVersion = 0, actionVersion = 0, frame = 0, initialized = false;
-    let snapshot = { revision: -1, question: null, running: false, error: null };
+    let snapshot = { revision: -1, question: null, running: false, activity: null, error: null };
     let busy = false, stopBusy = false, composing = false, draftComposing = false, selected = null, chatOpened = false, muted = false;
     let anchor = null, anchorObserver = null, savedFocus = null, speech = null, lastQuestionId = null, lastActionSequence = -1, pendingAction = null;
     let inputPhaseTimer = 0, inputOpen = false, reservation = '', lastActionAt = -Infinity, fallbackLatched = false, reservedOpen = false;
+    let closeAfterComposition = false, reactionPending = false, reactionVersion = 0;
     const speechQueue = [], timers = new Set(), listeners = [];
     const contextKey = value => JSON.stringify([value?.workspaceId || '', value?.sessionId || '']);
     const listen = (node, type, callback) => { node?.addEventListener(type, callback); listeners.push(() => node?.removeEventListener(type, callback)); };
@@ -141,14 +138,6 @@
       if (visiblePet && initialized && context && !isBlocking && !speech && !snapshot.question && !welcomedDocuments.has(document)) {
         welcomedDocuments.add(document); showSpeech('Hello！我是大肥鱼，今天你要做些什么呢？', { local: true });
       }
-      launcher.hidden = isBlocking || inputOpen; launcher.disabled = !context;
-      launcher.setAttribute('aria-expanded', String(inputOpen)); launcher.dataset.mode = fallback ? 'composer' : 'bubble';
-      const launchParent = fallback ? document.querySelector('.composer-context') || composer || document.body : document.body;
-      if (launcher.parentElement !== launchParent) launchParent.append(launcher);
-      if (visiblePet) {
-        setStyle(launcher, 'left', `${Math.max(8, Math.min(view.innerWidth - launcher.offsetWidth - 8, bounds.right - launcher.offsetWidth))}px`);
-        setStyle(launcher, 'top', `${Math.max(48, Math.min(view.innerHeight - 36, bounds.top + bounds.height * .35))}px`);
-      } else { setStyle(launcher, 'left', ''); setStyle(launcher, 'top', ''); }
       const replaces = fallback && isBlocking && !draftComposing;
       if (replaces) rememberFocus();
       document.documentElement.classList.toggle('pet-dialog-replaces-composer', replaces);
@@ -194,9 +183,11 @@
         button.addEventListener('click', () => { selected = index; void answer({ choiceIndex: index }); }); options.append(button);
       }
       cancel.hidden = !isBlocking; cancel.disabled = busy; stop.hidden = !isBlocking; stop.disabled = stopBusy; speechActions.hidden = !isBlocking;
-      input.disabled = busy || Boolean(snapshot.running && !isBlocking); send.disabled = input.disabled; close.hidden = isBlocking;
-      send.textContent = isBlocking ? '回答' : '发送'; input.placeholder = isBlocking ? '也可以输入你的答复…' : '和大肥鱼说点什么…';
+      input.disabled = busy || Boolean(snapshot.running && snapshot.activity !== 'reaction' && !isBlocking); send.disabled = input.disabled;
+      send.setAttribute('aria-label', isBlocking ? '发送答复' : '发送消息'); send.title = isBlocking ? '回答' : '发送';
+      input.placeholder = isBlocking ? '也可以输入你的答复…' : '和大肥鱼说点什么…';
       status.textContent = busy ? '发送中…' : snapshot.running ? '正在回复…' : isBlocking ? '等待你的答复' : '';
+      status.hidden = !status.textContent;
       const failure = boundedText(snapshot.error?.message || snapshot.error, 1000);
       if (!error.textContent && failure) { error.textContent = failure; error.hidden = false; }
       layout();
@@ -215,7 +206,7 @@
       }
       snapshot = { revision: next.revision, question: next.question ? { ...next.question,
         options: Array.isArray(next.question.options) ? next.question.options.filter(choice => typeof choice === 'string').slice(0, 8) : [] } : null,
-        running: next.running === true, error: next.error || null };
+        running: next.running === true, activity: next.activity === 'reaction' ? 'reaction' : next.activity === 'chat' ? 'chat' : null, error: next.error || null };
       const current = activeQuestion();
       if (current?.blocking && (speech?.id !== current.id || !speech?.persistent)) {
         speechQueue.length = 0; showSpeech(current.question, { persistent: true, id: current.id });
@@ -236,9 +227,10 @@
       ++contextVersion; ++actionVersion; context = { workspaceId: state.workspaceId, sessionId: state.sessionId ?? null };
       clearTimers(); clearSpeech(); speechQueue.length = 0; initialized = false; savedFocus = null; busy = false; stopBusy = false; chatOpened = false; muted = false;
       composing = false; draftComposing = false;
+      closeAfterComposition = false; reactionPending = false; ++reactionVersion;
       pendingAction = null;
       inputOpen = false; fallbackLatched = false; inputBubble.hidden = true; lastQuestionId = null; reserve(false);
-      snapshot = { revision: -1, question: null, running: false, error: null };
+      snapshot = { revision: -1, question: null, running: false, activity: null, error: null };
       input.value = ''; error.textContent = ''; error.hidden = true; render(); return refresh();
     }
     async function act(method, payload) {
@@ -268,26 +260,43 @@
       }
       await act(method, payload);
     }
-    function dismiss() {
+    function closeChat() {
+      if (blocking()) return;
+      if (composing) { closeAfterComposition = true; return; }
       chatOpened = false; muted = true; speechQueue.length = 0;
-      if (!blocking()) clearSpeech();
-      if (activeQuestion()) return act('dismissPetDialog', {});
-      render(); return Promise.resolve();
+      clearSpeech(); render();
+    }
+    function dismiss() {
+      if (blocking()) return act('dismissPetDialog', {});
+      closeChat(); return Promise.resolve();
     }
     listen(form, 'submit', event => { event.preventDefault(); if (!composing) void answer(); });
     listen(input, 'input', () => { selected = null; error.textContent = ''; error.hidden = true; schedule(); });
-    listen(input, 'compositionstart', () => { composing = true; }); listen(input, 'compositionend', () => { composing = false; schedule(); });
+    listen(input, 'compositionstart', () => { composing = true; });
+    listen(input, 'compositionend', () => {
+      composing = false;
+      if (closeAfterComposition) { closeAfterComposition = false; if (!snapshot.running && !busy && !reactionPending) closeChat(); }
+      schedule();
+    });
     listen(input, 'keydown', event => {
       if (composing || event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void answer(); }
     });
     const escape = event => { if (event.key === 'Escape' && !composing && !event.isComposing) { event.preventDefault(); event.stopPropagation(); void dismiss(); } };
     listen(panel, 'keydown', escape); listen(inputBubble, 'keydown', escape);
-    listen(close, 'click', () => void dismiss()); listen(cancel, 'click', () => void dismiss());
-    listen(launcher, 'click', () => {
+    listen(cancel, 'click', () => void dismiss());
+    listen(view, 'synora:pet-chat-open', () => {
+      if (!context || disposed) return;
+      closeAfterComposition = false;
       chatOpened = true; muted = false;
       if (!speech && activeQuestion() && !blocking()) enqueueSpeech(activeQuestion().question, { id: activeQuestion().id });
       render(); input.focus({ preventScroll: true });
+    });
+    listen(document, 'pointerdown', event => {
+      if (!chatOpened || blocking() || snapshot.running || busy || reactionPending) return;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+      const inside = [anchor, document.getElementById('pet-overlay-menu'), panel, inputBubble].some(node => node && (node.contains(event.target) || path.includes(node)));
+      if (!inside) closeChat();
     });
     listen(stop, 'click', async () => {
       if (stopBusy) return; const origin = contextVersion; stopBusy = true; render();
@@ -295,10 +304,20 @@
       catch { if (!disposed && origin === contextVersion) { error.textContent = '停止任务失败，请重试。'; error.hidden = false; } }
       finally { if (!disposed && origin === contextVersion) { stopBusy = false; render(); } }
     });
-    listen(view, 'synora:pet-action', event => {
+    listen(view, 'synora:pet-action', async event => {
       const detail = event.detail;
       if (!detail || !Number.isSafeInteger(detail.sequence) || detail.sequence <= lastActionSequence) return;
       lastActionSequence = detail.sequence;
+      if (['clicks', 'turn', 'actions'].includes(detail.kind)) {
+        if (!context || !bridge.reactPetAction || reactionPending || busy || blocking() || snapshot.running || composing || input.value) return;
+        const origin = contextVersion, version = ++reactionVersion; reactionPending = true; muted = false;
+        try {
+          const next = await bridge.reactPetAction({ ...context, kind: detail.kind, sequence: detail.sequence });
+          if (!disposed && origin === contextVersion && version === reactionVersion && sameContext(next)) update(next);
+        } catch { /* Only the backend may provide a model-failure reaction fallback. */ }
+        finally { if (!disposed && origin === contextVersion && version === reactionVersion) reactionPending = false; }
+        return;
+      }
       if (!actionLines[detail.kind] || blocking() || snapshot.running || chatOpened || input.value || now() - lastActionAt < 2000) return;
       const bounds = anchor?.getBoundingClientRect(); if (!anchor || anchor.hidden || !(bounds?.width > 0 && bounds.height > 0)) return;
       lastActionAt = now(); enqueueSpeech(actionLines[detail.kind], { local: true }); render();
@@ -322,7 +341,7 @@
       clearTimers(); speech = null; speechQueue.length = 0; reserve(false);
       if (frame) view.cancelAnimationFrame(frame); frame = 0;
       resizeObserver?.disconnect(); bodyObserver?.disconnect(); anchorObserver?.disconnect();
-      for (const remove of listeners) remove(); if (typeof unsubscribe === 'function') unsubscribe(); panel.remove(); inputBubble.remove(); launcher.remove();
+      for (const remove of listeners) remove(); if (typeof unsubscribe === 'function') unsubscribe(); panel.remove(); inputBubble.remove();
     }
     return Object.freeze({ ready, update, updateContext, refresh, destroy });
   }

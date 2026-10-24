@@ -99,9 +99,51 @@ test('independent API configuration routes exact connection, model, protocol and
   assert.equal(configs.key('completion', 'openai'), '');
 });
 
+test('the pet role keeps API, ChatGPT and DeepSeek connections independent from sidebar and main accounts', async t => {
+  const { runtime, configs, accounts, requests, main, dir } = await fixture(t), mainBefore = main.publicSettings();
+  await select(runtime, 'sidebar', api({ apiKey: 'sidebar-private-key' }), 'text-model');
+  const sidebarBefore = configs.publicState().sidebar;
+  await select(runtime, 'pet', api({ apiKey: 'pet-private-key' }), 'text-model');
+  const apiConfig = await runtime.config('pet');
+  await runtime.dispatch({ ...apiConfig, messages: [{ role: 'user', content: 'hello' }], tools: [] });
+  assert.equal(requests[0].apiKey, 'pet-private-key'); assert.equal(requests[0].modelRole, 'pet');
+  assert.equal(apiConfig.modelCapabilities.supportsTools, false);
+
+  const petAccount = accounts.get('pet');
+  petAccount.state.session = { status: 'connected', sharing: true, profileId: 'pet-chatgpt-account' };
+  await select(runtime, 'pet', { provider: 'openai', authMode: 'chatgpt' }, 'gpt-6.1-sol');
+  const accountConfig = await runtime.config('pet');
+  assert.equal(accountConfig.chatgptProfileId, 'pet-chatgpt-account'); assert.equal(accountConfig.apiKey, '');
+  assert.equal((await runtime.dispatch({ ...accountConfig, tools: [] })).route, 'pet');
+  assert.equal(petAccount.calls.length, 1); assert.equal(accounts.get('sidebar').calls.length, 0);
+
+  const deepseekCalls = [], petDeepseek = {
+    state: { session: { status: 'connected', sharing: true, profileId: 'pet-deepseek-account' } },
+    async publicState() { return structuredClone(this.state); },
+    async listModels() { return [model('deepseek-flash', { supportsTools: false }, 'deepseek')]; },
+    async requestModel(config) { deepseekCalls.push(config); return { route: 'pet-deepseek' }; },
+  };
+  runtime.deepseekAccounts.set('pet', petDeepseek);
+  await select(runtime, 'pet', { provider: 'deepseek', authMode: 'deepseek-account' }, 'deepseek-flash');
+  const deepseekConfig = await runtime.config('pet');
+  assert.equal(deepseekConfig.deepseekProfileId, 'pet-deepseek-account'); assert.equal(deepseekConfig.apiKey, '');
+  assert.equal((await runtime.dispatch({ ...deepseekConfig, tools: [] })).route, 'pet-deepseek');
+  assert.equal(deepseekCalls.length, 1); assert.equal(deepseekCalls[0].modelRole, 'pet');
+  petDeepseek.state.session.profileId = 'replaced-pet-account';
+  await assert.rejects(runtime.dispatch(deepseekConfig), /授权已变化/u);
+  const restored = await new RoleModels(dir, crypto).init();
+  assert.equal(restored.publicState().pet.settings.authMode, 'deepseek-account');
+  assert.equal(restored.publicState().pet.settings.model, 'deepseek-flash');
+  assert.equal(restored.key('pet', 'relay'), 'pet-private-key');
+  assert.deepEqual(configs.publicState().sidebar, sidebarBefore); assert.deepEqual(main.publicSettings(), mainBefore);
+  const publicState = await runtime.publicState(mainBefore);
+  assert.equal(publicState.pet.deepseek.session.profileId, 'replaced-pet-account');
+  assert.ok(!JSON.stringify(publicState).includes('pet-private-key'));
+});
+
 test('text roles accept text-only models while subagents reject models without coding tools', async t => {
   const { runtime } = await fixture(t);
-  for (const role of ['approval', 'completion', 'sidebar']) {
+  for (const role of ['approval', 'completion', 'sidebar', 'pet']) {
     const preview = await select(runtime, role, api(), 'text-model');
     assert.equal(preview.models.find(value => value.id === 'text-model').compatible, true);
     const config = await runtime.config(role);

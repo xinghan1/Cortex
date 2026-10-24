@@ -59,12 +59,12 @@ async function fixture(initial = state(), options = {}) {
 test('unknown model capacity is blank and sources follow the directory without inventing 850000 tokens', async () => {
   const h = await fixture(); h.api.open();
   assert.equal(h.nodes['context-trigger-input'].value, '');
-  assert.equal(h.nodes['context-capacity-source'].textContent, '容量来源：未知');
+  assert.equal(h.nodes['context-capacity-source'].textContent, '');
   assert.equal(h.calls.length, 0);
   h.update(state({ capacityTokens: 128000, advertisedTokens: 128000, source: 'catalog' }));
   assert.equal(h.nodes['context-trigger-input'].value, '128000');
   assert.equal(h.nodes['context-trigger-input'].max, '128000');
-  assert.equal(h.nodes['context-capacity-source'].textContent, '容量来源：模型目录');
+  assert.equal(h.nodes['context-capacity-source'].textContent, '');
 });
 
 test('manual saves bind the model scope, lock duplicate actions, and reset clears only the manual capacity', async () => {
@@ -74,12 +74,12 @@ test('manual saves bind the model scope, lock duplicate actions, and reset clear
   assert.equal(h.nodes['context-trigger-save'].disabled, true);
   await tick();
   assert.equal(h.calls.length, 1); assert.equal(h.calls[0].scope, 'scope-one'); assert.equal(h.calls[0].capacityTokens, 64000);
-  assert.equal(h.nodes['context-capacity-source'].textContent, '容量来源：手动设置');
+  assert.equal(h.nodes['context-capacity-source'].textContent, '');
   assert.equal(h.nodes['context-settings-popup'].hidden, true);
   h.api.open(); h.nodes['context-trigger-reset'].fire('click'); await tick();
   assert.equal(h.calls[1].capacityTokens, null);
   assert.equal(h.nodes['context-trigger-input'].value, '128000');
-  assert.equal(h.nodes['context-capacity-source'].textContent, '容量来源：模型目录');
+  assert.equal(h.nodes['context-capacity-source'].textContent, '');
   const unknown = await fixture(); unknown.api.open(); unknown.nodes['context-trigger-reset'].fire('click'); await tick();
   assert.equal(unknown.nodes['context-trigger-input'].value, '');
   assert.equal(unknown.calls[0].capacityTokens, null);
@@ -95,7 +95,7 @@ test('known real upper limits and integer bounds reject invalid drafts before IP
   h.edit('128001'); h.nodes['context-trigger-save'].fire('click');
   assert.match(h.nodes['context-trigger-error'].textContent, /128,000/);
   h.update(state({ capacityTokens: 128000, advertisedTokens: 128000, manualTokens: 256000, source: 'manual', manualClamped: true }));
-  assert.match(h.nodes['context-capacity-source'].title, /自动识别的容量上限/);
+  assert.equal(h.nodes['context-capacity-source'].title, '');
 });
 
 test('model or connection changes discard unsaved drafts and ignore late save results and errors', async () => {
@@ -167,8 +167,8 @@ test('the usage summary shows real totals, approximate three-way allocation and 
   assert.equal(h.nodes['context-messages-tokens'].textContent, '~9K');
   const widths = ['system', 'tools', 'messages'].map(name => parseFloat(h.nodes[`context-segment-${name}`].style.width));
   assert.ok(widths.every(value => value > 0)); assert.ok(Math.abs(widths.reduce((sum, value) => sum + value, 0) - 18.8) < 1e-8);
-  assert.match(h.nodes['context-usage-source'].textContent, /服务端实测.*分项为估算/);
-  assert.match(h.nodes['context-usage-source'].title, /按服务端输入用量校准/);
+  assert.equal(h.nodes['context-usage-source'].textContent, '');
+  assert.equal(h.nodes['context-usage-source'].title, '');
   assert.equal(h.nodes['context-composition-meter'].getAttribute('aria-valuenow'), '18.8');
   h.api.open(); h.edit('60000'); h.api.updateMetrics({ ...usage(), contextDisplay: { ...usage().contextDisplay, usedTokens: 32000 } });
   assert.equal(h.nodes['context-trigger-input'].value, '60000');
@@ -180,7 +180,7 @@ test('retained reports use only their matching old breakdown and absent parts st
   const retained = usage('last-reported'); retained.contextBreakdown.displaySource = 'current';
   h.api.updateMetrics(retained);
   assert.equal(h.nodes['context-usage-label'].textContent, '上下文已用 18.8%');
-  assert.match(h.nodes['context-usage-source'].textContent, /最近完整请求.*新增内容待回报/);
+  assert.equal(h.nodes['context-usage-source'].textContent, '');
   assert.equal(h.nodes['context-system-tokens'].textContent, '—');
   assert.equal(h.nodes['context-segment-system'].style.width, '0%');
   retained.contextBreakdown = { ...usage('last-reported').contextBreakdown, toolTokens: null };
@@ -198,8 +198,8 @@ test('local totals and partial attachment costs are labelled as estimates while 
   h.api.updateMetrics(estimated);
   assert.equal(h.nodes['context-usage-label'].textContent, '上下文已用 ~1.2%');
   assert.equal(h.nodes['context-usage-tokens'].textContent, '~12K / 1M');
-  assert.match(h.nodes['context-usage-source'].textContent, /本地估算.*分项为估算/);
-  assert.match(h.nodes['context-usage-source'].title, /图像 Token 成本/);
+  assert.equal(h.nodes['context-usage-source'].textContent, '');
+  assert.equal(h.nodes['context-usage-source'].title, '');
   h.api.updateMetrics(null);
   assert.equal(h.nodes['context-usage-label'].textContent, '上下文已用 —');
   assert.equal(h.nodes['context-usage-tokens'].textContent, '— / 1M');
@@ -209,11 +209,12 @@ test('local totals and partial attachment costs are labelled as estimates while 
   assert.equal(h.nodes['context-system-tokens'].textContent, '—');
 });
 
-test('capacity origin descriptions are rendered as text without guessing account or provider limits', async () => {
+test('capacity and usage source copy stays hidden while the capacity editor remains available', async () => {
   const h = await fixture(state({ capacityTokens: 128000, source: 'catalog', sourceLabel: '账号接口返回',
     sourceDescription: '当前账号接口返回的输入上限。' }));
-  assert.equal(h.nodes['context-capacity-source'].textContent, '容量来源：账号接口返回');
-  assert.equal(h.nodes['context-capacity-detail'].textContent, '当前账号接口返回的输入上限。');
+  assert.equal(h.nodes['context-capacity-source'].textContent, '');
+  assert.equal(h.nodes['context-capacity-detail'].textContent, '');
+  for (const id of ['context-capacity-source', 'context-capacity-detail', 'context-usage-source']) assert.equal(h.nodes[id].hidden, true);
 });
 
 test('the actual footer renderer distinguishes estimates, retained reports and completely unknown usage', async () => {

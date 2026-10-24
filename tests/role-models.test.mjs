@@ -48,13 +48,14 @@ test('all roles start following the main model without inheriting any main crede
   assert.equal(main.key('openai'), 'main-only-secret');
 });
 
-test('four independent provider connections and reasoning settings survive restart without exposing keys', async t => {
+test('five independent provider connections and reasoning settings survive restart without exposing keys', async t => {
   const { dir, roles, file } = await fixture(t);
   const payloads = {
     subagent: { provider: 'relay', model: 'proxy-coder', apiKey: 'subagent-secret', baseUrl: 'https://relay.example/v1', apiProtocol: 'responses', reasoningEffort: 'high' },
     approval: { provider: 'anthropic', model: 'approval-model', apiKey: 'approval-secret', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'low' },
     completion: { ...openai('completion-secret', 'completion-model'), apiProtocol: 'chat-completions', reasoningEffort: 'none' },
     sidebar: { provider: 'ollama', model: 'local-model', baseUrl: 'http://192.0.2.10:11434', reasoningEffort: 'enabled', contextWindowTokens: 65536 },
+    pet: { provider: 'deepseek', model: 'pet-model', apiKey: 'pet-only-secret', reasoningEffort: 'none' },
   };
   await Promise.all(ROLE_KEYS.map(role => roles.save(role, payloads[role])));
   await roles.settled();
@@ -81,6 +82,27 @@ test('four independent provider connections and reasoning settings survive resta
   assert.deepEqual(restored.publicState(), state);
   for (const role of ROLE_KEYS) assert.equal(restored.key(role), roles.key(role));
   assert.deepEqual(await fs.readdir(dir), ['role-models.json']);
+});
+
+test('four-role files add a disabled pet role without inheriting sidebar credentials or rewriting the file on read', async t => {
+  const { dir, roles, file } = await fixture(t);
+  await roles.save('sidebar', openai('sidebar-private-key', 'sidebar-model'));
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.pet;
+  const legacy = JSON.stringify(saved); await fs.writeFile(file, legacy);
+  const restored = await new RoleModels(dir, crypto).init();
+  assert.deepEqual(restored.publicState().sidebar, roles.publicState().sidebar);
+  assert.equal(restored.key('sidebar'), 'sidebar-private-key');
+  assert.equal(restored.isEnabled('pet'), false);
+  for (const provider of Object.keys(restored.settingsFor('pet').providers)) assert.equal(restored.key('pet', provider), '');
+  assert.equal(await fs.readFile(file, 'utf8'), legacy, 'Migration never writes during initialization');
+  await restored.save('pet', openai('pet-private-key', 'pet-model'));
+  const persisted = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.deepEqual(Object.keys(persisted.roles), ROLE_KEYS);
+  const reopened = await new RoleModels(dir, crypto).init();
+  assert.equal(reopened.isEnabled('pet'), true); assert.equal(reopened.key('pet'), 'pet-private-key');
+  assert.equal(reopened.key('sidebar'), 'sidebar-private-key');
+  await reopened.reset('pet');
+  assert.equal(reopened.isEnabled('pet'), false); assert.equal(reopened.key('pet'), 'pet-private-key');
 });
 
 test('catalog drafts allow an empty model and never persist or mutate role state', async t => {
@@ -208,6 +230,8 @@ test('damaged schemas never leak extra fields or get overwritten by subsequent s
   const changes = [
     data => { data.version = 99; },
     data => { data.roles.unexpected = data.roles.approval; },
+    data => { delete data.roles.sidebar; },
+    data => { data.roles.pet = null; },
     data => { data.roles.approval.settings.providers.openai.modelsByAuth.apiKeyLeak = 'plaintext-secret'; },
     data => { data.roles.approval.settings.providers.openai.apiKey = 'plaintext-secret'; },
     data => { data.roles.approval.settings.providers.openai.encryptedKey = '!not-base64!'; },

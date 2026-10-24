@@ -52,10 +52,7 @@
     const explanation = `${origin} · 分项为估算`;
     const hint = $('context-usage-source');
     if (hint) {
-      hint.textContent = explanation;
-      hint.title = (matching && breakdown.source === 'estimated-allocation'
-        ? '分项为本地估算，按服务端输入用量校准。' : '分项按本地文本估算；色条按总占用比例显示。')
-        + (matching && breakdown.hasUnknownAttachmentCost ? '未包含准确的图像 Token 成本。' : '');
+      hint.hidden = true; hint.textContent = ''; hint.title = '';
     }
     meter.dataset.known = String(percent !== null);
     meter.setAttribute('aria-valuetext', `${label.textContent}，${values.textContent} Token，${explanation}`);
@@ -90,15 +87,11 @@
     input.max = String(Math.min(16000000, advertised ?? 16000000));
     input.disabled = !scope;
     if (source) {
-      const label = state.modelCapacity?.sourceLabel || ({ catalog: '模型目录', manual: '手动设置' })[state.modelCapacity?.source] || '未知';
-      source.textContent = `容量来源：${label}`;
-      source.title = state.modelCapacity?.manualClamped ? '手动容量已按自动识别的容量上限调整。' : '';
+      source.hidden = true; source.textContent = ''; source.title = '';
     }
     const detail = $('context-capacity-detail');
     if (detail) {
-      detail.textContent = typeof state.modelCapacity?.sourceDescription === 'string' ? state.modelCapacity.sourceDescription
-        : state.modelCapacity?.source === 'manual' ? '使用为当前模型保存的手动容量。'
-          : state.modelCapacity?.source === 'catalog' ? '使用当前模型目录提供的容量。' : '当前模型未提供容量，可手动填写。';
+      detail.hidden = true; detail.textContent = ''; detail.title = '';
     }
     if (popup.hidden || !dirty) input.value = text(saved);
     updateMetrics(state.sessionMetrics);

@@ -95,6 +95,10 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
   const result = {};
   const capacities = [metadata, metadata.capabilities].filter(object);
   for (const source of capacities) {
+    const output = source.maxOutputTokens ?? source.max_output_tokens;
+    if (Number.isSafeInteger(output) && output > 0) { result.maxOutputTokens = output; break; }
+  }
+  for (const source of capacities) {
     const total = source.contextWindow ?? source.context_window ?? source.context_length;
     const input = source.max_input_tokens;
     const capacity = total ?? input;

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPetDialogController, PET_QUESTION_TOOL, PET_DIALOG_LIMITS as LIMITS } from '../src/core/pet-dialog.mjs';
+import { createPetDialogController, PET_QUESTION_TOOL, PET_DIALOG_LIMITS as LIMITS, normalizePetChatText } from '../src/core/pet-dialog.mjs';
+import { createPetTaskHandoff } from '../src/core/pet-task-intent.mjs';
+import { requestModel as providerRequestModel } from '../src/core/providers.mjs';
 
 const config = { provider: 'relay', model: 'pet-model', apiKey: 'pet-private-key', connectionKey: 'profile-a', roleConnectionRevision: 1 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -243,4 +245,304 @@ test('a cancelled partial history cannot be replayed by a new account even when 
   held.resolve(reply('LATE_ACCOUNT_A_TEXT')); await tick();
   f.controller.send({ text: 'B retry' }); await f.controller.settled();
   assert.equal(f.requests.length, 2); assert.doesNotMatch(JSON.stringify(f.requests[1].messages), /ACCOUNT_A/);
+});
+
+test('only three explicit actions request a short pure-text model reaction without adding artificial prompts or responses to chat history', async () => {
+  for (const [index, kind] of ['clicks', 'turn', 'actions'].entries()) {
+    const f = fixture({ requestModel: async request => { f.requests.push(request); return reply('嘿，**大肥鱼**收到啦！'); } });
+    const state = f.controller.react({ kind, sequence: index + 1 }, { sessionId: 'main-session' });
+    assert.equal(state.running, true); assert.equal(state.activity, 'reaction');
+    await f.controller.settled();
+    assert.equal(f.requests.length, 1); assert.deepEqual(f.requests[0].tools, []);
+    assert.equal(f.requests[0].messages.length, 2); assert.equal(f.requests[0].timeoutMs, 8000);
+    assert.match(f.requests[0].messages[1].content, /只用自然的纯文本/);
+    assert.match(f.requests[0].messages[1].content, /不执行任何操作/);
+    const done = f.controller.snapshot();
+    assert.deepEqual(done.messages, []); assert.equal(done.running, false); assert.equal(done.activity, null);
+    assert.equal(done.question.kind, 'reaction'); assert.equal(done.question.reactionKind, kind);
+    assert.equal(done.question.actionSequence, index + 1); assert.equal(done.question.fallback, false);
+    assert.equal(done.question.question, '嘿，大肥鱼收到啦！');
+    assert.equal(f.usage[0].purpose, 'pet-reaction'); assert.equal(f.usage[0].sessionId, 'main-session');
+    assert.match(f.usage[0].runId, /^[a-f\d-]{36}$/iu);
+  }
+  const f = fixture();
+  for (const args of [{ kind: 'idle', sequence: 1 }, { kind: 'working', sequence: 1 }, { kind: 'clicks', sequence: 0 },
+    { kind: 'clicks', sequence: 1.5 }, { kind: 'turn', sequence: 1, text: 'arbitrary prompt' }]) assert.throws(() => f.controller.react(args), /动作无效/);
+  assert.equal(f.requests.length, 0);
+});
+
+test('reaction failures and short timeouts use only fixed backend fallback lines while unknown usage stays unknown', async () => {
+  for (const failure of ['config', 'http', 'empty', 'tools', 'timeout']) {
+    const f = fixture({ reactionTimeoutMs: 5,
+      getConfig: () => { if (failure === 'config') throw new Error('No configured model'); return config; },
+      requestModel: async request => {
+        f.requests.push(request);
+        if (failure === 'http') throw new Error('HTTP rejected: ' + config.apiKey);
+        if (failure === 'timeout') { request.onProgress({ usage: { inputTokens: 7, outputTokens: 1 } }); return new Promise(() => {}); }
+        return reply(failure === 'empty' ? '' : 'unsafe', { message: { content: failure === 'empty' ? '' : 'unsafe',
+          toolCalls: failure === 'tools' ? [{ name: 'run_command' }] : [] }, usageReported: false });
+      } });
+    f.controller.react({ kind: 'clicks', sequence: 1 }); await f.controller.settled();
+    const state = f.controller.snapshot();
+    assert.equal(state.question.question, '嘿嘿，摸摸头，干活更有劲啦！'); assert.equal(state.question.fallback, true);
+    assert.equal(state.question.kind, 'reaction'); assert.equal(state.error, null); assert.deepEqual(state.messages, []);
+    assert.doesNotMatch(JSON.stringify(f.events), /pet-private-key|HTTP rejected/);
+    if (failure === 'config') assert.equal(f.usage.length, 0);
+    else {
+      assert.equal(f.usage[0].purpose, 'pet-reaction'); assert.equal(f.usage[0].status, 'failed'); assert.equal(f.usage[0].partial, true);
+      assert.equal(f.usage[0].reported, failure === 'timeout');
+      assert.equal(f.usage[0].inputTokens, failure === 'timeout' ? 7 : null);
+    }
+  }
+});
+
+test('only animation reactions lower reasoning effort, preserving the pet model, credentials and ordinary chat/task preferences', async () => {
+  const cases = [
+    [{ provider: 'deepseek' }, 'none'],
+    [{ provider: 'deepseek', authMode: 'deepseek-account' }, 'none'],
+    [{ provider: 'deepseek', modelCapabilities: { reasoningEfforts: ['high', 'max'] } }, 'default'],
+    [{ provider: 'openai', modelCapabilities: { reasoningEfforts: ['none', 'high'] } }, 'none'],
+    [{ provider: 'openai', modelCapabilities: { reasoningEfforts: ['low', 'high', 'max'] } }, 'default'],
+    [{ provider: 'relay', modelCapabilities: { reasoningEfforts: ['none', 'max'] } }, 'none'],
+    [{ provider: 'relay' }, 'default'],
+    [{ provider: 'anthropic' }, 'default'],
+    [{ provider: 'ollama', modelCapabilities: { reasoningEfforts: ['none'], ollamaThinkingValues: [false] } }, 'none'],
+    [{ provider: 'ollama', modelCapabilities: { reasoningEfforts: ['none'] } }, 'default'],
+  ];
+  for (const [patch, effort] of cases) {
+    const selected = { ...config, ...patch, reasoningEffort: 'max', modelRole: 'pet', roleConnectionRevision: 7 };
+    const f = fixture({ getConfig: () => selected });
+    f.controller.react({ kind: 'clicks', sequence: 1 }); await f.controller.settled();
+    assert.equal(f.requests[0].reasoningEffort, effort); assert.equal(f.requests[0].model, selected.model);
+    assert.equal(f.requests[0].apiKey, selected.apiKey); assert.equal(f.requests[0].modelRole, 'pet');
+    assert.equal(f.requests[0].roleConnectionRevision, 7); assert.equal(f.requests[0].maxOutputTokens, 256);
+    assert.equal(f.requests[0].timeoutMs, 8000); assert.equal(selected.reasoningEffort, 'max');
+    f.controller.send({ text: '你好，大肥鱼。' }); await f.controller.settled();
+    assert.equal(f.requests[1].reasoningEffort, 'max');
+    const task = fixture({ getConfig: () => selected,
+      requestModel: async request => { task.requests.push(request); return reply('{"prompt":"制作本地待办应用。"}'); },
+      onTask: async () => ({ disposition: 'queued' }) });
+    task.controller.send({ text: '帮我制作一个待办应用。' }); await task.controller.settled();
+    assert.equal(task.requests[0].reasoningEffort, 'max');
+  }
+});
+
+test('DeepSeek API and account virtual transports send reaction thinking disabled within the existing short output budget', async () => {
+  for (const authMode of ['apiKey', 'deepseek-account']) {
+    const calls = [], selected = { ...config, provider: 'deepseek', authMode, model: 'deepseek-flash',
+      reasoningEffort: 'max', modelRole: 'pet', modelCapabilities: { reasoningEfforts: ['none', 'low', 'high', 'max'] } };
+    const f = fixture({ getConfig: () => selected, requestModel: request => providerRequestModel({ ...request,
+      fetchImpl: async (url, options) => {
+        calls.push({ url, options, body: JSON.parse(options.body) });
+        return Response.json(authMode === 'deepseek-account'
+          ? { id: 'pet', type: 'message', role: 'assistant', model: selected.model,
+            content: [{ type: 'text', text: '嘿，收到摸摸啦！' }], stop_reason: 'end_turn', usage: { input_tokens: 20, output_tokens: 4 } }
+          : { choices: [{ message: { role: 'assistant', content: '嘿，收到摸摸啦！' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 20, completion_tokens: 4 } });
+      } }) });
+    f.controller.react({ kind: 'clicks', sequence: 1 }); await f.controller.settled();
+    assert.equal(calls.length, 1); assert.deepEqual(calls[0].body.thinking, { type: 'disabled' });
+    assert.equal(calls[0].body.max_tokens, 256); assert.equal(Object.hasOwn(calls[0].body, 'output_config'), false);
+    assert.equal(Object.hasOwn(calls[0].body, 'reasoning_effort'), false);
+    assert.equal(f.controller.snapshot().question.fallback, false); assert.equal(f.usage[0].status, 'completed');
+    assert.equal(selected.reasoningEffort, 'max');
+    if (authMode === 'deepseek-account') assert.equal(calls[0].options.headers['x-dsh-auth-token'], selected.apiKey);
+  }
+});
+
+test('duplicate sequences, dense clicks, active chat and blocking questions cannot queue unlimited reaction requests', async () => {
+  let now = 0; const held = deferred();
+  const f = fixture({ clock: () => now, requestModel: request => { f.requests.push(request); return held.promise; } });
+  f.controller.react({ kind: 'clicks', sequence: 1 }); await tick();
+  for (let sequence = 1; sequence < 100; sequence++) f.controller.react({ kind: 'turn', sequence });
+  assert.equal(f.requests.length, 1);
+  held.resolve(reply()); await f.controller.settled();
+  f.controller.react({ kind: 'actions', sequence: 100 }); await tick(); assert.equal(f.requests.length, 1);
+  now = 2000; f.controller.react({ kind: 'actions', sequence: 101 }); await f.controller.settled(); assert.equal(f.requests.length, 2);
+  f.controller.react({ kind: 'actions', sequence: 101 }); await tick(); assert.equal(f.requests.length, 2);
+  const chatHeld = deferred(), chat = fixture({ requestModel: request => { chat.requests.push(request); return chatHeld.promise; } });
+  chat.controller.send({ text: '真实聊天优先' }); await tick(); chat.controller.react({ kind: 'clicks', sequence: 1 });
+  assert.equal(chat.requests.length, 1); assert.equal(chat.controller.snapshot().activity, 'chat');
+  chatHeld.resolve(reply()); await chat.controller.settled();
+  const question = chat.controller.ask({ question: '真实决策优先' });
+  chat.controller.react({ kind: 'turn', sequence: 2 }); assert.equal(chat.controller.snapshot().question.blocking, true);
+  chat.controller.dismiss({ id: chat.controller.snapshot().question.id }); await question;
+});
+
+test('user chat preempts a reaction, with no late fallback or action prompt in later user conversation', async () => {
+  const held = deferred(); let actionRequest;
+  const f = fixture({ requestModel: request => {
+    f.requests.push(request);
+    if (f.requests.length === 1) { actionRequest = request; return held.promise; }
+    return reply('回答真正的问题。');
+  } });
+  f.controller.react({ kind: 'actions', sequence: 1 }); await tick();
+  actionRequest.onProgress({ usage: { inputTokens: 9, outputTokens: 2 } });
+  const accepted = f.controller.send({ text: '99 + 11 等于多少？' }); assert.equal(accepted.activity, 'chat');
+  await f.controller.settled(); const final = f.controller.snapshot();
+  assert.equal(actionRequest.signal.aborted, true); assert.equal(final.question.kind, 'casual');
+  assert.deepEqual(f.requests[1].messages.slice(1).map(message => message.content), ['99 + 11 等于多少？']);
+  assert.deepEqual(final.messages.map(message => message.content), ['99 + 11 等于多少？', '回答真正的问题。']);
+  assert.equal(f.usage.find(record => record.purpose === 'pet-reaction').status, 'stopped');
+  const revision = final.revision; held.resolve(reply('不应复活的动作回复')); await tick();
+  assert.equal(f.controller.snapshot().revision, revision); assert.equal(f.usage.length, 2);
+});
+
+test('stop, close, parent or preflight abort, and model/account changes never revive a reaction or fallback', async () => {
+  for (const action of ['stop', 'close', 'parent', 'config', 'account', 'preflight']) {
+    let current = config, request; const held = deferred(), parent = new AbortController();
+    const f = fixture({ getConfig: () => {
+      if (action === 'preflight') throw new DOMException('Session changed', 'AbortError');
+      return current;
+    }, requestModel: value => { request = value; return held.promise; } });
+    f.controller.react({ kind: 'turn', sequence: 1 }, { signal: parent.signal }); await tick();
+    if (action === 'config' || action === 'account') { current = { ...config, ...(action === 'config' ? { roleConnectionRevision: 2 } : { connectionKey: 'account-b' }) }; held.resolve(reply()); }
+    else if (action === 'parent') parent.abort(new Error('Externally stopped'));
+    else if (action !== 'preflight') f.controller[action]();
+    await f.controller.settled(); const state = f.controller.snapshot();
+    assert.equal(state.question, null); assert.deepEqual(state.messages, []);
+    if (request) { request.onTextDelta('迟到动作'); held.resolve(reply('迟到响应')); await tick(); assert.deepEqual(f.controller.snapshot(), state); }
+  }
+});
+
+test('reaction request and result never borrow or pollute existing completed chat history', async () => {
+  let now = 0;
+  const f = fixture({ clock: () => now, requestModel: async request => { f.requests.push(request); return reply(f.requests.length === 2 ? 'ACTION_REPLY' : 'CHAT_REPLY'); } });
+  f.controller.send({ text: 'PRIVATE_USER_CHAT' }); await f.controller.settled();
+  const oldMessages = f.controller.snapshot().messages;
+  f.controller.react({ kind: 'clicks', sequence: 1 }); await f.controller.settled();
+  assert.deepEqual(f.controller.snapshot().messages, oldMessages);
+  assert.doesNotMatch(JSON.stringify(f.requests[1].messages), /PRIVATE_USER_CHAT|CHAT_REPLY/);
+  f.controller.send({ text: 'NEXT_CHAT' }); await f.controller.settled();
+  assert.deepEqual(f.requests[2].messages.slice(1).map(message => message.content), ['PRIVATE_USER_CHAT', 'CHAT_REPLY', 'NEXT_CHAT']);
+  assert.doesNotMatch(JSON.stringify(f.requests[2].messages), /ACTION_REPLY|摸了摸大肥鱼/);
+});
+
+test('paired model Markdown becomes plain prose while arithmetic operators, literal stars and original user input remain intact', async () => {
+  assert.equal(normalizePetChatText('99 + 11 = **110**'), '99 + 11 = 110');
+  assert.equal(normalizePetChatText('**加粗**，__强调__，`code_span`，*轻声*。'), '加粗，强调，code_span，轻声。');
+  assert.equal(normalizePetChatText('2 * 3 = 6；2**3**4；x_y；__init__；未闭合 **符号'), '2 * 3 = 6；2**3**4；x_y；__init__；未闭合 **符号');
+  assert.equal(normalizePetChatText('# 小标题\n- 你好\n1. 再见\n```js\nconst x = 2 * 3;\n```'), '小标题\n你好\n再见\nconst x = 2 * 3;');
+  assert.equal(normalizePetChatText('`a**b**c` 和 `__init__` 保留含义，**强调**改为文字。'), 'a**b**c 和 __init__ 保留含义，强调改为文字。');
+  assert.equal(normalizePetChatText('```python\nx = a**b**c\n```'), 'x = a**b**c');
+  const rawUser = '请计算 99 + 11，并保留我输入的 **星号**。';
+  const f = fixture({ requestModel: async request => { f.requests.push(request); return reply('99 + 11 = **110**'); } });
+  f.controller.send({ text: rawUser }); await f.controller.settled();
+  assert.equal(f.requests[0].messages.at(-1).content, rawUser);
+  assert.equal(f.controller.snapshot().messages[0].content, rawUser);
+  assert.equal(f.controller.snapshot().question.question, '99 + 11 = 110');
+});
+
+test('an explicit creation request uses one private refinement request and acknowledges only a real main-queue handoff', async () => {
+  const original = '帮我制作一个**本地记账程序**，不要上传数据。', delivered = deferred(), transfers = [];
+  const f = fixture({ getConfig: () => ({ ...config, petSessionId: 'main-session' }),
+    requestModel: async request => {
+      f.requests.push(request); request.onTextDelta('{"prompt":"INTERNAL_POLISHED_TASK"');
+      return reply(JSON.stringify({ prompt: '制作本地记账程序，不上传数据。', reply: '已开发完成并发布。' }));
+    }, onTask: value => { transfers.push(value); return delivered.promise; } });
+  f.controller.send({ text: original }, { sessionId: 'main-session' }); await tick();
+  assert.equal(f.requests.length, 1); assert.deepEqual(f.requests[0].tools, []);
+  assert.match(f.requests[0].messages[0].content, /只输出严格 JSON/);
+  assert.equal(f.requests[0].messages.at(-1).content, original);
+  assert.equal(transfers.length, 1); assert.equal(transfers[0].originalText, original);
+  assert.equal(transfers[0].prompt, '制作本地记账程序，不上传数据。');
+  assert.equal(transfers[0].sessionId, 'main-session'); assert.equal(transfers[0].signal.aborted, false);
+  assert.equal(f.controller.snapshot().question, null, 'No success receipt is published while main queueing is unresolved');
+  assert.doesNotMatch(JSON.stringify(f.events), /INTERNAL_POLISHED_TASK|已开发完成并发布/);
+  delivered.resolve({ disposition: 'queued' }); await f.controller.settled();
+  assert.match(f.controller.snapshot().question.question, /正在排队/);
+  assert.deepEqual(f.controller.snapshot().messages.map(message => message.content), [original, '已把整理后的需求交给主会话，正在排队。']);
+  assert.equal(f.usage[0].purpose, 'pet-chat'); assert.equal(f.usage[0].id, transfers[0].requestId);
+  assert.equal(f.usage.length, 1, 'Refinement reuses one request instead of adding a second classification/model call');
+});
+
+test('an accepted handoff can asynchronously close and fork the saved session without misbilling a complete model response', async () => {
+  let current = { ...config, petSessionId: 'session-before-fork' }, reads = 0, transfers = 0;
+  const f = fixture({ getConfig: () => { reads++; return current; },
+    isConfigCurrent: selected => selected.petSessionId === current.petSessionId,
+    requestModel: async () => reply('{"prompt":"制作一个本地待办应用。"}'),
+    onTask: async () => {
+      transfers++; current = { ...current, petSessionId: 'accepted-fork' };
+      // The real startTask closes the pet dialog before awaiting its fork.
+      f.controller.close(); await tick(); return { disposition: 'started' };
+    } });
+  f.controller.send({ text: '帮我制作一个待办应用。' }); await f.controller.settled();
+  assert.equal(reads, 3); assert.equal(transfers, 1); assert.equal(f.usage[0].status, 'completed');
+  assert.equal(f.usage[0].partial, false); assert.equal(f.usage[0].inputTokens, 20); assert.equal(f.usage[0].outputTokens, 4);
+  assert.equal(f.controller.snapshot().question, null); assert.deepEqual(f.controller.snapshot().messages, []);
+  assert.doesNotMatch(JSON.stringify(f.events), /已把整理后的需求发送到主会话/);
+});
+
+test('stopping before the controlled queue accepts a refined task still cancels validation and never sends late', async () => {
+  for (const action of ['stop', 'close']) {
+    const held = deferred(); let queueAttempts = 0, accepted = 0;
+    const handoff = createPetTaskHandoff({ validate: () => {}, submit: async (_arg, options) => {
+      queueAttempts++; await held.promise; options.validate(); accepted++; return { disposition: 'queued' };
+    } });
+    const f = fixture({ requestModel: async () => reply('{"prompt":"制作一个本地待办应用。"}'), onTask: handoff });
+    f.controller.send({ text: '帮我制作一个待办应用。' }); await tick(); assert.equal(queueAttempts, 1);
+    f.controller[action](); const cancelled = f.controller.snapshot(); assert.equal(cancelled.running, false);
+    held.resolve(); await f.controller.settled();
+    assert.equal(accepted, 0); assert.deepEqual(f.controller.snapshot(), cancelled);
+    assert.equal(f.usage.length, 1); assert.equal(f.usage[0].status, 'stopped'); assert.equal(f.usage[0].partial, true);
+    assert.doesNotMatch(JSON.stringify(f.events), /已把整理后的需求/);
+  }
+});
+
+test('a closed accepted handoff cannot publish a receipt or erase a newer chat error after its callback settles', async () => {
+  const delivered = deferred(); let requestCount = 0;
+  const f = fixture({ requestModel: async () => {
+    if (++requestCount === 1) return reply('{"prompt":"制作一个本地待办应用。"}');
+    throw new Error('新的聊天请求失败。');
+  }, onTask: async () => { f.controller.close(); return delivered.promise; } });
+  f.controller.send({ text: '帮我制作一个待办应用。' }); await tick();
+  f.controller.send({ text: '聊聊天' }); await tick();
+  const current = f.controller.snapshot(); assert.match(current.error, /新的聊天请求失败/);
+  delivered.resolve({ disposition: 'started' }); await f.controller.settled();
+  assert.deepEqual(f.controller.snapshot(), current);
+  assert.equal(f.usage.find(record => record.status === 'completed').partial, false);
+  assert.equal(f.usage.length, 2);
+});
+
+test('discussion, negation and quoted creation instructions remain ordinary chat even when the model suggests a task JSON', async () => {
+  for (const text of ['如何制作一个网站？', '不要帮我制作一个程序。', '“帮我制作一个项目”是什么意思？']) {
+    let transfers = 0;
+    const f = fixture({ requestModel: async request => { f.requests.push(request); return reply('这是一段普通讨论。'); },
+      onTask: async () => { transfers++; return { disposition: 'started' }; } });
+    f.controller.send({ text }); await f.controller.settled();
+    assert.match(f.requests[0].messages[0].content, /宠物聊天伙伴/); assert.doesNotMatch(f.requests[0].messages[0].content, /严格 JSON/);
+    assert.equal(transfers, 0); assert.equal(f.controller.snapshot().messages[0].content, text);
+  }
+});
+
+test('invalid JSON, unsupported tools or refused main queueing cannot publish a sent receipt or leak the private protocol', async () => {
+  for (const kind of ['json', 'tool', 'queue', 'unconfirmed']) {
+    let transfers = 0;
+    const f = fixture({ requestModel: async request => {
+      request.onTextDelta('{"prompt":"PRIVATE_PROTOCOL_MARKER"}');
+      return reply(kind === 'json' ? 'not json' : '{"prompt":"PRIVATE_PROTOCOL_MARKER"}',
+        kind === 'tool' ? { message: { content: '{"prompt":"PRIVATE_PROTOCOL_MARKER"}', toolCalls: [{ name: 'write_file' }] } } : {});
+    }, onTask: async () => { transfers++; if (kind === 'queue') throw new Error('请先打开本地项目。'); return {}; } });
+    f.controller.send({ text: '帮我制作一个本地笔记应用。' }); await f.controller.settled();
+    assert.equal(transfers, ['json', 'tool'].includes(kind) ? 0 : 1);
+    assert.equal(f.usage[0].status, 'failed');
+    assert.doesNotMatch(JSON.stringify(f.events), /PRIVATE_PROTOCOL_MARKER|已把整理后的需求发送|正在排队/);
+    assert.equal(f.controller.snapshot().messages.at(-1).content, '');
+    assert.ok(f.controller.snapshot().error);
+  }
+});
+
+test('stopped or account-changed refinement never reaches the main queue and late completion cannot revive it', async () => {
+  for (const action of ['close', 'stop', 'account']) {
+    const held = deferred(); let current = config, request, transfers = 0;
+    const f = fixture({ getConfig: () => current, requestModel: value => { request = value; return held.promise; },
+      onTask: async () => { transfers++; return { disposition: 'started' }; } });
+    f.controller.send({ text: '帮我开发一个本地相册程序。' }); await tick();
+    if (action === 'account') { current = { ...config, connectionKey: 'another-account' }; held.resolve(reply('{"prompt":"制作本地相册程序。"}')); }
+    else f.controller[action]();
+    await f.controller.settled(); const state = f.controller.snapshot();
+    assert.equal(transfers, 0); assert.doesNotMatch(JSON.stringify(state), /已把整理后的需求/);
+    request.onTextDelta('late JSON'); held.resolve(reply('{"prompt":"late task"}')); await tick();
+    assert.deepEqual(f.controller.snapshot(), state); assert.equal(f.usage[0].status, 'stopped');
+  }
 });

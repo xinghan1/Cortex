@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { createPetDialogController, PET_QUESTION_TOOL } from '../src/core/pet-dialog.mjs';
+import { createPetTaskHandoff } from '../src/core/pet-task-intent.mjs';
 
 const source = (await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const wiringStart = source.indexOf('const petDialog = createPetDialogController({');
@@ -24,11 +25,11 @@ function fixture(extra = {}) {
   const runtimeContext = {}, host = { active: runtimeContext, publishWorkspaces: () => calls.push('publish-workspaces') };
   const config = { provider: 'relay', model: 'pet-model', authMode: 'apiKey', baseUrl: 'https://fixture.invalid/v1',
     apiKey: 'local-fixture-key', connectionKey: 'connection-a', apiProtocol: 'responses' };
-  const sandbox = vm.createContext({ createPetDialogController, PET_QUESTION_TOOL, AbortController, DOMException,
+  const sandbox = vm.createContext({ createPetDialogController, createPetTaskHandoff, PET_QUESTION_TOOL, AbortController, DOMException,
     currentSession: { id: 'session-a', messages: [], chatgptProfileId: null, deepseekProfileId: null },
     configRevision: 1, workspaceId: 'workspace-a', shuttingDown: false, quitting: false,
     requireSharedReady() {}, catalogContext: async () => ({ key: 'connection-a', authMode: 'apiKey' }),
-    publicSettings: () => ({ model: config.model }), roleModels: { isEnabled: () => false }, roleRuntime: { revisions: { sidebar: 0 } },
+    publicSettings: () => ({ model: config.model }), roleModels: { isEnabled: () => false }, roleRuntime: { revisions: { pet: 0 } },
     roleRequestConfig: async (role, owner, model) => { roleCalls.push({ role, owner, model }); return { ...config }; },
     dispatchModelRequest: async request => { requests.push(request); return { message: { role: 'assistant', content: '宠物回答', toolCalls: [] },
       usage: { inputTokens: 20, outputTokens: 4 }, usageReported: true }; },
@@ -49,8 +50,9 @@ function fixture(extra = {}) {
 test('main pet handlers reject stale workspace/session and extraneous fields before changing a pending question', async () => {
   const f = fixture(), pending = f.pet.ask({ question: '选择文件', options: ['A', 'B'] });
   const id = f.pet.snapshot().question.id;
-  for (const method of ['answerPetDialog', 'dismissPetDialog', 'sendPetChat']) {
-    const body = method === 'answerPetDialog' ? { id, text: '回答' } : method === 'dismissPetDialog' ? { id } : { text: '闲聊' };
+  for (const method of ['answerPetDialog', 'dismissPetDialog', 'sendPetChat', 'reactPetAction']) {
+    const body = method === 'answerPetDialog' ? { id, text: '回答' } : method === 'dismissPetDialog' ? { id }
+      : method === 'reactPetAction' ? { kind: 'clicks', sequence: 1 } : { text: '闲聊' };
     for (const patch of [{ workspaceId: 'another-workspace' }, { sessionId: 'another-session' }, { extra: 'untrusted' }]) {
       assert.throws(() => f.handlers[method]({ ...f.scope(), ...body, ...patch }), /会话已变化/);
       assert.equal(f.pet.snapshot().question.id, id);
@@ -86,12 +88,12 @@ test('a tool-specific abort and the real stopTask handler reject pending questio
   assert.deepEqual(f.calls, ['pause-queue']); assert.equal(f.pet.snapshot().question, null);
 });
 
-test('main wiring uses the sidebar role, emits scoped ephemeral events, and gives casual use an independent run ledger', async () => {
+test('main wiring uses the pet role, emits scoped ephemeral events, and gives casual use an independent run ledger', async () => {
   const f = fixture();
   const state = f.handlers.sendPetChat({ ...f.scope(), text: '你好' });
   assert.equal(state.running, true); await f.pet.settled();
   assert.equal(f.requests.length, 1); assert.ok(f.roleCalls.length >= 2);
-  assert.ok(f.roleCalls.every(value => value.role === 'sidebar' && value.owner.connectionKey === 'connection-a'));
+  assert.ok(f.roleCalls.every(value => value.role === 'pet' && value.owner.connectionKey === 'connection-a'));
   assert.deepEqual(f.requests[0].tools, []); assert.equal(f.requests[0].messages.at(-1).content, '你好');
   assert.equal(f.usage[0].purpose, 'pet-chat'); assert.equal(f.usage[0].sessionId, 'session-a');
   assert.notEqual(f.usage[0].runId, f.run.id); assert.equal(f.sandbox.currentSession.messages.length, 0);
@@ -116,9 +118,9 @@ test('the main stream generation guard drops a role revision change and old part
   const held = deferred(); let request;
   const f = fixture({ dispatchModelRequest: value => { request = value; return held.promise; } });
   f.sandbox.roleModels.isEnabled = () => true;
-  f.sandbox.roleRequestConfig = async () => ({ ...f.config, modelRole: 'sidebar', roleConnectionRevision: 0 });
+  f.sandbox.roleRequestConfig = async () => ({ ...f.config, modelRole: 'pet', roleConnectionRevision: 0 });
   f.handlers.sendPetChat({ ...f.scope(), text: '原角色问题' }); await tick();
-  request.onTextDelta('旧角色部分文本'); f.sandbox.roleRuntime.revisions.sidebar++;
+  request.onTextDelta('旧角色部分文本'); f.sandbox.roleRuntime.revisions.pet++;
   request.onTextDelta('NEW_REVISION_PRIVATE_TEXT'); await f.pet.settled();
   assert.equal(request.signal.aborted, true); assert.deepEqual(f.pet.snapshot().messages, []);
   assert.doesNotMatch(JSON.stringify(f.events), /NEW_REVISION_PRIVATE_TEXT/);
