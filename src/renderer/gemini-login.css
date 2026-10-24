@@ -1,0 +1,7 @@
+.gemini-login-panel { padding: 15px; margin: 12px 0 18px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--ui-radius, 12px); background: var(--ui-control, var(--panel2)); color: var(--ui-text, var(--text)); }
+.gemini-login-panel > strong { font-size: 13px; }
+.gemini-login-help, .gemini-login-message { margin: 10px 0; font-size: 12px; line-height: 1.65; }
+.gemini-login-help { color: var(--ui-muted, var(--muted)); }
+.gemini-login-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
+.gemini-login-message { margin-bottom: 0; color: var(--ui-bad, #ffb4c2); }
+.gemini-login-panel [hidden], #gemini-auth-mode-field[hidden], #gemini-login-panel[hidden] { display: none; }

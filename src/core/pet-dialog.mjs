@@ -33,7 +33,7 @@ const reactionReasoningEffort = config => {
 };
 const identity = config => createHash('sha256').update(JSON.stringify([
   config.provider, config.model, config.authMode ?? 'apiKey', config.baseUrl ?? null, config.apiProtocol ?? null,
-  config.connectionKey ?? null, config.apiKey ?? null, config.chatgptProfileId ?? null, config.deepseekProfileId ?? null,
+  config.connectionKey ?? null, config.apiKey ?? null, config.chatgptProfileId ?? null, config.deepseekProfileId ?? null, config.geminiProfileId ?? null,
   config.configRevision ?? null, config.roleConnectionRevision ?? null, config.modelRole ?? null,
   config.petSessionId ?? null, config.petConfigRevision ?? null,
 ])).digest('hex');

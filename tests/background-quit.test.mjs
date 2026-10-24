@@ -69,8 +69,8 @@ function fixture({ runtimes = [{}], restoreFlush = Promise.resolve(), capacityFl
     roleModels: { settled: async () => { calls.push('flush:roles'); } },
     pluginManager: { settled: async () => { calls.push('flush:plugins'); } },
     dshPet: { settled: async () => { calls.push('flush:pet'); } }, sharedQueue: Promise.resolve(),
-    chatgpt: account('chatgpt'), deepseek: account('deepseek'), roleAccounts: new Map([['sidebar', account('role-chatgpt')]]),
-    roleDeepseekAccounts: new Map([['sidebar', account('role-deepseek')]]), app,
+    chatgpt: account('chatgpt'), deepseek: account('deepseek'), gemini: account('gemini'), roleAccounts: new Map([['sidebar', account('role-chatgpt')]]),
+    roleDeepseekAccounts: new Map([['sidebar', account('role-deepseek')]]), roleGeminiAccounts: new Map([['pet', account('role-gemini')]]), app,
   });
   vm.runInContext(cancelSignInsSource + '\n' + beforeQuitSource, context);
   return { context, contexts, calls, callbacks, requestQuit: () => app.quit(), app, windows };
@@ -104,6 +104,7 @@ test('explicit quit confirms editors before cancelling every active runtime, the
   assert.equal(f.context.quitting, true); assert.equal(f.calls.filter(call => call === 'app:exit').length, 1);
   assert.ok(f.calls.includes('cancel-signin:chatgpt') && f.calls.includes('cancel-signin:deepseek'));
   assert.ok(f.calls.includes('cancel-signin:role-chatgpt') && f.calls.includes('cancel-signin:role-deepseek'));
+  assert.ok(f.calls.includes('cancel-signin:gemini') && f.calls.includes('cancel-signin:role-gemini'));
   assert.equal(f.calls.filter(call => call.endsWith('resume-queue')).length, 0);
 });
 

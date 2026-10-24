@@ -20,8 +20,8 @@ function waitForCatalog(pending, signal) {
 
 /** Independent connections share validation/catalog code, never the main credentials. */
 export class RoleModelRuntime {
-  constructor({ configs, accounts, deepseekAccounts = new Map(), catalog, deriveCapabilities, requestModel, redact = String }) {
-    Object.assign(this, { configs, accounts, deepseekAccounts, catalog, deriveCapabilities, requestModel, redact });
+  constructor({ configs, accounts, deepseekAccounts = new Map(), geminiAccounts = new Map(), catalog, deriveCapabilities, requestModel, redact = String }) {
+    Object.assign(this, { configs, accounts, deepseekAccounts, geminiAccounts, catalog, deriveCapabilities, requestModel, redact });
     this.grants = new SettingsCatalogSelections();
     this.previews = new Map(); this.snapshots = new Map();
     this.revisions = Object.fromEntries(MODEL_ROLES.map(role => [role, 0]));
@@ -34,6 +34,7 @@ export class RoleModelRuntime {
       entry.effective = { provider: settings.provider, authMode: settings.authMode, model: settings.model };
       entry.chatgpt = await this.accounts.get(role).publicState();
       entry.deepseek = await this.deepseekAccounts.get(role)?.publicState() || null;
+      entry.gemini = await this.geminiAccounts.get(role)?.publicState() || null;
     }
     return result;
   }
@@ -45,10 +46,12 @@ export class RoleModelRuntime {
     const validator = await this.configs.draft(role, input);
     const settings = validator.publicSettings();
     const isDeepSeek = settings.provider === 'deepseek' && settings.authMode === 'deepseek-account';
-    const account = isDeepSeek ? await this.deepseekAccounts.get(role)?.publicState() : await this.accounts.get(role).publicState();
-    const isAccount = isDeepSeek || settings.provider === 'openai' && settings.authMode === 'chatgpt';
+    const isGemini = settings.provider === 'gemini' && settings.authMode === 'gemini-account';
+    const account = isGemini ? await this.geminiAccounts.get(role)?.publicState()
+      : isDeepSeek ? await this.deepseekAccounts.get(role)?.publicState() : await this.accounts.get(role).publicState();
+    const isAccount = isGemini || isDeepSeek || settings.provider === 'openai' && settings.authMode === 'chatgpt';
     if (isAccount && (account?.session?.status !== 'connected' || !account.session.sharing || !account.session.profileId))
-      throw new Error(isDeepSeek ? '请先登录此用途的 DeepSeek 账号。' : '请先连接此用途的 ChatGPT 账号，并授权套餐用量。');
+      throw new Error(isGemini ? '请先登录此用途的 Google 账号。' : isDeepSeek ? '请先登录此用途的 DeepSeek 账号。' : '请先连接此用途的 ChatGPT 账号，并授权套餐用量。');
     const apiKey = isAccount ? '' : validator.key(settings.provider);
     if (!isAccount && settings.provider !== 'ollama' && !apiKey) throw new Error('请填写此用途的 API Key，再获取模型目录。');
     const connection = createHash('sha256').update(JSON.stringify([role, settings.provider, settings.authMode,
@@ -59,7 +62,10 @@ export class RoleModelRuntime {
   async preview(role, arg) {
     const draft = await this.draft(role, arg), settings = draft.settings;
     let result;
-    if (settings.authMode === 'deepseek-account') {
+    if (settings.authMode === 'gemini-account') {
+      result = { source: 'gemini-account', fetchedAt: new Date().toISOString(),
+        models: await this.geminiAccounts.get(role).listModels({ force: true }) };
+    } else if (settings.authMode === 'deepseek-account') {
       result = { source: 'deepseek-account', fetchedAt: new Date().toISOString(),
         models: await this.deepseekAccounts.get(role).listModels({ force: true }) };
     } else if (settings.authMode === 'chatgpt') {
@@ -111,6 +117,20 @@ export class RoleModelRuntime {
     const model = saved.model;
     if (!model) throw new Error('请先为此用途选择模型。');
     let snapshot = this.snapshots.get(role);
+    if (saved.authMode === 'gemini-account' && snapshot?.connection !== draft.connection) {
+      const account = this.geminiAccounts.get(role); let models;
+      try { models = await waitForCatalog(Promise.resolve().then(() => account.listModels()), signal); }
+      catch (error) {
+        signal?.throwIfAborted(); if (error?.name === 'AbortError') throw error;
+        // A catalog failure must not fabricate a CLI model capacity.
+      }
+      signal?.throwIfAborted();
+      if (revision !== this.revisions[role] || !this.configs.isEnabled(role)) throw changed();
+      const current = await account.publicState(); signal?.throwIfAborted();
+      if (revision !== this.revisions[role] || !this.configs.isEnabled(role) || current.session?.status !== 'connected'
+          || !current.session.sharing || current.session.profileId !== draft.account.session.profileId) throw changed();
+      if (models) { snapshot = { connection: draft.connection, models }; this.snapshots.set(role, snapshot); }
+    }
     if (saved.authMode === 'chatgpt' && snapshot?.connection !== draft.connection) {
       const account = this.accounts.get(role);
       let models;
@@ -145,6 +165,18 @@ export class RoleModelRuntime {
       snapshot = { connection: draft.connection, models: listed.models };
       this.snapshots.set(role, snapshot);
     }
+    if (saved.provider === 'gemini' && saved.authMode === 'apiKey' && snapshot?.connection !== draft.connection) {
+      let listed;
+      try { listed = await waitForCatalog(Promise.resolve().then(() => this.catalog.list({ provider: saved.provider,
+        baseUrl: saved.baseUrl, apiKey: draft.apiKey })), signal); }
+      catch (error) { signal?.throwIfAborted(); if (error?.name === 'AbortError') throw error; }
+      signal?.throwIfAborted();
+      if (revision !== this.revisions[role] || !this.configs.isEnabled(role)) throw changed();
+      if (listed) {
+        snapshot = { connection: draft.connection, models: listed.models };
+        this.snapshots.set(role, snapshot);
+      }
+    }
     const metadata = snapshot?.connection === draft.connection ? snapshot.models.find(value => value.id === model) : undefined;
     const modelCapabilities = this.deriveCapabilities(saved.provider, model, { ...metadata,
       ...(saved.provider === 'ollama' ? { contextWindowTokens: saved.contextWindowTokens } : {}),
@@ -159,7 +191,8 @@ export class RoleModelRuntime {
       model, modelCapabilities, reasoningEffort: saved.reasoningEffort, permissionMode,
       modelRole: role, connectionKey: key, roleConnectionRevision: revision,
       chatgptProfileId: saved.authMode === 'chatgpt' ? draft.account.session.profileId : null,
-      deepseekProfileId: saved.authMode === 'deepseek-account' ? draft.account.session.profileId : null };
+      deepseekProfileId: saved.authMode === 'deepseek-account' ? draft.account.session.profileId : null,
+      geminiProfileId: saved.authMode === 'gemini-account' ? draft.account.session.profileId : null };
   }
   async dispatch(config) {
     const role = roleName(config.modelRole);
@@ -176,6 +209,14 @@ export class RoleModelRuntime {
       if (!account || state.session.profileId !== config.deepseekProfileId || !state.session.sharing)
         throw new Error('此用途的 DeepSeek 账号授权已变化，请重新登录。');
       return account.requestModel({ ...config, requestModel: this.requestModel });
+    }
+    if (config.authMode === 'gemini-account') {
+      const account = this.geminiAccounts.get(role), state = await account?.publicState();
+      config.signal?.throwIfAborted();
+      if (config.roleConnectionRevision !== this.revisions[role] || !this.configs.isEnabled(role)) throw changed();
+      if (!account || state?.session?.status !== 'connected' || state.session.profileId !== config.geminiProfileId || !state.session.sharing)
+        throw new Error('此用途的 Google 账号授权已变化，请重新登录。');
+      return account.requestModel(config);
     }
     return this.requestModel(config);
   }

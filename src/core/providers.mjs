@@ -15,6 +15,7 @@ import { normalizeImageAttachments } from './message-images.mjs';
 import { randomUUID } from 'node:crypto';
 import { ollamaEndpoint } from './ollama-endpoint.mjs';
 import { retryAfterMilliseconds } from './request-retry.mjs';
+import { requestGeminiModel } from './gemini-provider.mjs';
 
 const DEFAULT_URLS = Object.freeze({
   openai: 'https://api.openai.com/v1',
@@ -1422,7 +1423,12 @@ function withErrorDetails(error, detail, includeHints = true) {
  * @param {number} [options.maxModelPayloadBytes=16777216] Generated content/native-state budget (up to 32 MiB).
  * @returns {Promise<{message: object, usage: {inputTokens: number, outputTokens: number}, usageReported: boolean}>}
  */
-export async function requestModel({
+export async function requestModel(options = {}) {
+  if (options.provider === 'gemini') return requestGeminiModel(options);
+  return requestStandardModel(options);
+}
+
+async function requestStandardModel({
   provider, apiKey, baseUrl, model, messages, tools = [], signal, onTextDelta, onProgress, reasoningEffort = 'default',
   authMode = 'apiKey', apiProtocol = provider === 'relay' ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
   timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens, contextWindowTokens,

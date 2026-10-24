@@ -55,7 +55,8 @@ class RoleModels {
   #requiresKey(store) {
     const { provider, providers } = store.settings;
     return provider !== 'ollama' && !(provider === 'openai' && providers.openai.authMode === 'chatgpt')
-      && !(provider === 'deepseek' && providers.deepseek.authMode === 'deepseek-account');
+      && !(provider === 'deepseek' && providers.deepseek.authMode === 'deepseek-account')
+      && !(provider === 'gemini' && providers.gemini.authMode === 'gemini-account');
   }
 
   async #draft(role, input) {
@@ -70,6 +71,10 @@ class RoleModels {
   async #decodeSettings(saved) {
     const store = this.#store(), defaults = store.settings;
     const providers = Object.keys(defaults.providers);
+    // Versions before Gemini have the exact previous provider set. Add a
+    // fresh empty connection without borrowing a key or changing any role.
+    if (object(saved) && exactKeys(saved.providers, providers.filter(provider => provider !== 'gemini')))
+      saved = { ...saved, providers: { ...saved.providers, gemini: structuredClone(defaults.providers.gemini) } };
     if (!exactKeys(saved, ['provider', 'providers']) || !providers.includes(saved.provider)
         || !exactKeys(saved.providers, providers)) throw new Error('Invalid role settings');
     for (const provider of providers) {
@@ -97,6 +102,10 @@ class RoleModels {
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'deepseek-account'].includes(value.authMode)
           || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
+      if (provider === 'gemini' && (!exactKeys(value.modelsByAuth, ['apiKey', 'gemini-account'])
+          || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
+          || !['apiKey', 'gemini-account'].includes(value.authMode)
+          || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
       // An untouched relay has no endpoint. Store validates only the selected
       // provider, so do not turn this legitimate default into a corrupt file.
       if (provider === 'relay' && value.baseUrl === ''
@@ -111,6 +120,11 @@ class RoleModels {
       }
       if (provider === 'deepseek') {
         for (const authMode of ['apiKey', 'deepseek-account'])
+          await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
+        input.authMode = value.authMode;
+      }
+      if (provider === 'gemini') {
+        for (const authMode of ['apiKey', 'gemini-account'])
           await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
         input.authMode = value.authMode;
       }

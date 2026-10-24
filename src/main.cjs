@@ -59,12 +59,12 @@ function preparePortableMigration() {
 
 let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, createPetTaskHandoff, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
-let deepseek;
-const roleDeepseekAccounts = new Map();
-const isAccountMode = mode => mode === 'chatgpt' || mode === 'deepseek-account';
-const accountLabel = mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
-const accountController = mode => mode === 'deepseek-account' ? deepseek : chatgpt;
-const accountBaseUrl = mode => mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
+let deepseek, gemini;
+const roleDeepseekAccounts = new Map(), roleGeminiAccounts = new Map();
+const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account'].includes(mode);
+const accountLabel = mode => mode === 'gemini-account' ? 'Google / Gemini CLI' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
+const accountController = mode => mode === 'gemini-account' ? gemini : mode === 'deepseek-account' ? deepseek : chatgpt;
+const accountBaseUrl = mode => mode === 'gemini-account' ? 'https://generativelanguage.googleapis.com/v1beta' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
 const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, modelCapacityPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
@@ -192,9 +192,11 @@ function redact(value) {
   let clean = store.redact(value);
   if (chatgpt) clean = chatgpt.redact(clean);
   if (deepseek) clean = deepseek.redact(clean);
+  if (gemini) clean = gemini.redact(clean);
   if (roleModels) clean = roleModels.redact(clean);
   for (const account of roleAccounts.values()) clean = account.redact(clean);
   for (const account of roleDeepseekAccounts.values()) clean = account.redact(clean);
+  for (const account of roleGeminiAccounts.values()) clean = account.redact(clean);
   return clean;
 }
 function requireGlobalIdle() {
@@ -202,19 +204,21 @@ function requireGlobalIdle() {
 }
 function requireSharedReady() { if (sharedMutations) throw new Error('共享配置或账号正在更新，请稍后启动任务。'); }
 function roleAccount(role, provider = 'openai') {
-  const accounts = provider === 'deepseek' ? roleDeepseekAccounts : roleAccounts;
+  const accounts = provider === 'gemini' ? roleGeminiAccounts : provider === 'deepseek' ? roleDeepseekAccounts : roleAccounts;
   if (!ROLE_KEYS.includes(role) || !accounts.has(role)) throw new Error('模型用途无效。');
   return accounts.get(role);
 }
 function cancelAccountSignIns() {
   chatgpt?.cancelSignIn();
   deepseek?.cancelSignIn();
+  gemini?.cancelSignIn();
   for (const account of roleAccounts.values()) account.cancelSignIn();
   for (const account of roleDeepseekAccounts.values()) account.cancelSignIn();
+  for (const account of roleGeminiAccounts.values()) account.cancelSignIn();
 }
 async function publishRoleAccount(role, provider = 'openai') {
   const state = await roleAccount(role, provider).publicState();
-  const identityKey = provider === 'deepseek' ? `deepseek:${role}` : role;
+  const identityKey = provider === 'openai' ? role : `${provider}:${role}`;
   const identity = JSON.stringify([state.session.status, state.session.profileId, state.session.sharing]);
   const previous = roleAccountIdentities.get(identityKey);
   roleAccountIdentities.set(identityKey, identity);
@@ -379,12 +383,13 @@ const promptCompletion = createPromptCompletionController({
     if (shuttingDown || quitting || win?.isDestroyed() || host.active !== context || localOperation || promptPreflights)
       throw new Error('会话正在切换或关闭，请稍后补全提示词。');
     return { sessionId: currentSession?.id, workspaceId, messages: currentSession?.messages,
-      chatgptProfileId: currentSession?.chatgptProfileId || null, deepseekProfileId: currentSession?.deepseekProfileId || null, configRevision };
+      chatgptProfileId: currentSession?.chatgptProfileId || null, deepseekProfileId: currentSession?.deepseekProfileId || null, geminiProfileId: currentSession?.geminiProfileId || null, configRevision };
   },
   isCurrent: snapshot => !shuttingDown && !quitting && !win?.isDestroyed() && host.active === context
     && currentSession?.id === snapshot.sessionId && configRevision === snapshot.configRevision
     && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId
-    && (currentSession?.deepseekProfileId || null) === snapshot.deepseekProfileId,
+    && (currentSession?.deepseekProfileId || null) === snapshot.deepseekProfileId
+    && (currentSession?.geminiProfileId || null) === (snapshot.geminiProfileId || null),
   async getConfig(snapshot, signal) {
     signal.throwIfAborted();
     if (roleModels.isEnabled('completion')) return roleRequestConfig('completion', { controller: { signal } });
@@ -392,13 +397,16 @@ const promptCompletion = createPromptCompletionController({
     signal.throwIfAborted();
     const profileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
-    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId))
+    const geminiProfileId = connection.authMode === 'gemini-account' ? connection.account?.session?.profileId || null : null;
+    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId || (snapshot.geminiProfileId || null) !== geminiProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
     const config = await currentRequestConfig({ controller: { signal }, connectionKey: connection.key,
       chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null,
-      deepseekProfileId: snapshot.hasConversation ? snapshot.deepseekProfileId : null }, publicSettings().model);
+      deepseekProfileId: snapshot.hasConversation ? snapshot.deepseekProfileId : null,
+      geminiProfileId: snapshot.hasConversation ? snapshot.geminiProfileId : null }, publicSettings().model);
     return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null,
-      deepseekProfileId: config.authMode === 'deepseek-account' ? deepseekProfileId : null };
+      deepseekProfileId: config.authMode === 'deepseek-account' ? deepseekProfileId : null,
+      geminiProfileId: config.authMode === 'gemini-account' ? geminiProfileId : null };
   },
   async validateConfig(config, snapshot, signal) {
     signal.throwIfAborted();
@@ -415,7 +423,8 @@ const promptCompletion = createPromptCompletionController({
         || config.authMode === 'chatgpt' && (!connection.account?.session?.profileId
           || connection.account.session.profileId !== config.chatgptProfileId)
         || config.authMode === 'deepseek-account' && (!connection.account?.session?.profileId
-          || connection.account.session.profileId !== config.deepseekProfileId))
+          || connection.account.session.profileId !== config.deepseekProfileId)
+        || config.authMode === 'gemini-account' && (!connection.account?.session?.profileId || connection.account.session.profileId !== config.geminiProfileId))
       throw new DOMException('模型连接已变化，提示词补全已取消。', 'AbortError');
   },
   requestModel: dispatchModelRequest, onUsage: recordRunUsage, redact,
@@ -441,15 +450,16 @@ const petDialog = createPetDialogController({
     const connection = await catalogContext(); signal.throwIfAborted();
     const chatgptProfileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
+    const geminiProfileId = connection.authMode === 'gemini-account' ? connection.account?.session?.profileId || null : null;
     if (!roleModels.isEnabled('pet') && currentSession.messages.length
-        && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId))
+        && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再与宠物聊天。');
     const config = await roleRequestConfig('pet', { controller: { signal }, connectionKey: connection.key,
-      chatgptProfileId, deepseekProfileId }, publicSettings().model);
+      chatgptProfileId, deepseekProfileId, geminiProfileId }, publicSettings().model);
     signal.throwIfAborted();
     if (shuttingDown || quitting || sessionId !== currentSession?.id || revision !== configRevision)
       throw new DOMException('宠物聊天的会话或模型已变化。', 'AbortError');
-    return { ...config, ...(config.modelRole ? {} : { chatgptProfileId, deepseekProfileId }),
+    return { ...config, ...(config.modelRole ? {} : { chatgptProfileId, deepseekProfileId, geminiProfileId }),
       petSessionId: sessionId, petConfigRevision: revision };
   },
   isConfigCurrent: currentPetConfig,
@@ -840,7 +850,7 @@ async function roleRequestConfig(role, run, modelOverride) {
   const config = await roleRuntime.config(role, { signal: run.controller.signal, permissionMode });
   const context = { provider: config.provider, authMode: config.authMode,
     config: { baseUrl: config.baseUrl, apiProtocol: config.apiProtocol },
-    account: { session: { profileId: config.chatgptProfileId || config.deepseekProfileId } } };
+    account: { session: { profileId: config.chatgptProfileId || config.deepseekProfileId || config.geminiProfileId } } };
   const connection = modelCapacityConnectionKey(context, config.apiKey);
   const effective = applyModelCapacity({ capabilities: config.modelCapabilities,
     manualTokens: modelCapacityPreferences.get(connection, config.model) });
@@ -851,16 +861,16 @@ async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
   const settings = publicSettings(), context = await catalogContext();
   if (settings.provider === 'ollama' && !catalogSnapshots.has(context.key)) await fetchModelCatalog();
-  if (settings.authMode === 'chatgpt' && !catalogSnapshots.has(context.key)) {
+  if (['chatgpt', 'gemini-account'].includes(settings.authMode) && !catalogSnapshots.has(context.key)) {
     try { await fetchModelCatalog(); } catch { /* Keep a connected account usable with the unknown-capacity guard. */ }
     if ((await catalogContext()).key !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
   }
   run.controller.signal.throwIfAborted();
   if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
   const account = isAccountMode(settings.authMode);
-  if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing
-      || (settings.authMode === 'chatgpt' ? run.chatgptProfileId : run.deepseekProfileId)
-        && (settings.authMode === 'chatgpt' ? run.chatgptProfileId : run.deepseekProfileId) !== context.account.session.profileId)) throw new Error(`${accountLabel(settings.authMode)} 授权已变更，请停止后重新开始任务。`);
+  if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing || !context.account.session.profileId
+      || (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : run.deepseekProfileId)
+        && (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : run.deepseekProfileId) !== context.account.session.profileId)) throw new Error(`${accountLabel(settings.authMode)} 授权已变更，请停止后重新开始任务。`);
   const apiKey = account ? '' : store.key(settings.provider);
   if (!account && settings.provider !== 'ollama' && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
   const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
@@ -870,6 +880,7 @@ async function currentRequestConfig(run, modelOverride) {
   return { provider: settings.provider, apiKey, authMode: account ? settings.authMode : 'apiKey',
     baseUrl: account ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: account ? settings.authMode === 'chatgpt' ? 'responses' : 'chat-completions' : settings.apiProtocol,
     ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
+    ...(settings.authMode === 'gemini-account' ? { geminiProfileId: context.account.session.profileId } : {}),
     model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
     permissionMode, connectionKey: context.key, configRevision,
     contextCompressionTriggerTokens: modelCapabilities.contextWindow ?? 850000 };
@@ -899,8 +910,9 @@ async function reviewOperation(request, { signal, runId }) {
 async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
   const deepseekAccount = deepseek ? await deepseek.publicState() : null;
+  const geminiAccount = gemini ? await gemini.publicState() : null;
   const roleState = await roleRuntime.publicState(publicSettings());
-  const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount });
+  const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount });
   restoreApprovalReviewer(context);
   if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
@@ -917,7 +929,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -926,8 +938,8 @@ async function catalogContext(arg = {}, account) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const config = settings.providers[provider];
   const authMode = arg.authMode ?? config.authMode;
-  if (!['apiKey','chatgpt','deepseek-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek')) throw new Error('此服务商不支持所选的连接方式。');
-  const chatgptState = isAccountMode(authMode) ? account?.[authMode === 'chatgpt' ? 'chatgpt' : 'deepseek'] ?? await accountController(authMode).publicState() : null;
+  if (!['apiKey','chatgpt','deepseek-account','gemini-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek') || (authMode === 'gemini-account' && provider !== 'gemini')) throw new Error('此服务商不支持所选的连接方式。');
+  const chatgptState = isAccountMode(authMode) ? account?.[authMode === 'chatgpt' ? 'chatgpt' : authMode === 'gemini-account' ? 'gemini' : 'deepseek'] ?? await accountController(authMode).publicState() : null;
   const key = catalogConnectionKey(provider, authMode, config, chatgptState);
   return { provider, authMode, config, account: chatgptState, key };
 }
@@ -1021,6 +1033,8 @@ async function previewModelSettingsCatalog(arg) {
   if (draft.authMode === 'chatgpt') {
     const models = (await chatgpt.listModels({ force: true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
     result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+  } else if (draft.authMode === 'gemini-account') {
+    result = { models: await gemini.listModels({ force: true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
   } else if (draft.authMode === 'deepseek-account') {
     const models = await deepseek.listModels({ force: true });
     result = { models, fetchedAt: new Date().toISOString(), source: 'deepseek-account' };
@@ -1061,6 +1075,8 @@ async function fetchModelCatalog(arg = {}) {
       if (!context.account.session.sharing) throw new Error('请先授权 ChatGPT 套餐用量，再获取模型目录。');
       const models = (await chatgpt.listModels({ force: arg.force === true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
       result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+    } else if (context.authMode === 'gemini-account') {
+      result = { models: await gemini.listModels({ force: arg.force === true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
     } else if (context.authMode === 'deepseek-account') {
       const models = await deepseek.listModels({ force: arg.force === true });
       result = { models, fetchedAt: new Date().toISOString(), source: 'deepseek-account' };
@@ -1158,9 +1174,10 @@ async function startTask(input) {
   const provider = settings.provider;
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
   const useDeepSeekAccount = provider === 'deepseek' && settings.authMode === 'deepseek-account';
+  const useGeminiAccount = provider === 'gemini' && settings.authMode === 'gemini-account';
   const modelContext = await catalogContext();
   if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
-  if (!demo && useChatGPT && !catalogSnapshots.has(modelContext.key)) {
+  if (!demo && (useChatGPT || useGeminiAccount) && !catalogSnapshots.has(modelContext.key)) {
     try { await fetchModelCatalog(); } catch { /* Missing catalog capacity stays conservative until discovery succeeds. */ }
     if ((await catalogContext()).key !== modelContext.key) throw new Error('模型连接已变更，请重新开始任务。');
   }
@@ -1174,6 +1191,7 @@ async function startTask(input) {
   const reasoningEffort = resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort);
   let chatgptProfileId = null;
   let deepseekProfileId = null;
+  let geminiProfileId = null;
   let apiKey = '';
   if (!demo) {
     if (!settings.model) throw new Error('请先在模型设置中填写模型 ID。');
@@ -1186,6 +1204,10 @@ async function startTask(input) {
       if (!account.session.sharing) throw new Error('ChatGPT 已登录，但尚未授权套餐用量；请在模型设置中连接套餐。');
       chatgptProfileId = account.session.profileId;
       if (!chatgptProfileId) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
+    } else if (useGeminiAccount) {
+      const account = await gemini.publicState();
+      if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先通过官方 Gemini CLI 登录 Google 账号。');
+      geminiProfileId = account.session.profileId;
     } else if (useDeepSeekAccount) {
       const account = await deepseek.publicState();
       if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先在模型设置中登录并授权 DeepSeek 账号。');
@@ -1196,9 +1218,10 @@ async function startTask(input) {
     }
   }
   if (!demo) {
-    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId)) await createSession({ temporary: currentSession.temporary === true });
+    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId)) await createSession({ temporary: currentSession.temporary === true });
     currentSession.chatgptProfileId = chatgptProfileId;
     currentSession.deepseekProfileId = deepseekProfileId;
+    currentSession.geminiProfileId = geminiProfileId;
   }
   if (loadedSnapshot) {
     petDialog.close();
@@ -1228,6 +1251,7 @@ async function startTask(input) {
   run.connectionKey = modelContext.key;
   run.chatgptProfileId = chatgptProfileId;
   run.deepseekProfileId = deepseekProfileId;
+  run.geminiProfileId = geminiProfileId;
   run.demo = demo;
   run.messageStartIndex = currentSession.messages.length - 1;
   activeRun = run;
@@ -1255,7 +1279,7 @@ async function startTask(input) {
           emit(event);
         }, approve });
       } else {
-        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : 'apiKey', deepseekProfileId, connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT || useDeepSeekAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : 'apiKey', deepseekProfileId, geminiProfileId, connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
           if (name === PET_QUESTION_TOOL.name)
             return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(value => JSON.stringify(value));
           if (name === 'read_url' || name.startsWith('browser_')) {
@@ -1658,6 +1682,26 @@ function buildHandlers() {
     }),
     roleDeepseekRetryStorage: arg => mutateShared(async () => {
       await roleAccount(arg?.role, 'deepseek').retryLocalRead(); await broadcastAllStates(); return state();
+    }),
+    roleGeminiSignIn: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'gemini').signIn(); await broadcastAllStates(); return state();
+    }),
+    roleGeminiCancelSignIn: arg => { void roleAccount(arg?.role, 'gemini').cancelSignIn(); return null; },
+    roleGeminiDisconnect: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'gemini').disconnect(); await broadcastAllStates(); return state();
+    }),
+    roleGeminiRetryStorage: arg => mutateShared(async () => {
+      await roleAccount(arg?.role, 'gemini').retryLocalRead(); await broadcastAllStates(); return state();
+    }),
+    geminiSignIn: () => mutateShared(async () => {
+      await gemini.signIn(); await broadcastAllStates(); return state();
+    }),
+    geminiCancelSignIn: () => { void gemini.cancelSignIn(); return null; },
+    geminiDisconnect: () => mutateShared(async () => {
+      await gemini.disconnect(); await broadcastAllStates(); return state();
+    }),
+    geminiRetryStorage: () => mutateShared(async () => {
+      await gemini.retryLocalRead(); await broadcastAllStates(); return state();
     }),
     sideChatOpen: () => { requireSharedReady(); return sideChat.open(); },
     sideChatSend: arg => {
@@ -2256,6 +2300,7 @@ async function boot() {
   nativeTheme.themeSource = nativeAppearance(appearance.snapshot()).theme;
   const { ChatGPTConnection } = await import('./core/chatgpt.mjs');
   const { DeepSeekConnection } = await import('./core/deepseek-login.mjs');
+  const { GeminiConnection } = await import('./core/gemini-login.mjs');
   const deepseekNetwork = electronSession.fromPartition('synora-deepseek-account', { cache: false });
   const deepseekFetch = (input, options) => deepseekNetwork.fetch(input, options);
   chatgpt = new ChatGPTConnection({ dataDir, safeStorage, openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
@@ -2263,6 +2308,20 @@ async function boot() {
   deepseek = new DeepSeekConnection({ dataDir, safeStorage, version: app.getVersion(), fetchImpl: deepseekFetch,
     openExternal: url => shell.openExternal(url), onChange: () => { broadcastAllStates().catch(() => {}); } });
   await deepseek.init();
+  const geminiRuntime = { version: app.getVersion(), cliEntry: path.join(__dirname, 'vendor', 'gemini-cli', 'bundle', 'gemini.js'), nodeExecutable: process.execPath,
+    getProxyEnv: async () => {
+      try {
+        const route = await electronSession.defaultSession.resolveProxy('https://cloudcode-pa.googleapis.com');
+        const proxy = route.split(';').map(value => value.trim()).find(value => /^(?:PROXY|HTTPS) /u.test(value));
+        if (!proxy) return {};
+        const match = /^(PROXY|HTTPS) ([a-z\d.\[\]:-]+)$/iu.exec(proxy); if (!match) return {};
+        const url = new URL(`${match[1] === 'HTTPS' ? 'https' : 'http'}://${match[2]}`);
+        if (!url.hostname || !url.port || url.username || url.password) return {};
+        return { HTTP_PROXY: url.origin, HTTPS_PROXY: url.origin };
+      } catch { return {}; }
+    } };
+  gemini = new GeminiConnection({ ...geminiRuntime, dataDir, onChange: () => { broadcastAllStates().catch(() => {}); } });
+  await gemini.init();
   roleModels = await new RoleModels(dataDir, safeStorage).init();
   for (const role of ROLE_KEYS) {
     const account = new ChatGPTConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage,
@@ -2273,9 +2332,11 @@ async function boot() {
     const deepseekAccount = new DeepSeekConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage, version: app.getVersion(), fetchImpl: deepseekFetch,
       openExternal: url => shell.openExternal(url), onChange: () => { publishRoleAccount(role, 'deepseek').catch(() => {}); } });
     roleDeepseekAccounts.set(role, deepseekAccount); await deepseekAccount.init();
+    const geminiAccount = new GeminiConnection({ ...geminiRuntime, dataDir: path.join(dataDir, 'role-accounts', role), onChange: () => { publishRoleAccount(role, 'gemini').catch(() => {}); } });
+    roleGeminiAccounts.set(role, geminiAccount); await geminiAccount.init();
   }
   const { RoleModelRuntime } = await import('./core/role-model-runtime.mjs');
-  roleRuntime = new RoleModelRuntime({ configs: roleModels, accounts: roleAccounts, deepseekAccounts: roleDeepseekAccounts, catalog: modelCatalog,
+  roleRuntime = new RoleModelRuntime({ configs: roleModels, accounts: roleAccounts, deepseekAccounts: roleDeepseekAccounts, geminiAccounts: roleGeminiAccounts, catalog: modelCatalog,
     deriveCapabilities: deriveModelCapabilities, requestModel, redact });
   updateEnabled = !smoke && app.isPackaged && isInstalledBuild && process.platform === 'win32' && process.arch === 'x64';
   const updateSession = electronSession.fromPartition('synora-updates', { cache: false });
@@ -2323,6 +2384,26 @@ async function smokeTest() {
     await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
     console.log('SYNORA_BACKGROUND_TRAY_SMOKE_OK ' + JSON.stringify(result));
     app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'gemini') {
+    const { GeminiConnection } = await import('./core/gemini-login.mjs');
+    const installAccountFixture = async (mainAccount, roles = {}) => {
+      const original = gemini, originals = new Map(roleGeminiAccounts);
+      gemini = mainAccount;
+      for (const role of ROLE_KEYS) if (roles[role]) roleGeminiAccounts.set(role, roles[role]);
+      await broadcastAllStates();
+      return async () => {
+        gemini = original; roleGeminiAccounts.clear();
+        for (const [role, account] of originals) roleGeminiAccounts.set(role, account);
+        await broadcastAllStates();
+      };
+    };
+    const result = { version: app.getVersion(), gemini: await require('./core/smoke-gemini.cjs')({
+      win, output, dataDir, store, GeminiConnection, installAccountFixture, broadcastState: broadcastAllStates,
+    }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_GEMINI_SMOKE_OK ' + JSON.stringify(result)); app.quit(); return;
   }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'role-models') {
     const result = { version: app.getVersion(), roleModels: await require('./core/smoke-role-models.cjs')({ win, output, dataDir }) };
@@ -2708,7 +2789,9 @@ app.on('will-quit', () => {
   clearInterval(petPointerTimer);
   backgroundTray?.dispose();
   void deepseek?.dispose();
+  void gemini?.dispose();
   for (const account of roleDeepseekAccounts.values()) void account.dispose();
+  for (const account of roleGeminiAccounts.values()) void account.dispose();
   pluginRuntime?.dispose();
   void appUpdater?.dispose();
 });

@@ -5,7 +5,8 @@ import { ollamaEndpoint } from './ollama-endpoint.mjs';
 // https://developers.openai.com/api/reference/resources/models/methods/list
 // https://api-docs.deepseek.com/api/list-models/
 // https://platform.claude.com/docs/en/api/models/list
-const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
+// https://ai.google.dev/api/models
+const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', gemini: 'https://generativelanguage.googleapis.com/v1beta', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const CAPACITY_ORIGINS = new Set(['provider', 'account', 'official-default']);
 // Verified against each exact official model page on 2026-10-24. Account
@@ -117,6 +118,10 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
     }
   }
   let { supported, defaultLevel } = reasoningMetadata(provider, metadata);
+  // Model.thinking is a boolean, not a list of legal thinking levels. Keep
+  // native/CLI Gemini at its own default until exact supported levels have
+  // been verified; never translate another provider's effort aliases.
+  if (provider === 'gemini') { supported = []; defaultLevel = undefined; }
   if (typeof metadata.supportsTools === 'boolean') result.supportsTools = metadata.supportsTools;
   if (typeof metadata.supportsImages === 'boolean') result.supportsImages = metadata.supportsImages;
   else if (Array.isArray(metadata.input_modalities) && metadata.input_modalities.length
@@ -225,6 +230,10 @@ function endpointFor(provider, baseUrl) {
     throw failure('CATALOG_INVALID_URL', 'API 地址仅允许 HTTPS 或本机 HTTP，且不能包含用户名和密码。');
   }
   let prefix = url.pathname.replace(/\/+$/, '');
+  if (provider === 'gemini') {
+    if (/:|%(?:2f|5c)|\/\./iu.test(prefix)) throw failure('CATALOG_INVALID_URL', '请填写 Gemini 基础地址，不能包含生成端点或编码路径。');
+    if (!prefix) prefix = '/v1beta';
+  }
   prefix = prefix.replace(/\/(?:responses|chat\/completions|messages|models)$/, '');
   url.pathname = `${prefix}/models`;
   return url;
@@ -233,7 +242,8 @@ function endpointFor(provider, baseUrl) {
 function officialEndpoint(provider, url) {
   return (provider === 'openai' && url.origin === 'https://api.openai.com' && url.pathname === '/v1/models')
     || (provider === 'deepseek' && url.origin === 'https://api.deepseek.com' && ['/models', '/v1/models'].includes(url.pathname))
-    || (provider === 'anthropic' && url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/models');
+    || (provider === 'anthropic' && url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/models')
+    || (provider === 'gemini' && url.origin === 'https://generativelanguage.googleapis.com' && ['/v1/models', '/v1beta/models'].includes(url.pathname));
 }
 
 function credentialForms(key) {
@@ -255,10 +265,26 @@ function containsCredential(value, secrets) {
 }
 
 function normalizeModel(provider, item, officialSource, secrets) {
+  if (provider === 'gemini' && object(item)) {
+    const methods = item.supportedGenerationMethods;
+    if (typeof item.name !== 'string' || !/^models\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u.test(item.name)
+        || !Array.isArray(methods) || methods.some(value => typeof value !== 'string' || !value || value.length > 100 || /[\x00-\x20\x7f]/u.test(value))
+        || ['inputTokenLimit', 'outputTokenLimit'].some(key => item[key] !== undefined && (!Number.isSafeInteger(item[key]) || item[key] <= 0)))
+      throw failure('CATALOG_INVALID_RESPONSE', 'Gemini 模型目录包含无效的名称、生成方法或 Token 容量。');
+    // Native Model resources have their own capacity schema. Do not let an
+    // unrelated OpenAI-style alias override a genuine inputTokenLimit, or
+    // infer a larger window from a nonstandard nested capabilities object.
+    item = { id: item.name.slice('models/'.length), name: item.name, displayName: item.displayName,
+      ...(Number.isSafeInteger(item.inputTokenLimit) && item.inputTokenLimit > 0 ? { context_window: item.inputTokenLimit, contextWindowKind: 'input' } : {}),
+      ...(Number.isSafeInteger(item.outputTokenLimit) && item.outputTokenLimit > 0 ? { max_output_tokens: item.outputTokenLimit } : {}),
+      ...(Array.isArray(methods) && !methods.includes('generateContent') ? { supportsTools: false, textCompatible: false, compatible: false } : {}),
+    };
+  }
   if (!object(item) || typeof item.id !== 'string' || !item.id.trim() || item.id.length > 200 || /[\u0000-\u001f\u007f]/.test(item.id)) {
     throw failure('CATALOG_INVALID_RESPONSE', '模型目录包含无效的模型标识。');
   }
-  const name = [item.display_name, item.name, item.displayName].find(value => typeof value === 'string' && value.trim() && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value));
+  const name = (provider === 'gemini' ? [item.displayName, item.display_name, item.name] : [item.display_name, item.name, item.displayName])
+    .find(value => typeof value === 'string' && value.trim() && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value));
   const model = { id: item.id, displayName: name || item.id,
     ...deriveModelCapabilities(provider, item.id, { ...item, officialSource, contextWindowOrigin: 'provider',
       // Raw server `compatible:false` is an explicit protocol denial. Only our
@@ -386,22 +412,32 @@ export class ModelCatalog {
         if (combined.aborted) throw cancelled();
         const url = new URL(endpoint);
         if (provider === 'anthropic') { url.searchParams.set('limit', '1000'); if (cursor) url.searchParams.set('after_id', cursor); }
+        if (provider === 'gemini') { url.searchParams.set('pageSize', '1000'); if (cursor) url.searchParams.set('pageToken', cursor); }
         const response = await abortable(fetchImpl(url.href, { method: 'GET', redirect: 'error', signal: combined,
           headers: { Accept: 'application/json', ...(provider === 'anthropic'
-            ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : { Authorization: `Bearer ${key}` }) },
+            ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' } : provider === 'gemini' ? { 'x-goog-api-key': key } : { Authorization: `Bearer ${key}` }) },
         }), combined);
         if (!response || !Number.isInteger(response.status)) throw failure('CATALOG_INVALID_RESPONSE', '模型目录网络响应无效。');
         if (!response.ok) {
           try { Promise.resolve(response.body?.cancel()).catch(() => {}); } catch {}
           throw httpError(response.status);
         }
-        const body = await boundedJSON(response, combined, budget, this.#maxResponseBytes);
+        const body = await boundedJSON(response, combined, budget, this.#maxResponseBytes, provider === 'gemini' ? 'models' : 'data');
+        if (provider === 'gemini') body.data = body.models;
         if (body.data.length > this.#maxModels) throw failure('CATALOG_RESPONSE_TOO_LARGE', '模型目录条目数超过上限。');
         for (const item of body.data) {
           const model = normalizeModel(provider, item, official, secrets);
           if (ids.has(model.id)) continue;
           ids.add(model.id); models.push(model);
           if (models.length > this.#maxModels) throw failure('CATALOG_RESPONSE_TOO_LARGE', '模型目录条目数超过上限。');
+        }
+        if (provider === 'gemini') {
+          const next = body.nextPageToken;
+          if (next === undefined || next === '') break;
+          if (typeof next !== 'string' || next.length > 4096 || /[\x00-\x1f\x7f]/u.test(next) || cursors.has(next) || page + 1 >= this.#maxPages)
+            throw failure('CATALOG_INVALID_RESPONSE', 'Gemini 模型目录分页状态无效。');
+          if (containsCredential(next, secrets)) throw failure('CATALOG_UNSAFE_RESPONSE', 'Gemini 模型目录分页回显了凭据，已停止读取。');
+          cursors.add(next); cursor = next; continue;
         }
         if (provider !== 'anthropic') break;
         if (typeof body.has_more !== 'boolean') throw failure('CATALOG_INVALID_RESPONSE', 'Claude 模型目录缺少有效的分页状态。');

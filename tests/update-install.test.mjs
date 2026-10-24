@@ -47,8 +47,10 @@ function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches =
     dshPet: { settled: async () => { calls.push('flush:pet'); } },
     chatgpt: { cancelSignIn: () => calls.push('cancel-signin') },
     deepseek: { cancelSignIn: () => calls.push('cancel-deepseek-signin') },
+    gemini: { cancelSignIn: () => calls.push('cancel-gemini-signin') },
     roleAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-signin') }]]),
     roleDeepseekAccounts: new Map([['sidebar', { cancelSignIn: () => calls.push('cancel-role-deepseek-signin') }]]),
+    roleGeminiAccounts: new Map([['pet', { cancelSignIn: () => calls.push('cancel-role-gemini-signin') }]]),
     spawn(filename, args, options) {
       spawns.push({ filename, args: [...args], options: { ...options } }); calls.push('spawn');
       const child = new EventEmitter(); child.unref = () => calls.push('unref');

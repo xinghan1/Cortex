@@ -28,6 +28,10 @@ Synora code 的 DeepSeek 账号接入参考 [DeepSeek Harness 官方账号授权
 
 ## 其他依赖
 
+### Google Gemini CLI
+
+Google 官方 Gemini CLI 0.65.0 以原版程序随软件分发，采用 Apache License 2.0；来源为 [官方仓库](https://github.com/google-gemini/gemini-cli/releases/tag/v0.65.0) 及官方 npm 发布包。软件通过公开 ACP 协议调用它，不复制登录令牌或 OAuth 客户端实现。原版许可证及运行资源保留在 `src/vendor/gemini-cli/`，`provenance.json` 记录发布包完整性与文件哈希。生成目录由 `npm run prepare:gemini` 还原。
+
 应用的 npm 依赖及精确版本见 `package.json` 与 `package-lock.json`。安装后各依赖目录内保留其许可文件。Windows 便携构建复制 Electron 运行时随附的 `LICENSE`、`LICENSES.chromium.html` 及运行依赖的许可文件。
 
 本说明不改变各第三方组件的许可证，也不将它们重新许可为 MIT 或其他许可证。

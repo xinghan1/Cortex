@@ -7,6 +7,7 @@ const { normalizeSessionTitle, sessionTitle } = require('./session-title.cjs');
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const EFFORTS = {
+  gemini: ['default', 'minimal', 'low', 'medium', 'high'],
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['default', 'none', 'low', 'high', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -86,6 +87,7 @@ const DEFAULTS = {
   providers: {
     openai: { model: '', modelsByAuth: { apiKey: '', chatgpt: '' }, baseUrl: 'https://api.openai.com/v1', reasoningEffort: 'default', authMode: 'apiKey', apiProtocol: 'responses' },
     deepseek: { model: '', baseUrl: 'https://api.deepseek.com', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'deepseek-account': '' } },
+    gemini: { model: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'gemini-account': '' } },
     anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default' },
     relay: { model: '', baseUrl: '', reasoningEffort: 'default', apiProtocol: 'chat-completions' },
     ollama: { model: '', baseUrl: 'http://localhost:11434', reasoningEffort: 'default', contextWindowTokens: 32768 },
@@ -132,13 +134,16 @@ class Store {
       const deepseek = this.settings.providers.deepseek;
       if (!['apiKey', 'deepseek-account'].includes(deepseek.authMode)) deepseek.authMode = 'apiKey';
       deepseek.modelsByAuth = { apiKey: '', 'deepseek-account': '', ...deepseek.modelsByAuth, [deepseek.authMode]: deepseek.model };
+      const gemini = this.settings.providers.gemini;
+      if (!['apiKey', 'gemini-account'].includes(gemini.authMode)) gemini.authMode = 'apiKey';
+      gemini.modelsByAuth = { apiKey: '', 'gemini-account': '', ...gemini.modelsByAuth, [gemini.authMode]: gemini.model };
       if (migrated) await this.write('settings.json', this.settings);
     } catch (error) { if (error.code !== 'ENOENT') throw new Error('设置文件损坏，请备份 data/settings.json 后重试。'); }
     await this.initUsage();
   }
   publicSettings() {
     const providers = {};
-    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
+    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek', 'gemini'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek', 'gemini'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
     return { provider: this.settings.provider, ...providers[this.settings.provider], providers };
   }
   async saveSettings(input) {
@@ -146,8 +151,8 @@ class Store {
     if (input.apiProtocol !== undefined && (!API_PROTOCOLS.includes(input.apiProtocol)
         || (!['openai', 'relay'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
     const previous = this.settings.providers[input.provider];
-    const authMode = ['openai', 'deepseek'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
-    const model = String(input.model ?? (['openai', 'deepseek'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
+    const authMode = ['openai', 'deepseek', 'gemini'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
+    const model = String(input.model ?? (['openai', 'deepseek', 'gemini'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
     const baseUrl = String(input.baseUrl === undefined ? previous.baseUrl : input.baseUrl || DEFAULTS.providers[input.provider].baseUrl).trim();
     if (model.length > 200 || /[\r\n]/.test(model)) throw new Error('模型 ID 格式不正确。');
     let parsed;
@@ -163,14 +168,15 @@ class Store {
     if (ollama && input.contextWindowTokens !== undefined) value.contextWindowTokens = input.contextWindowTokens;
     if (input.authMode !== undefined && !(input.authMode === 'apiKey'
         || input.provider === 'openai' && input.authMode === 'chatgpt'
-        || input.provider === 'deepseek' && input.authMode === 'deepseek-account')) throw new Error('此服务商不支持所选的登录方式。');
-    if (['openai', 'deepseek'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
+        || input.provider === 'deepseek' && input.authMode === 'deepseek-account'
+        || input.provider === 'gemini' && input.authMode === 'gemini-account')) throw new Error('此服务商不支持所选的登录方式。');
+    if (['openai', 'deepseek', 'gemini'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
     if (['openai', 'relay'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
     const reasoningEffort = input.reasoningEffort === undefined ? value.reasoningEffort || 'default' : input.reasoningEffort;
     if (!EFFORTS[input.provider].includes(reasoningEffort)) throw new Error('此供应商不支持所选的思考强度。');
     value.reasoningEffort = reasoningEffort;
     value.model = model; value.baseUrl = baseUrl;
-    if (['openai', 'deepseek'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
+    if (['openai', 'deepseek', 'gemini'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
     if (input.clearKey === true) delete value.encryptedKey;
     const key = String(input.apiKey || '').trim();
     if (key) {

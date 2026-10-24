@@ -17,6 +17,8 @@ const validToken = value => Number.isSafeInteger(value) && value >= 0;
 
 function assertSessionOwner(snapshot, config) {
   const profile = config.authMode === 'chatgpt' ? config.chatgptProfileId || null : null;
+  const geminiProfile = config.authMode === 'gemini-account' ? config.geminiProfileId || null : null;
+  if (config.authMode === 'gemini-account' && !geminiProfile) throw new Error('Google 账号信息不完整，请重新登录。');
   const deepseekProfile = config.authMode === 'deepseek-account' ? config.deepseekProfileId || null : null;
   if (config.authMode === 'chatgpt' && !profile) throw new Error('ChatGPT 账号信息不完整，请重新登录。');
   if (config.authMode === 'deepseek-account' && !deepseekProfile) throw new Error('DeepSeek 账号信息不完整，请重新登录。');
@@ -27,7 +29,7 @@ function assertSessionOwner(snapshot, config) {
   // A cannot disclose its history to B or API mode; unowned/API history must
   // likewise not be transferred to an official account by a Tab request.
   if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profile
-      || (snapshot.deepseekProfileId || null) !== deepseekProfile))
+      || (snapshot.deepseekProfileId || null) !== deepseekProfile || (snapshot.geminiProfileId || null) !== geminiProfile))
     throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
 }
 
