@@ -77,3 +77,58 @@ test('a user cancellation does not turn an IPC AbortError into a misleading logi
   f.mode();const pending=f.node('gemini-login-sign-in').click();await f.node('gemini-login-cancel').click();await pending;
   assert.equal(f.node('gemini-login-message').hidden,true);assert.equal(f.ui.isBusy(),false);
 });
+
+test('Electron invoke wrappers retain a safe diagnostic when only the bracketed Gemini code survives',()=>{
+  const f=fixture();
+  for(const [code,expected]of [
+    ['GEMINI_CLI_REQUEST_FAILED','账号服务请求失败'],['GEMINI_CLI_EXITED','组件意外退出'],
+    ['GEMINI_INVALID_RESPONSE','数据格式无效'],['GEMINI_PROXY_FAILED','网络代理'],['GEMINI_SIGN_IN_FAILED','登录未完成'],
+    ['GEMINI_AUTH_FAILED','账号服务验证'],['GEMINI_SESSION_FAILED','会话创建失败'],
+    ['GEMINI_ACCOUNT_VALIDATION_REQUIRED','额外验证'],['GEMINI_SERVICE_UNAVAILABLE','初始化未返回有效结果'],
+    ['GEMINI_ACCOUNT_ACTION_REQUIRED','账号条款确认'],['GEMINI_QUOTA_EXCEEDED','额度不足'],
+  ]){
+    const wrapped=new Error(`Error invoking remote method 'forge:geminiSignIn': GeminiConnectionError: [${code}] PRIVATE_OAUTH_URL?code=SECRET_AUTHORIZATION_CODE`);
+    const text=f.api.errorMessage(wrapped);assert.ok(text.includes(expected));assert.doesNotMatch(text,/PRIVATE|SECRET|forge:|GeminiConnectionError|\[GEMINI_/);
+  }
+  assert.equal(f.api.errorMessage(new Error("Error invoking remote method 'forge:geminiSignIn': [GEMINI_CANCELLED] SECRET")),'');
+});
+
+test('structured post-browser phase takes precedence over a generic IPC failure without displaying OAuth or CLI output',async()=>{
+  const f=fixture({methods:{geminiSignIn:async()=>{f.update({...disconnected(),error:{code:'GEMINI_CLI_REQUEST_FAILED',phase:'session-new',message:'RAW_GOOGLE_ACCESS_TOKEN'}});throw new Error('Remote error with no surviving code OAUTH_SECRET');}}});
+  f.mode();await f.node('gemini-login-sign-in').click();
+  assert.match(f.node('gemini-login-message').textContent,/建立账号会话失败：.*账号服务请求失败/);
+  assert.doesNotMatch(f.node('gemini-login-message').textContent,/RAW_GOOGLE|OAUTH_SECRET/);
+  f.update({...disconnected(),error:{code:'GEMINI_INVALID_RESPONSE',phase:'model-list',message:'PRIVATE_CLI_STDERR'}});
+  assert.match(f.node('gemini-login-message').textContent,/读取模型目录失败：.*数据格式无效/);
+});
+
+test('only allowed diagnostic phases are displayed and unknown encoded errors remain generic',()=>{
+  const f=fixture();
+  assert.match(f.api.errorMessage({code:'GEMINI_PROXY_FAILED',phase:'initialize',message:'PRIVATE'}),/^初始化登录组件失败：/);
+  assert.match(f.api.errorMessage({code:'GEMINI_STORAGE_UNREADABLE',phase:'storage',message:'SECRET_PATH'}),/^保存连接失败：/);
+  assert.match(f.api.errorMessage({code:'GEMINI_QUOTA_EXCEEDED',phase:'prompt',message:'PRIVATE_ACCOUNT'}),/^发送模型请求失败：.*额度不足/);
+  assert.doesNotMatch(f.api.errorMessage({code:'GEMINI_SIGN_IN_FAILED',phase:'https://accounts.google.com/?code=SECRET',message:'PRIVATE'}),/SECRET|accounts|PRIVATE/);
+  assert.equal(f.api.errorMessage(new Error('[GEMINI_FUTURE_UNKNOWN] PRIVATE_OAUTH_RESPONSE')),'Google 账号连接未完成，请重试。');
+  f.update({...disconnected(),session:{status:'connecting',sharing:false},attempt:{phase:'session-new'}});
+  assert.equal(f.node('gemini-login-status').textContent,'正在建立账号会话…');
+  f.update({...disconnected(),session:{status:'connecting',sharing:false},attempt:{phase:'model-list'}});
+  assert.equal(f.node('gemini-login-status').textContent,'正在读取账号模型目录…');
+});
+
+test('a model-list error after successful Google authorization preserves the connected state and refresh controls',()=>{
+  const f=fixture({initial:{...connected('authorized-profile'),error:{code:'GEMINI_SESSION_FAILED',phase:'model-list',message:'PRIVATE_ACCOUNT_URL'}}});f.mode();
+  assert.equal(f.node('gemini-login-status').textContent,'Google 账号已连接');
+  assert.equal(f.node('gemini-login-models').disabled,false);
+  assert.equal(f.node('gemini-login-disconnect').hidden,false);
+  assert.match(f.node('gemini-login-message').textContent,/读取模型目录失败：.*刷新模型目录/);
+  assert.doesNotMatch(f.node('gemini-login-message').textContent,/PRIVATE_ACCOUNT_URL/);
+});
+
+test('every currently emitted Gemini account failure code has a local diagnostic rather than raw process details',async()=>{
+  const core=await fs.readFile(new URL('../src/core/gemini-login.mjs',import.meta.url),'utf8'),f=fixture();
+  const codes=new Set([...core.matchAll(/failure\('(GEMINI_[A-Z_]+)'/gu)].map(match=>match[1]));assert.ok(codes.size>=20);
+  for(const code of codes){
+    const text=f.api.errorMessage(new Error(`Error invoking remote method: [${code}] PRIVATE_STDERR_TOKEN`));
+    assert.notEqual(text,'Google 账号连接未完成，请重试。',code);assert.doesNotMatch(text,/PRIVATE_STDERR_TOKEN/);
+  }
+});

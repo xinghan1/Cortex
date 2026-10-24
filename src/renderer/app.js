@@ -144,6 +144,7 @@ function element(tag, className, text) {
 
 function errorText(error) {
   const message = error?.message || String(error || '操作失败，请重试。');
+  if (/\[GEMINI_[A-Z_]+\]/u.test(message) && typeof window.ForgeGeminiLogin?.errorMessage === 'function') return window.ForgeGeminiLogin.errorMessage(error);
   return message.replace(/^Error invoking remote method ['"]forge:[^'"]+['"]:\s*(?:(?:Error|FileManagerError|ImageAttachmentError):\s*)?/u, '');
 }
 

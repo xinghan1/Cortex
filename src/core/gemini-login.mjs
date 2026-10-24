@@ -9,12 +9,38 @@ const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/iu;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value, max = 512) => typeof value === 'string' && value.length <= max && !/[\x00-\x1f\x7f]/u.test(value);
 const count = value => Number.isSafeInteger(value) && value >= 0;
-const failure = (code, message) => Object.assign(new Error(message), { name: 'GeminiConnectionError', code, retryable: false });
+// Electron invoke preserves Error.message but drops custom fields such as code.
+// Only local, fixed text is allowed into these errors; never forward CLI data.
+const failure = (code, message) => Object.assign(new Error(`[${code}] ${message}`), { name: 'GeminiConnectionError', code, retryable: false });
 const aborted = () => Object.assign(failure('GEMINI_CANCELLED', 'Gemini 账号操作已取消。'), { name: 'AbortError' });
 const unavailable = () => failure('GEMINI_SIGN_IN_REQUIRED', '请先通过官方 Gemini CLI 登录 Google 账号。');
 const invalid = () => failure('GEMINI_INVALID_RESPONSE', 'Gemini CLI 返回了无效响应，工具调用未执行。');
 const MAX_LINE = 16 * 1024 * 1024, MAX_WIRE = 64 * 1024 * 1024, MAX_INPUT = 16 * 1024 * 1024;
 const PROFILE_FILE = 'gemini-connection.json';
+
+function rpcFailure(method, error) {
+  // Inspect upstream diagnostics only for known categories. Do not retain or
+  // expose the original message, OAuth URL, account identity or error data.
+  const message = typeof error.message === 'string' ? error.message.slice(0, 16384) : '';
+  if (/invalid_grant|invalid_token|unauthenticated|credentials? (?:have |has )?expired/iu.test(message)) return unavailable();
+  if (/(?:GOOGLE_CLOUD_PROJECT|GOOGLE_CLOUD_PROJECT_ID|Google Cloud project).{0,100}(?:required|must|set|specif)|(?:set|specif|require).{0,100}(?:GOOGLE_CLOUD_PROJECT|Google Cloud project)/iu.test(message))
+    return failure('GEMINI_PROJECT_REQUIRED', '此 Google 账号需要配置 Google Cloud 项目，请使用个人账号或按官方认证要求配置。');
+  if (/Account validation required:/iu.test(message))
+    return failure('GEMINI_ACCOUNT_VALIDATION_REQUIRED', 'Google 要求额外验证此账号；网页授权尚未完成 Gemini 服务验证，请先完成官方账号验证后重试。');
+  if (/LoadCodeAssist returned empty response/iu.test(message))
+    return failure('GEMINI_SERVICE_UNAVAILABLE', 'Google 授权后，Code Assist 服务初始化未返回有效结果，请检查代理后重试。');
+  if (/terms of service|accept.{0,40}terms|tos[_ -]?(?:required|not[_ -]?accepted)/iu.test(message))
+    return failure('GEMINI_ACCOUNT_ACTION_REQUIRED', '请先在 Google 官方页面完成账号条款确认，再重新连接。');
+  if (/quota.{0,30}(?:exceed|exhaust)|resource_exhausted|rate.?limit|too many requests/iu.test(message))
+    return failure('GEMINI_QUOTA_EXCEEDED', 'Google 账号当前额度不足或请求受限，请稍后重试。');
+  if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|network error|unable to verify|certificate|socket hang up|proxy/iu.test(message))
+    return failure('GEMINI_NETWORK_ERROR', '浏览器授权后连接 Google 服务失败，请检查软件代理和网络后重试。');
+  return method === 'authenticate'
+    ? failure('GEMINI_AUTH_FAILED', '浏览器授权后，Gemini CLI 未能完成账号服务验证，请检查账号可用性和网络后重试。')
+    : method === 'session/new'
+      ? failure('GEMINI_SESSION_FAILED', 'Google 账号已连接，但 Gemini 会话创建失败，请刷新模型目录后重试。')
+      : failure('GEMINI_CLI_REQUEST_FAILED', 'Gemini CLI 请求未完成，请检查登录状态、套餐额度或网络后重试。');
+}
 
 function abortable(operation, signal) {
   signal?.throwIfAborted();
@@ -205,8 +231,7 @@ class AcpProcess {
     }
     const pending = this.#pending.get(value.id); if (!pending) return;
     this.#pending.delete(value.id);
-    if (object(value.error)) pending.reject(pending.method === 'authenticate'
-      ? unavailable() : failure('GEMINI_CLI_REQUEST_FAILED', 'Gemini CLI 请求未完成，请检查登录状态、套餐额度或网络后重试。'));
+    if (object(value.error)) pending.reject(rpcFailure(pending.method, value.error));
     else if (!Object.hasOwn(value, 'result')) pending.reject(invalid());
     else pending.resolve(value.result);
   }
@@ -321,7 +346,7 @@ export class GeminiConnection {
     if (path.dirname(real).toLowerCase() !== parent.toLowerCase() || path.basename(real) !== id) throw invalid();
     await fs.rm(home, { recursive: true, force: true });
   }
-  async #run(id, { signal, browser = false, model, timeoutMs = this.#timeout, onUpdate } = {}, operation) {
+  async #run(id, { signal, browser = false, model, timeoutMs = this.#timeout, onUpdate, sessionRequired = true, onPhase, operationPhase = 'prompt' } = {}, operation) {
     await this.init(); signal?.throwIfAborted();
     if (!this.#available) throw failure('GEMINI_CLI_UNAVAILABLE', '内置 Gemini CLI 不可用，请重新安装软件。');
     // Only startup is serialized: two live prompts can still generate in
@@ -329,7 +354,8 @@ export class GeminiConnection {
     const previous = this.#bootstrap; let release;
     const gate = new Promise(resolve => { release = resolve; });
     this.#bootstrap = previous.then(() => gate, () => gate);
-    let client, session;
+    let client, session, phase = 'initialize';
+    const reportPhase = value => { phase = value; onPhase?.(value); };
     try {
       try {
         await abortable(() => previous, signal);
@@ -344,16 +370,25 @@ export class GeminiConnection {
         client = new AcpProcess({ launch: this.#spawn, args, signal, timeoutMs, onUpdate,
           options: { nodeExecutable: this.#executable, spawn: { cwd: directories.work,
             env: childEnvironment({ ...this.#env, ...proxyEnv }, directories.home, browser), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] } } });
+        reportPhase('initialize');
         const initialized = await client.request('initialize', { protocolVersion: 1,
           clientInfo: { name: 'Synora code', version: this.#version }, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
         if (initialized?.protocolVersion !== 1 || initialized.agentInfo?.name !== 'gemini-cli'
             || initialized.agentInfo?.version !== GEMINI_CLI_VERSION || !initialized.authMethods?.some(value => value.id === 'oauth-personal'))
           throw failure('GEMINI_CLI_INCOMPATIBLE', '内置 Gemini CLI 版本或登录协议不匹配，请更新软件。');
+        reportPhase('authenticate');
         await client.request('authenticate', { methodId: 'oauth-personal' });
-        session = await client.request('session/new', { cwd: directories.work, mcpServers: [] });
-        if (!text(session?.sessionId, 200) || !session.sessionId) throw invalid();
+        if (sessionRequired) {
+          reportPhase('session-new');
+          session = await client.request('session/new', { cwd: directories.work, mcpServers: [] });
+          if (!text(session?.sessionId, 200) || !session.sessionId) throw invalid();
+        }
       } finally { release(); }
+      if (sessionRequired) reportPhase(operationPhase);
       return await operation(client, session);
+    } catch (caught) {
+      if (caught?.name === 'GeminiConnectionError') caught.phase ??= phase;
+      throw caught;
     } finally { await client?.dispose(); }
   }
   signIn({ signal } = {}) {
@@ -362,6 +397,7 @@ export class GeminiConnection {
     if (this.#removing) return Promise.reject(failure('GEMINI_BUSY', '请等待退出 Google 登录完成。'));
     const controller = new AbortController(), id = randomUUID(); this.#cancelOperations();
     const attempt = { controller, id, phase: 'initializing', expiresAt: Date.now() + this.#signInTimeout };
+    let phase = 'initialize';
     const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     this.#attempt = attempt; this.#failure = null; this.#changed();
     attempt.done = this.#track((async () => {
@@ -369,19 +405,29 @@ export class GeminiConnection {
         await this.init(); controller.signal.throwIfAborted();
         if (this.#storageError) throw failure('GEMINI_STORAGE_UNREADABLE', '请先恢复 Gemini 本机连接信息。');
         attempt.phase = 'waiting-browser'; this.#changed();
-        const models = await this.#run(id, { signal: controller.signal, browser: true, timeoutMs: this.#signInTimeout }, async (_client, session) => modelList(session));
-        controller.signal.throwIfAborted(); attempt.phase = 'committing'; this.#changed();
+        // An official authenticate ACK completes login. Creating a model
+        // session/catalog is a separate operation and must never roll back
+        // already-confirmed Google authorization on a transient failure.
+        await this.#run(id, { signal: controller.signal, browser: true, timeoutMs: this.#signInTimeout, sessionRequired: false,
+          onPhase: value => { phase = value; } }, async () => {});
+        controller.signal.throwIfAborted(); phase = 'storage'; attempt.phase = 'committing'; this.#changed();
         await this.#enqueue(async () => {
           controller.signal.throwIfAborted(); const previous = this.#profile;
           await this.#save(id);
           if (controller.signal.aborted || this.#closed) { await this.#save(previous); throw aborted(); }
-          this.#profile = id; this.#models = { id, at: Date.now(), models }; this.#failure = null;
+          this.#profile = id; this.#models = null; this.#failure = null;
           if (previous && previous !== id) await this.#removeHome(previous).catch(() => {});
         });
       } catch (caught) {
-        if (!controller.signal.aborted) this.#failure = { code: caught.code || 'GEMINI_SIGN_IN_FAILED', message: caught.code ? caught.message : 'Google 账号登录未完成，请重试。' };
+        let safe = caught;
+        if (!controller.signal.aborted) {
+          safe = caught?.name === 'GeminiConnectionError' ? caught
+            : phase === 'storage' ? failure('GEMINI_STORAGE_UNREADABLE', 'Google 授权已确认，但无法保存本机连接信息，请检查软件数据目录后重试。')
+              : failure('GEMINI_SIGN_IN_FAILED', 'Google 账号登录未完成，请重试。');
+          this.#failure = { code: safe.code, message: safe.message, phase };
+        }
         if (this.#profile !== id) await this.#removeHome(id).catch(() => {});
-        throw controller.signal.aborted ? aborted() : caught;
+        throw controller.signal.aborted ? aborted() : safe;
       } finally {
         signal?.removeEventListener('abort', abort); if (this.#attempt === attempt) this.#attempt = null; this.#changed();
       }
@@ -418,8 +464,8 @@ export class GeminiConnection {
     };
     try { current(); const result = await operation({ id, signal: controller.signal, current }); current(); return result; }
     catch (caught) {
-      if (caught.code === 'GEMINI_SIGN_IN_REQUIRED' && id === this.#profile && generation === this.#generation) {
-        this.#failure = { code: caught.code, message: caught.message }; this.#changed();
+      if (caught?.name === 'GeminiConnectionError' && /^GEMINI_/u.test(caught.code) && id === this.#profile && generation === this.#generation) {
+        this.#failure = { code: caught.code, message: caught.message, ...(caught.phase ? { phase: caught.phase } : {}) }; this.#changed();
       }
       throw controller.signal.aborted ? aborted() : caught;
     } finally { this.#operations.delete(controller); signal?.removeEventListener('abort', abort); }
@@ -427,7 +473,7 @@ export class GeminiConnection {
   listModels({ force = false, signal } = {}) {
     return this.#track(this.#accountOperation(signal, async ({ id, signal, current }) => {
       if (!force && this.#models?.id === id && Date.now() - this.#models.at < 300_000) return structuredClone(this.#models.models);
-      const models = await this.#run(id, { signal }, async (_client, session) => modelList(session)); current();
+      const models = await this.#run(id, { signal, operationPhase: 'model-list' }, async (_client, session) => modelList(session)); current();
       this.#models = { id, at: Date.now(), models }; this.#failure = null; return structuredClone(models);
     }));
   }

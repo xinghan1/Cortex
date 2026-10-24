@@ -100,8 +100,14 @@ readline.createInterface({input:process.stdin}).on('line',line=>{let request;try
 const {id,method,params}=request;log({method,home:process.env.GEMINI_CLI_HOME,model:process.argv.includes('--model')?process.argv[process.argv.indexOf('--model')+1]:null});
 let result={};
 if(method==='initialize')result={protocolVersion:1,agentInfo:{name:'gemini-cli',version:'0.65.0'},authMethods:[{id:'oauth-personal'}]};
-else if(method==='authenticate'){if(fs.existsSync(path.join(__dirname,'hold-login')))return;}
-else if(method==='session/new')result={sessionId:'isolated-session',models:{availableModels:[{modelId:'gemini-account-fixture',name:'Google账号验证模型'}],currentModelId:'gemini-account-fixture'}};
+else if(method==='authenticate'){
+if(fs.existsSync(path.join(__dirname,'hold-login')))return;
+if(fs.existsSync(path.join(__dirname,'project-required'))){send({jsonrpc:'2.0',id,error:{code:-32000,message:'This account requires setting the GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID env var. PRIVATE_UPSTREAM'}});return;}
+}
+else if(method==='session/new'){
+if(fs.existsSync(path.join(__dirname,'session-unavailable'))){send({jsonrpc:'2.0',id,error:{code:-32603,message:'Temporary service failure PRIVATE_UPSTREAM'}});return;}
+result={sessionId:'isolated-session',models:{availableModels:[{modelId:'gemini-account-fixture',name:'Google账号验证模型'}],currentModelId:'gemini-account-fixture'}};
+}
 else if(method==='session/prompt'){
 const text=params.prompt[0].text,payload=JSON.parse(text.slice(text.lastIndexOf('\n')+1));
 const content=payload.tools.length?'GEMINI_MOCK_MAIN_ACCOUNT_COMPLETE':'GEMINI_MOCK_PET_ACCOUNT_COMPLETE';
@@ -120,8 +126,18 @@ if(id!==undefined)send({jsonrpc:'2.0',id,result});});
     assert.equal(await js(`!$('gemini-login-cancel').hidden&&!$('gemini-login-cancel').disabled`),true);await click('#gemini-login-cancel');
     await until('native cancellation unlocks login',async()=>(await state()).gemini.session.status!=='connecting'&&await js(`!window.synoraGeminiLogin.isBusy()`));
     assert.equal((await state()).gemini.session.profileId,null);await fs.unlink(holdFile);
+    const projectRequired=path.join(cliRoot,'project-required');await fs.writeFile(projectRequired,'isolated post-browser error');await click('#gemini-login-sign-in');
+    await until('post-browser error is classified',async()=>(await state()).gemini.error?.code==='GEMINI_PROJECT_REQUIRED'&&await js(`!window.synoraGeminiLogin.isBusy()`));
+    await until('classified error survives real Electron IPC',()=>js(`!$('gemini-login-message').hidden&&$('gemini-login-message').textContent.includes('Google Cloud')`));
+    assert.equal(await js(`$('gemini-login-message').textContent.includes('PRIVATE_UPSTREAM')`),false);await capture('gemini-account-project-error.png');await fs.unlink(projectRequired);
     await click('#gemini-login-sign-in');await until('native Google connected',async()=>(await state()).gemini.session.status==='connected'&&await js(`$('gemini-login-status').textContent==='Google 账号已连接'`));
     const mainProfile=(await state()).gemini.session.profileId;assert.ok(mainProfile);
+    assert.equal((await authRecords()).some(record=>record.method==='session/new'),false,'Account login does not depend on opening a model session');
+    const sessionUnavailable=path.join(cliRoot,'session-unavailable');await fs.writeFile(sessionUnavailable,'isolated catalog outage');await click('#settings-model-refresh');
+    await until('catalog failure preserves authorization',async()=>(await state()).gemini.error?.code==='GEMINI_SESSION_FAILED'&&await js(`!settingsCatalogLoading`));
+    const failedCatalog=(await state()).gemini;assert.equal(failedCatalog.session.status,'connected');assert.equal(failedCatalog.session.profileId,mainProfile);assert.equal(failedCatalog.session.sharing,true);
+    await until('account remains connected on screen',()=>js(`$('gemini-login-status').textContent==='Google 账号已连接'`));
+    assert.equal(await js(`$('settings-model-catalog-message').textContent.includes('GEMINI_')`),false);await capture('gemini-account-catalog-error.png');await fs.unlink(sessionUnavailable);
     await click('#settings-model-refresh');await until('ACP actual available models',()=>js(`settingsCatalog?.authMode==='gemini-account'&&settingsCatalog.models.some(model=>model.id==='gemini-account-fixture')`));
     await js(`$('chatgpt-model-select').value='gemini-account-fixture';$('chatgpt-model-select').dispatchEvent(new Event('change',{bubbles:true}));true`);await click('#save-settings');
     await until('account selection saved',async()=>(await state()).settings.authMode==='gemini-account'&&await js(`!$('settings-dialog').open&&!settingsSaving`));
@@ -140,6 +156,7 @@ if(id!==undefined)send({jsonrpc:'2.0',id,result});});
     assert.equal((await state()).gemini.session.profileId,mainProfile);await click('#close-settings');await call('resetRoleModel',{role:'pet'});
     const rpc=await authRecords(),homes=[...new Set(rpc.map(record=>record.home))];assert.ok(homes.length>=2);assert.ok(rpc.filter(record=>record.method==='session/prompt').length>=2);
     const accountEvidence={mock:true,realGoogleLogin:false,realNodeAcpProcess:true,nativeLoginAndCancel:true,actualAvailableModelsSelected:true,
+      postBrowserErrorPreservedAcrossIpc:true,loginIndependentOfCatalog:true,catalogRetryKeepsProfile:true,
       accountInferenceBypassesApiKey:true,independentRoleProfileAndHome:true,roleDisconnectKeepsMainAccount:true,model:'gemini-account-fixture',rpcMethods:[...new Set(rpc.map(record=>record.method))]};
     assert.deepEqual(problems,[]);
     const result={status:'completed',realApi:false,realCommands:false,localFixtureOnly:true,nativeGeminiProtocol:true,keyUsesHeaderNotQuery:true,

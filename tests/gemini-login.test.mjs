@@ -71,6 +71,7 @@ test('explicit official CLI login persists only an independent local UUID and re
   const saved = JSON.parse(await fs.readFile(f.file, 'utf8')); assert.deepEqual(saved, { version: 1, profileId: state.session.profileId });
   assert.equal(f.fake.calls.filter(call => call.request.method === 'authenticate')[0].request.params.methodId, 'oauth-personal');
   assert.equal(f.fake.calls.some(call => call.request.method === 'session/prompt'), false, 'Login does not make inference requests');
+  assert.equal(f.fake.calls.some(call => call.request.method === 'session/new'), false, 'Login commits authentication independently of session/catalog availability');
   const before = f.fake.children.length, restored = f.create(); t.after(() => restored.dispose()); await restored.init();
   assert.equal((await restored.publicState()).session.profileId, state.session.profileId); assert.equal(f.fake.children.length, before);
   assert.equal((await f.connection.listModels())[0].supportsImages, false);
@@ -202,13 +203,74 @@ test('account replacement aborts older requests and old profile IDs cannot start
 test('failed refresh never exposes upstream diagnostics and disconnected credentials are isolated and removed', async t => {
   let rejectAuth = false;
   const f = await fixture(t, { handler: ({ request: rpc, child }) => {
-    if (rejectAuth && rpc.method === 'authenticate') { child.errorReply(rpc); child.stderr.write('SECRET oauth URL token'); return true; }
+    if (rejectAuth && rpc.method === 'authenticate') { child.errorReply(rpc, { code: -32000, message: 'invalid_grant SECRET_DO_NOT_SHOW' }); child.stderr.write('SECRET oauth URL token'); return true; }
   } }); const state = await f.connection.signIn(); rejectAuth = true;
   await assert.rejects(f.connection.listModels({ force: true }), { code: 'GEMINI_SIGN_IN_REQUIRED' });
   const unavailable = await f.connection.publicState(); assert.equal(unavailable.session.status, 'reauth_required'); assert.equal(unavailable.session.sharing, false);
   assert.ok(!JSON.stringify(unavailable).includes('DO_NOT_SHOW')); assert.ok(!JSON.stringify(unavailable).includes('SECRET'));
   await f.connection.disconnect(); assert.equal((await f.connection.publicState()).session.status, 'disconnected');
   await assert.rejects(fs.stat(path.join(f.dir, 'account', 'gemini-cli-profiles', state.session.profileId)), { code: 'ENOENT' });
+});
+
+test('successful authentication survives a failing session/catalog and retries with the same isolated credentials', async t => {
+  let rejectSession = true;
+  const f = await fixture(t, { handler: ({ request: rpc, child }) => {
+    if (rejectSession && rpc.method === 'session/new') {
+      child.errorReply(rpc, { code: -32603, message: 'temporary upstream service failure SECRET_CATALOG' }); return true;
+    }
+  } });
+  const signedIn = await f.connection.signIn(), id = signedIn.session.profileId;
+  assert.equal(signedIn.session.status, 'connected');
+  assert.deepEqual(f.fake.calls.map(call => call.request.method), ['initialize', 'authenticate']);
+  assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).profileId, id);
+  await assert.rejects(f.connection.listModels({ force: true }), { code: 'GEMINI_SESSION_FAILED', phase: 'session-new' });
+  const failed = await f.connection.publicState();
+  assert.equal(failed.session.profileId, id); assert.equal(failed.session.status, 'connected'); assert.equal(failed.session.sharing, true);
+  assert.equal(failed.error.code, 'GEMINI_SESSION_FAILED'); assert.equal(failed.error.phase, 'session-new');
+  assert.ok(!JSON.stringify(failed).includes('SECRET_CATALOG'));
+  assert.equal((await fs.stat(path.join(f.dir, 'account', 'gemini-cli-profiles', id))).isDirectory(), true);
+  rejectSession = false;
+  assert.equal((await f.connection.listModels({ force: true }))[0].id, model);
+  assert.equal((await f.connection.publicState()).error, null);
+  assert.equal((await f.connection.publicState()).session.profileId, id);
+  assert.equal(f.fake.calls.some(call => call.request.method === 'session/prompt'), false);
+});
+
+test('post-browser Google project, validation, service and network failures stay distinct across Electron IPC without exposing diagnostics', async t => {
+  const cases = [
+    ['This account requires setting the GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID env var.', 'GEMINI_PROJECT_REQUIRED'],
+    ['Account validation required: https://accounts.google.com/SECRET?token=PRIVATE', 'GEMINI_ACCOUNT_VALIDATION_REQUIRED'],
+    ['LoadCodeAssist returned empty response', 'GEMINI_SERVICE_UNAVAILABLE'],
+    ['request to https://cloudcode-pa.googleapis.com/SECRET failed: ECONNRESET PRIVATE', 'GEMINI_NETWORK_ERROR'],
+    ['Unknown upstream failure SECRET PRIVATE', 'GEMINI_AUTH_FAILED'],
+  ];
+  for (const [message, code] of cases) {
+    const f = await fixture(t, { handler: ({ request: rpc, child }) => {
+      if (rpc.method === 'authenticate') { child.errorReply(rpc, { code: -32000, message }); return true; }
+    } });
+    await assert.rejects(f.connection.signIn(), caught => {
+      assert.equal(caught.code, code); assert.match(caught.message, new RegExp('^\\[' + code + '\\]'));
+      assert.ok(!/SECRET|PRIVATE|https:\/\//u.test(caught.message)); return true;
+    });
+    const state = await f.connection.publicState();
+    assert.equal(state.session.status, 'disconnected'); assert.equal(state.error.phase, 'authenticate'); assert.equal(state.error.code, code);
+    assert.equal(state.session.profileId, null); assert.ok(!/SECRET|PRIVATE|https:\/\//u.test(JSON.stringify(state)));
+    await assert.rejects(fs.stat(f.file), { code: 'ENOENT' });
+  }
+});
+
+test('a temporary service failure during cached authentication keeps a valid saved account for retry', async t => {
+  let offline = false;
+  const f = await fixture(t, { handler: ({ request: rpc, child }) => {
+    if (offline && rpc.method === 'authenticate') { child.errorReply(rpc, { code: -32000, message: 'fetch failed ECONNRESET SECRET' }); return true; }
+  } });
+  const signedIn = await f.connection.signIn(); offline = true;
+  await assert.rejects(f.connection.listModels({ force: true }), { code: 'GEMINI_NETWORK_ERROR' });
+  const state = await f.connection.publicState();
+  assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true);
+  assert.equal(state.session.profileId, signedIn.session.profileId); assert.equal(state.error.phase, 'authenticate');
+  offline = false; assert.equal((await f.connection.listModels({ force: true }))[0].id, model);
+  assert.equal((await f.connection.publicState()).error, null);
 });
 
 test('corrupt own profile metadata is preserved for recovery and cannot silently create a new connection', async t => {
