@@ -267,8 +267,9 @@ export function createPetDialogController({ getConfig, requestModel, emit = () =
   }
   return Object.freeze({
     snapshot,
-    ask(args, { signal, runId, sessionId } = {}) {
+    ask(args, { signal, runId, sessionId, choiceOnly = false } = {}) {
       if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !['question', 'options'].includes(key))
+          || typeof choiceOnly !== 'boolean' || choiceOnly && !args.options?.length
           || !validText(args.question, PET_DIALOG_LIMITS.textChars) || args.options !== undefined
           && (!Array.isArray(args.options) || args.options.length > PET_DIALOG_LIMITS.options
             || args.options.some(option => !validText(option, PET_DIALOG_LIMITS.optionChars)))) throw new Error('宠物提问内容无效。');
@@ -277,7 +278,7 @@ export function createPetDialogController({ getConfig, requestModel, emit = () =
       let resolve, reject;
       const promise = new Promise((pass, fail) => { resolve = pass; reject = fail; });
       const record = { question: { id: randomUUID(), question: clean(args.question.trim()), options: (args.options || []).map(value => clean(value.trim())),
-        blocking: true, kind: 'decision' }, resolve, reject, signal, runId, sessionId };
+        blocking: true, kind: 'decision', ...(choiceOnly ? { choiceOnly: true } : {}) }, resolve, reject, signal, runId, sessionId };
       record.onAbort = () => { if (blocking === record) { settleQuestion(null, signal.reason || abortError()); publish(); } };
       blocking = record; signal?.addEventListener('abort', record.onAbort, { once: true });
       if (signal?.aborted) record.onAbort(); else publish();
@@ -288,6 +289,7 @@ export function createPetDialogController({ getConfig, requestModel, emit = () =
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['id', 'choiceIndex', 'text'].includes(key))
           || !question || input.id !== question.id) throw new Error('这个问题已结束，请使用当前问题。');
       const choice = Object.hasOwn(input, 'choiceIndex'), custom = Object.hasOwn(input, 'text');
+      if (question.choiceOnly && custom) throw new Error('此官方提问只接受原生选项，请选择一个选项或取消。');
       if (choice === custom || choice && (!Number.isSafeInteger(input.choiceIndex) || input.choiceIndex < 0 || input.choiceIndex >= question.options.length)
           || custom && !validText(input.text, PET_DIALOG_LIMITS.textChars)) throw new Error('请选择一个有效选项或填写回答。');
       const answer = clean(choice ? question.options[input.choiceIndex] : input.text.trim());

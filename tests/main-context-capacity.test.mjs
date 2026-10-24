@@ -27,7 +27,7 @@ function fixture({ capacity = 128000, fail = false, model = 'gpt-6.1-sol' } = {}
     },
     deriveModelCapabilities, modelCapacityConnectionKey, modelCapacityScope, applyModelCapacity,
     modelCapacityPreferences: { get: () => null }, metricsConnectionKey: null, metricsModelCapacity: null,
-    isAccountMode: mode => mode === 'chatgpt',
+    isAccountMode: mode => mode === 'chatgpt', isExternalAgentMode: () => false, app: { getVersion: () => '0.23.0' },
     accountLabel: () => 'ChatGPT', accountBaseUrl: () => 'https://api.openai.com/v1',
     resolvedReasoningEffort: () => 'default', store: { key: () => '' },
     permissionMode: 'request', configRevision: 1, uiPreferences: {}, currentSession: { messages: [], workspace: 'C:/fixture' },

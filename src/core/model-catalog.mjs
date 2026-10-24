@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { ollamaEndpoint } from './ollama-endpoint.mjs';
+import { officialVendor, documentedEfforts, GLM_DOC_MODELS } from './kimi-glm-contracts.mjs';
 
 // Discovery schemas verified 2026-10-19. A catalog entry is not an inference entitlement.
 // https://developers.openai.com/api/reference/resources/models/methods/list
 // https://api-docs.deepseek.com/api/list-models/
 // https://platform.claude.com/docs/en/api/models/list
 // https://ai.google.dev/api/models
-const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', gemini: 'https://generativelanguage.googleapis.com/v1beta', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
+const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', gemini: 'https://generativelanguage.googleapis.com/v1beta',
+  kimi: 'https://api.moonshot.cn/v1', glm: 'https://open.bigmodel.cn/api/paas/v4', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const CAPACITY_ORIGINS = new Set(['provider', 'account', 'official-default']);
 // Verified against each exact official model page on 2026-10-24. Account
@@ -122,6 +124,8 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
   // native/CLI Gemini at its own default until exact supported levels have
   // been verified; never translate another provider's effort aliases.
   if (provider === 'gemini') { supported = []; defaultLevel = undefined; }
+  if (metadata.officialSource === true && supported === undefined && ['kimi', 'glm'].includes(provider))
+    supported = documentedEfforts(provider, id);
   if (typeof metadata.supportsTools === 'boolean') result.supportsTools = metadata.supportsTools;
   if (typeof metadata.supportsImages === 'boolean') result.supportsImages = metadata.supportsImages;
   else if (Array.isArray(metadata.input_modalities) && metadata.input_modalities.length
@@ -243,7 +247,8 @@ function officialEndpoint(provider, url) {
   return (provider === 'openai' && url.origin === 'https://api.openai.com' && url.pathname === '/v1/models')
     || (provider === 'deepseek' && url.origin === 'https://api.deepseek.com' && ['/models', '/v1/models'].includes(url.pathname))
     || (provider === 'anthropic' && url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/models')
-    || (provider === 'gemini' && url.origin === 'https://generativelanguage.googleapis.com' && ['/v1/models', '/v1beta/models'].includes(url.pathname));
+    || (provider === 'gemini' && url.origin === 'https://generativelanguage.googleapis.com' && ['/v1/models', '/v1beta/models'].includes(url.pathname))
+    || officialVendor(provider, url.href);
 }
 
 function credentialForms(key) {
@@ -265,6 +270,8 @@ function containsCredential(value, secrets) {
 }
 
 function normalizeModel(provider, item, officialSource, secrets) {
+  if (provider === 'kimi' && object(item)) item = { ...item,
+    ...(typeof item.supports_image_in === 'boolean' ? { supportsImages: item.supports_image_in } : {}) };
   if (provider === 'gemini' && object(item)) {
     const methods = item.supportedGenerationMethods;
     if (typeof item.name !== 'string' || !/^models\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u.test(item.name)
@@ -369,6 +376,13 @@ export class ModelCatalog {
     const cacheKey = `${provider}\0${endpoint.href}\0${createHash('sha256').update(key).digest('hex')}${provider === 'ollama' ? `\0${contextWindowTokens}` : ''}`;
     const cached = this.#cache.get(cacheKey);
     if (!force && cached && cached.expiresAt > this.#clock()) return clone(cached.result);
+    if (provider === 'glm' && officialVendor('glm', endpoint.href)) {
+      const result = { models: GLM_DOC_MODELS.map(model => normalizeModel('glm', model, true, secrets)),
+        fetchedAt: new Date(this.#clock()).toISOString(), source: 'official-docs',
+        sourceUrl: 'https://docs.bigmodel.cn/cn/guide/start/model-overview' };
+      this.#cache.set(cacheKey, { result, expiresAt: this.#clock() + this.#ttlMs });
+      return clone(result);
+    }
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let timedOut = false;

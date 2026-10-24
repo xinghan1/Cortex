@@ -8,7 +8,7 @@ const { createBackgroundTray } = createRequire(import.meta.url)('../src/core/bac
 const source = (await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const beforeQuitSource = source.slice(source.indexOf("app.on('before-quit', event => {"));
 const shutdownSource = source.slice(source.indexOf('async function shutdown()'), source.indexOf('\nfunction initializeBrowser()'));
-const cancelSignInsSource = source.slice(source.indexOf('function cancelAccountSignIns()'), source.indexOf('\nasync function publishRoleAccount('));
+const cancelSignInsSource = source.slice(source.indexOf('function cancelAccountSignIns()'), source.indexOf('\nfunction providerAccountURL('));
 const trayStart = source.indexOf('backgroundTray = createBackgroundTray({');
 const traySource = source.slice(trayStart, source.indexOf('\n  }\n  startUpdateChecks();', trayStart));
 assert.ok(beforeQuitSource.startsWith("app.on('before-quit',"));
@@ -51,7 +51,7 @@ function runtimeFixture(calls, name, { dirty = false, busy = true, editorDecisio
   return { host, context, controller };
 }
 
-function fixture({ runtimes = [{}], restoreFlush = Promise.resolve(), capacityFlush = Promise.resolve() } = {}) {
+function fixture({ runtimes = [{}], restoreFlush = Promise.resolve(), capacityFlush = Promise.resolve(), componentFlushes = {} } = {}) {
   const calls = [], callbacks = new Map();
   const contexts = runtimes.map((options, index) => runtimeFixture(calls, `window-${index}`, options));
   const windows = new Map(contexts.map((value, index) => [index, value.host]));
@@ -62,7 +62,12 @@ function fixture({ runtimes = [{}], restoreFlush = Promise.resolve(), capacityFl
     if (!next.prevented) calls.push('app:exit');
   } };
   const account = name => ({ cancelSignIn: () => calls.push(`cancel-signin:${name}`) });
+  const agents = Object.fromEntries(['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime'].map(name => [name, {
+    cancelSignIn: () => calls.push(`cancel-signin:${name}`), cancel: () => calls.push(`cancel-runtime:${name}`),
+    dispose: async () => { calls.push(`dispose:${name}`); await componentFlushes[name]; calls.push(`disposed:${name}`); },
+  }]));
   const context = vm.createContext({ windows, quitting: false, updateInstalling: false, sharedMutations: 0,
+    ...agents,
     sessionRestore: { pending: false, flush: () => { calls.push('flush:restore'); return restoreFlush; } },
     persistentTaskUndo: { pending: false, flush: async () => { calls.push('flush:undo'); } },
     modelCapacityPreferences: { settled: () => { calls.push('flush:capacity'); return capacityFlush; } },
@@ -136,6 +141,19 @@ test('idle explicit quit flushes pending shared storage and rejects duplicate qu
   assert.equal(f.calls.includes('window-0:stop-terminal'), false);
   storage.resolve(); await tick();
   assert.equal(f.context.quitting, true); assert.equal(f.calls.filter(call => call === 'app:exit').length, 1);
+});
+
+test('both busy and idle explicit exits wait for every native Agent and runtime process tree before allowing app exit', async () => {
+  for (const busy of [false, true]) {
+    const agent = deferred(), runtime = deferred(), f = fixture({ runtimes: [{ busy }], componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise } });
+    f.requestQuit(); await tick();
+    for (const name of ['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime']) assert.ok(f.calls.includes(`dispose:${name}`), name);
+    assert.ok(f.calls.includes('cancel-signin:kimiAgent') && f.calls.includes('cancel-runtime:glmRuntime'));
+    assert.equal(f.context.quitting, 'pending'); assert.equal(f.calls.includes('app:exit'), false);
+    agent.resolve(); await tick(); assert.ok(f.calls.includes('disposed:kimiAgent')); assert.equal(f.calls.includes('app:exit'), false);
+    runtime.resolve(); await tick(); assert.equal(f.calls.filter(call => call === 'app:exit').length, 1);
+    assert.ok(f.calls.indexOf('disposed:glmRuntime') < f.calls.indexOf('app:exit'));
+  }
 });
 
 test('an installer transition blocks ordinary quit until the verified installation path allows it', () => {

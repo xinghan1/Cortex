@@ -21,7 +21,7 @@
   "extraMetadata": {
     "synoraInstalled": true
   },
-  "asar": true,
+  "asar": { "smartUnpack": false },
   "npmRebuild": false,
   "forceCodeSigning": false,
   "publish": null,

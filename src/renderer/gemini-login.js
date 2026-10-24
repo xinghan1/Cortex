@@ -60,7 +60,7 @@
     };
     const modeField = el('label', 'gemini-auth-mode-field', 'form-field'); modeField.hidden = true;
     const mode = el('select', 'gemini-auth-mode'); mode.name = 'geminiAuthMode';
-    for (const [value, label] of [['apiKey', 'API Key'], ['gemini-account', 'Google 账号 · Gemini CLI']]) {
+    for (const [value, label] of [['apiKey', 'API Key'], ['antigravity-agent', 'Google 账号 · Antigravity 官方代理'], ['gemini-account', '旧 Gemini CLI · 兼容连接']]) {
       const option = el('option', '', '', label); option.value = value; mode.append(option);
     }
     mode.value = 'apiKey'; modeField.append(el('span', '', '', '连接方式'), mode); $('openai-auth-mode-field').after(modeField);
@@ -94,6 +94,7 @@
       const storage = value.storageRecovery === true || /^GEMINI_(?:STORAGE|ENCRYPTION)_/u.test(value.error?.code || '');
       const connected = session.status === 'connected' && session.sharing === true, locked = isBusy() || busy();
       modeField.hidden = $('provider-select').value !== 'gemini'; panel.hidden = modeField.hidden || mode.value !== 'gemini-account'; mode.disabled = locked;
+      for (const option of mode.children) if (option.value === 'antigravity-agent') { option.disabled = getRole() != null; option.title = getRole() != null ? '官方代理仅用于主会话；请为此功能配置 API 模型。' : ''; }
       const phases = { initializing: '正在准备 Google 登录…', starting: '正在准备 Google 登录…', 'waiting-browser': '等待 Google 浏览器授权',
         authenticating: '正在完成 Google 授权…', exchanging: '正在完成 Google 授权…', committing: '正在保存连接…',
         initialize: '正在准备 Google 登录…', authenticate: '正在完成 Google 授权…',
@@ -149,7 +150,7 @@
     const changed = () => { localError = null; onModeChange(); render(); };
     mode.addEventListener('change', changed); render();
     return Object.freeze({ render, isBusy: busy, isCancelling: () => cancelling,
-      fill(value = 'apiKey') { mode.value = value === 'gemini-account' ? value : 'apiKey'; localError = null; render(); },
+      fill(value = 'apiKey') { mode.value = value === 'gemini-account' || value === 'antigravity-agent' && getRole() == null ? value : 'apiKey'; localError = null; render(); },
       clearError() { localError = null; render(); },
       destroy() { if (disposed) return; disposed = true; mode.removeEventListener('change', changed); modeField.remove(); panel.remove(); },
     });

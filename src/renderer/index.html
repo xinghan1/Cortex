@@ -32,6 +32,7 @@
   <link rel="stylesheet" href="./deepseek-account.css">
   <link rel="stylesheet" href="./deepseek-login.css">
   <link rel="stylesheet" href="./gemini-login.css">
+  <link rel="stylesheet" href="./antigravity-login.css">
   <link rel="stylesheet" href="./ui-styles.css">
   <link rel="stylesheet" href="./conversation-background.css">
   <link rel="stylesheet" href="./round-navigator.css">
@@ -78,6 +79,7 @@
   <script src="./pet-settings.js" defer></script>
   <script src="./deepseek-login.js" defer></script>
   <script src="./gemini-login.js" defer></script>
+  <script src="./antigravity-login.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./usage-dashboard.js" defer></script>
   <script src="./context-settings.js" defer></script>
@@ -313,8 +315,10 @@
     <form id="settings-form">
       <div class="dialog-header"><h2 id="settings-title">主模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
       <p id="settings-scope-hint" class="settings-scope-hint" hidden></p>
-      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="gemini">Google · Gemini</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
+      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="gemini">Google · Gemini</option><option value="kimi">Kimi · Moonshot</option><option value="glm">GLM · 智谱 / Z.AI</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
       <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">ChatGPT 账号 · 个人本机预览</option></select></label>
+      <label id="kimi-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="kimi-auth-mode"><option value="apiKey">API Key</option><option value="kimi-agent">Kimi 官方代理账号登录</option></select></label>
+      <label id="glm-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="glm-auth-mode"><option value="apiKey">API Key</option><option value="glm-agent">ZCode 官方代理账号登录</option></select></label>
       <label id="api-protocol-field" class="form-field" hidden><span>接口协议</span><select id="api-protocol-select" name="apiProtocol"><option value="chat-completions">Chat Completions · 兼容接口</option><option value="responses">Responses</option></select><small id="api-protocol-help">按服务商文档选择调用协议。</small></label>
       <section id="chatgpt-panel" class="chatgpt-panel" aria-label="ChatGPT 账号授权" hidden>
         <div class="chatgpt-status-row"><strong id="chatgpt-status">未连接</strong><span id="chatgpt-identity"></span></div>
@@ -334,6 +338,7 @@
       <label id="base-url-field" class="form-field"><span id="base-url-label">Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"></label>
       <label id="ollama-context-window-field" class="form-field" hidden><span>模型上下文（Token）</span><input id="ollama-context-window-input" name="contextWindowTokens" type="number" min="4096" max="2097152" step="1" value="32768" inputmode="numeric" disabled><small>影响本地模型内存占用。</small></label>
       <label id="api-key-field" class="form-field"><span><span id="api-key-label">API Key</span> <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"></label>
+      <section id="provider-account-panel" class="form-field" aria-label="官方账号控制台" hidden><small>在官方控制台登录后创建 API Key，填写到此处。控制台登录不会自动授权 Synora。</small><button id="provider-account-open" class="text-button" type="button">登录官方控制台</button></section>
       <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message" role="status" hidden></small></div>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-footer"><button id="settings-role-reset" class="text-button settings-role-reset" type="button" hidden>恢复跟随主模型</button><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>

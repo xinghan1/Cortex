@@ -1,7 +1,7 @@
 {
   "name": "synora-code",
   "productName": "Synora code",
-  "version": "0.22.2",
+  "version": "0.23.0",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",
@@ -9,6 +9,7 @@
   "scripts": {
     "prepare:sdk": "node scripts/prepare-chatgpt-sdk.mjs",
     "prepare:gemini": "node scripts/prepare-gemini-cli.mjs",
+    "prepare:zcode": "node scripts/prepare-zcode-agent.mjs",
     "start": "electron .",
     "test": "node --test tests/*.test.mjs",
     "build": "node scripts/build.mjs",

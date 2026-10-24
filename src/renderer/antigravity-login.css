@@ -1,0 +1,10 @@
+.antigravity-login-panel { padding: 15px; margin: 12px 0 18px; border: 1px solid var(--ui-border, var(--line)); border-radius: var(--ui-radius, 12px); background: var(--ui-control, var(--panel2)); color: var(--ui-text, var(--text)); }
+.antigravity-login-panel p { margin: 10px 0; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.official-agent-help, .official-agent-version, .official-agent-download-size { color: var(--ui-muted, var(--muted)); }
+.antigravity-login-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 14px; }
+.official-agent-download { display: grid; gap: 6px; margin-top: 10px; font-size: 12px; }
+.official-agent-progress { width: 100%; height: 8px; accent-color: var(--ui-accent, var(--accent)); }
+.official-agent-message { margin-bottom: 0; color: var(--ui-bad, #ffb4c2); }
+.official-agent-verification { user-select: text; overflow-wrap: anywhere; margin-top: 10px; }
+.official-agent-verification code { font-size: 18px; letter-spacing: 2px; }
+.antigravity-login-panel [hidden], .antigravity-login-panel[hidden] { display: none; }

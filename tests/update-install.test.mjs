@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 
 const source = await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8');
 function mainFunction(name) {
-  const start = source.indexOf(`function ${name}(`), end = source.indexOf('\nfunction ', start + 1);
+  const start = source.indexOf(`function ${name}(`), end = source.indexOf(name === 'cancelAccountSignIns' ? '\nfunction providerAccountURL(' : '\nfunction ', start + 1);
   assert.ok(start >= 0, `Main-process function ${name} exists`);
   return source.slice(start, end < 0 ? source.length : end);
 }
@@ -17,7 +17,7 @@ function deferred() {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const verifiedPath = 'C:\\Users\\测试\\updates & safe\\Synora-code-Setup-0.18.4-x64.exe';
-function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches = 0 } = {}) {
+function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches = 0, componentFlushes = {} } = {}) {
   const calls = [], spawns = [], windows = new Map();
   let launches = 0;
   for (const [index, enabled] of [true, false].entries()) {
@@ -31,7 +31,11 @@ function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches =
     };
     windows.set(index, host);
   }
-  const context = vm.createContext({ windows, calls,
+  const agents = Object.fromEntries(['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime'].map(name => [name, {
+    cancelSignIn: () => calls.push(`cancel-signin:${name}`), cancel: () => calls.push(`cancel-runtime:${name}`),
+    dispose: async () => { calls.push(`dispose:${name}`); await componentFlushes[name]; calls.push(`disposed:${name}`); },
+  }]));
+  const context = vm.createContext({ windows, calls, ...agents,
     updateEnabled: true, updateInstalling: false, updateInstallPromise: null,
     quitting: false, sharedMutations: 0, sharedQueue: Promise.resolve(), sessionRenameLocks: new Set(), sessionDeleteLocks: new Set(),
     app: { getVersion: () => '0.18.3', quit: () => calls.push('quit') },
@@ -99,6 +103,16 @@ test('installer launch receives only the verified path and NSIS flags with shell
   assert.equal(f.calls.filter(value => value === 'quit').length, 1);
   assert.equal(f.calls.filter(value => value === 'cancel-deepseek-signin').length, 1);
   assert.equal(f.calls.filter(value => value === 'cancel-role-deepseek-signin').length, 1);
+});
+
+test('restart installation waits for native Agent and runtime disposal before bypassing the ordinary quit handler', async () => {
+  const agent = deferred(), runtime = deferred(), f = fixture({ componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise } });
+  const installing = f.install(); await tick();
+  for (const name of ['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime']) assert.ok(f.calls.includes(`dispose:${name}`), name);
+  assert.equal(f.calls.includes('quit'), false); assert.equal(f.context.quitting, false);
+  agent.resolve(); await tick(); assert.ok(f.calls.includes('disposed:kimiAgent')); assert.equal(f.calls.includes('quit'), false);
+  runtime.resolve(); await installing; assert.equal(f.calls.filter(call => call === 'quit').length, 1);
+  assert.ok(f.calls.indexOf('disposed:glmRuntime') < f.calls.indexOf('quit'));
 });
 
 test('spawn failure keeps the app open, restores each original window state and permits an explicit retry', async () => {

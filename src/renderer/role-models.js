@@ -7,7 +7,7 @@
     Object.freeze({ id: 'sidebar', name: '侧边问答', description: '在侧栏进行独立问答' }),
     Object.freeze({ id: 'pet', name: '宠物模型', description: '与大肥鱼聊天和生成动作台词' }),
   ]);
-  const names = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
+  const names = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi', glm: 'GLM', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
   const roleInfo = role => roles.find(item => item.id === role);
   function scope(state, role) {
     if (role == null) return state || {};
@@ -44,11 +44,14 @@
         const entry = scope(state, role.id), settings = entry.enabled ? entry.settings || {} : state.settings || {};
         const effective = entry.effective || settings;
         const legacy = role.id === 'approval' && !entry.enabled && state.approvalReviewer?.model;
+        const officialAgent = !entry.enabled && ['antigravity-agent', 'kimi-agent', 'glm-agent']
+          .includes(state.settings?.authMode || state.settings?.providers?.[state.settings?.provider]?.authMode);
         const model = legacy || effective.model || effective.providers?.[effective.provider]?.model || '尚未配置';
         const row = node('section', 'role-model-row'), copy = node('div', 'role-model-copy');
         row.dataset.role = role.id;
         copy.append(node('h3', '', role.name), node('p', 'role-model-description', role.description),
-          node('p', 'role-model-summary', `${entry.enabled ? '独立配置' : legacy ? '当前连接' : '跟随主模型'} · ${names[effective.provider] || effective.provider || ''}${effective.provider ? ' · ' : ''}${model}`));
+          node('p', 'role-model-summary', officialAgent ? '官方代理仅用于主会话，请单独配置 API 模型。'
+            : `${entry.enabled ? '独立配置' : legacy ? '当前连接' : '跟随主模型'} · ${names[effective.provider] || effective.provider || ''}${effective.provider ? ' · ' : ''}${model}`));
         const actions = node('div', 'role-model-actions'), configure = node('button', 'button', '配置'), reset = node('button', 'text-button', '恢复跟随');
         configure.type = reset.type = 'button'; configure.disabled = pending || isBusy(); reset.disabled = pending || isBusy() || !(entry.enabled || legacy);
         configure.setAttribute('aria-label', `配置${role.name}模型`); reset.setAttribute('aria-label', `${role.name}恢复跟随主模型`);

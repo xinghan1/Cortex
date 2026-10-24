@@ -83,7 +83,7 @@ test('Store migrates an old provider set and keeps Gemini API-key/account models
   const restored = new Store(dir, crypto); await restored.init();
   assert.equal(restored.publicSettings().authMode, 'gemini-account'); assert.equal(restored.publicSettings().model, 'gemini-cli-model');
   assert.equal(restored.key('gemini'), 'separate-gemini-api-key'); assert.equal(restored.key('deepseek'), 'old-deepseek-key');
-  assert.deepEqual(restored.publicSettings().modelsByAuth, { apiKey: 'gemini-api-model', 'gemini-account': 'gemini-cli-model' });
+  assert.deepEqual(restored.publicSettings().modelsByAuth, { apiKey: 'gemini-api-model', 'gemini-account': 'gemini-cli-model', 'antigravity-agent': '' });
   assert.doesNotMatch(JSON.stringify(restored.publicSettings()), /separate-gemini-api-key|encryptedKey/);
   await assert.rejects(restored.saveSettings({ provider: 'deepseek', authMode: 'gemini-account' }), /登录方式/);
   await assert.rejects(restored.saveSettings({ provider: 'gemini', reasoningEffort: 'none' }), /思考强度/);
@@ -103,7 +103,7 @@ test('Gemini usage survives ledger reload as reported values without inventing m
 test('older role files add an empty Gemini connection without rewriting disk or borrowing any existing key', async t => {
   const f = await runtimeFixture(t); await f.configs.save('sidebar', { provider: 'openai', model: 'sidebar-old', apiKey: 'sidebar-key' });
   const file = path.join(f.dir, 'role-models.json'), value = JSON.parse(await fs.readFile(file, 'utf8'));
-  for (const role of MODEL_ROLES) delete value.roles[role].settings.providers.gemini;
+  for (const role of MODEL_ROLES) for (const provider of ['gemini', 'kimi', 'glm']) delete value.roles[role].settings.providers[provider];
   const legacy = JSON.stringify(value); await fs.writeFile(file, legacy);
   const reopened = await new RoleModels(f.dir, crypto).init(); assert.equal(reopened.key('sidebar', 'openai'), 'sidebar-key');
   for (const role of MODEL_ROLES) { assert.equal(reopened.key(role, 'gemini'), ''); assert.equal(reopened.publicState()[role].settings.providers.gemini.authMode, 'apiKey'); }
@@ -119,7 +119,7 @@ test('Gemini role account configuration needs no API key and its schema is prese
   await select(f.runtime, 'pet', input, 'gemini-cli-model');
   const restored = await new RoleModels(f.dir, crypto).init(), settings = restored.publicState().pet.settings;
   assert.equal(settings.authMode, 'gemini-account'); assert.equal(settings.model, 'gemini-cli-model'); assert.equal(restored.key('pet', 'gemini'), 'pet-api-key');
-  assert.deepEqual(settings.modelsByAuth, { apiKey: 'gemini-api-model', 'gemini-account': 'gemini-cli-model' });
+  assert.deepEqual(settings.modelsByAuth, { apiKey: 'gemini-api-model', 'gemini-account': 'gemini-cli-model', 'antigravity-agent': '' });
   const file = path.join(f.dir, 'role-models.json'), valid = JSON.parse(await fs.readFile(file, 'utf8'));
   for (const mutate of [value => { value.authMode = 'unsupported-mode'; }, value => { value.modelsByAuth['gemini-account'] = 'different-model'; },
     value => { delete value.modelsByAuth; }]) {

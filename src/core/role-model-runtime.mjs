@@ -41,10 +41,11 @@ export class RoleModelRuntime {
   async draft(role, arg = {}) {
     roleName(role);
     const input = { provider: arg.provider, model: '' };
-    for (const key of ['authMode', 'baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens', 'reasoningEffort'])
+    for (const key of ['authMode', 'baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens', 'reasoningEffort', 'region'])
       if (Object.hasOwn(arg, key)) input[key] = arg[key];
     const validator = await this.configs.draft(role, input);
     const settings = validator.publicSettings();
+    if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(settings.authMode)) throw new Error('此登录方式是完整官方代理；请为此功能单独配置 API 模型。');
     const isDeepSeek = settings.provider === 'deepseek' && settings.authMode === 'deepseek-account';
     const isGemini = settings.provider === 'gemini' && settings.authMode === 'gemini-account';
     const account = isGemini ? await this.geminiAccounts.get(role)?.publicState()
@@ -165,7 +166,7 @@ export class RoleModelRuntime {
       snapshot = { connection: draft.connection, models: listed.models };
       this.snapshots.set(role, snapshot);
     }
-    if (saved.provider === 'gemini' && saved.authMode === 'apiKey' && snapshot?.connection !== draft.connection) {
+    if (['gemini', 'kimi', 'glm'].includes(saved.provider) && saved.authMode === 'apiKey' && snapshot?.connection !== draft.connection) {
       let listed;
       try { listed = await waitForCatalog(Promise.resolve().then(() => this.catalog.list({ provider: saved.provider,
         baseUrl: saved.baseUrl, apiKey: draft.apiKey })), signal); }

@@ -118,6 +118,39 @@ test('a blocking bubble uses text-only choices and scope-bound answers without s
   assert.deepEqual([h.draft.selectionStart, h.draft.selectionEnd], selection);
 });
 
+test('native choice-only questions hide and disable free text in both pet and composer presentations', async t => {
+  for(const hiddenPet of [false,true]){
+    const current=asking();current.question.choiceOnly=true;
+    const h=await fixture(t,current,{hiddenPet}),input=h.node('pet-dialog-input'),send=h.node('pet-dialog-send');
+    assert.equal(h.node('pet-dialog-input-bubble').hidden,true);assert.equal(input.disabled,true);assert.equal(send.disabled,true);assert.equal(send.hidden,true);
+    assert.equal(h.node('pet-dialog-cancel').hidden,false);assert.equal(h.node('pet-dialog-stop').hidden,false);
+    assert.equal(h.node('pet-dialog-options').children.length,2);assert.ok(h.node('pet-dialog-options').children.every(node=>!node.disabled));
+    input.value='不能转换成第一个选项';h.node('pet-dialog-form').fire('submit');input.fire('keydown',{key:'Enter'});await tick();assert.equal(h.calls.length,0);
+    h.view.fire('synora:pet-chat-open');assert.equal(h.document.activeElement,h.node('pet-dialog-options').children[0]);
+    assert.equal(h.node('pet-dialog-input-bubble').hidden,true);
+    h.node('pet-dialog-options').children[1].fire('click');await tick();
+    assert.equal(h.calls[0].choiceIndex,1);assert.equal(h.calls[0].text,undefined);assert.equal(input.value,'不能转换成第一个选项');
+    assert.equal(h.draft.value,'原有草稿 <script>保留</script>');assert.deepEqual([h.draft.selectionStart,h.draft.selectionEnd],[2,5]);
+  }
+});
+
+test('choice-only failures stay visible beside the choices and cancellation never invents an answer', async t => {
+  const current=asking();current.question.choiceOnly=true;
+  const h=await fixture(t,current,{hiddenPet:true,answer:async()=>{throw new Error('原生选项发送失败');}});
+  h.node('pet-dialog-options').children[0].fire('click');await tick();
+  assert.equal(h.node('pet-dialog-error').hidden,false);assert.equal(h.node('pet-dialog-error').parentElement,h.node('pet-dialog'));
+  assert.equal(h.node('pet-dialog-input').disabled,true);assert.equal(h.node('pet-dialog-options').children[1].disabled,false);
+  h.node('pet-dialog-cancel').fire('click');await tick();assert.equal(h.calls.at(-1).method,'dismiss');assert.equal(h.calls.at(-1).text,undefined);
+});
+
+test('ordinary blocking questions restore custom answers after a choice-only question ends', async t => {
+  const current=asking();current.question.choiceOnly=true;const h=await fixture(t,current);
+  h.emit({...asking('ordinary'),revision:2});
+  assert.equal(h.node('pet-dialog-input-bubble').hidden,false);assert.equal(h.node('pet-dialog-input').disabled,false);assert.equal(h.node('pet-dialog-send').hidden,false);
+  h.node('pet-dialog-input').value='保留自由文本答复';h.node('pet-dialog-form').fire('submit');await tick();
+  assert.equal(h.calls[0].text,'保留自由文本答复');assert.equal(h.calls[0].choiceIndex,undefined);
+});
+
 test('hiding the pet replaces only the form presentation and retains a usable stop action and original selection', async t => {
   const h = await fixture(t, empty(), { hiddenPet: true }); h.draft.focus();
   const original = h.draft.value; h.emit(asking());

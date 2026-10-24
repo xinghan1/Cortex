@@ -55,6 +55,7 @@
     const clearTimer = id => { if (id) { view.clearTimeout(id); timers.delete(id); } };
     const clearTimers = () => { for (const id of timers) view.clearTimeout(id); timers.clear(); inputPhaseTimer = 0; };
     const activeQuestion = () => snapshot.question, blocking = () => activeQuestion()?.blocking === true;
+    const choiceOnly = () => blocking() && activeQuestion()?.choiceOnly === true;
     const sameContext = value => context && contextKey(value) === contextKey(context);
     const setStyle = (node, name, value) => { if (node.style[name] !== value) node.style[name] = value; };
     const layoutHeight = node => node.offsetHeight || node.getBoundingClientRect().height;
@@ -175,18 +176,23 @@
       }
     }
     function render() {
-      const current = activeQuestion(), isBlocking = blocking();
-      renderInput(isBlocking || chatOpened); options.replaceChildren();
+      const current = activeQuestion(), isBlocking = blocking(), onlyChoices = choiceOnly();
+      renderInput(!onlyChoices && (isBlocking || chatOpened)); options.replaceChildren();
+      editor.hidden = onlyChoices; label.hidden = onlyChoices; send.hidden = onlyChoices;
+      if (onlyChoices) {
+        clearTimer(inputPhaseTimer); inputPhaseTimer = 0; inputBubble.hidden = true;
+        panel.append(error, status);
+      } else form.append(error, status);
       if (isBlocking) for (const [index, choice] of (current.options || []).entries()) {
         const button = make('button', '', 'pet-dialog-choice', boundedText(choice, 160)); button.type = 'button';
         button.dataset.choiceIndex = String(index); button.disabled = busy; button.setAttribute('aria-pressed', String(selected === index));
         button.addEventListener('click', () => { selected = index; void answer({ choiceIndex: index }); }); options.append(button);
       }
       cancel.hidden = !isBlocking; cancel.disabled = busy; stop.hidden = !isBlocking; stop.disabled = stopBusy; speechActions.hidden = !isBlocking;
-      input.disabled = busy || Boolean(snapshot.running && snapshot.activity !== 'reaction' && !isBlocking); send.disabled = input.disabled;
+      input.disabled = onlyChoices || busy || Boolean(snapshot.running && snapshot.activity !== 'reaction' && !isBlocking); send.disabled = input.disabled;
       send.setAttribute('aria-label', isBlocking ? '发送答复' : '发送消息'); send.title = isBlocking ? '回答' : '发送';
       input.placeholder = isBlocking ? '也可以输入你的答复…' : '和大肥鱼说点什么…';
-      status.textContent = busy ? '发送中…' : snapshot.running ? '正在回复…' : isBlocking ? '等待你的答复' : '';
+      status.textContent = busy ? '发送中…' : onlyChoices ? '请选择一个选项' : snapshot.running ? '正在回复…' : isBlocking ? '等待你的答复' : '';
       status.hidden = !status.textContent;
       const failure = boundedText(snapshot.error?.message || snapshot.error, 1000);
       if (!error.textContent && failure) { error.textContent = failure; error.hidden = false; }
@@ -201,7 +207,7 @@
       if (different) {
         if (pendingAction?.method !== 'sendPetChat' || next.question?.blocking) { ++actionVersion; busy = false; }
         selected = null;
-        if (previous?.blocking && !composing) input.value = '';
+        if (previous?.blocking && previous.choiceOnly !== true && !composing) input.value = '';
         error.textContent = ''; error.hidden = true;
       }
       snapshot = { revision: next.revision, question: next.question ? { ...next.question,
@@ -254,6 +260,7 @@
     async function answer(payload = {}) {
       let method = 'answerPetDialog';
       if (payload.choiceIndex === undefined) {
+        if (choiceOnly()) return;
         const text = input.value.trim();
         if (!text || text.length > 4000) { error.textContent = '请输入 1 至 4,000 字的答复。'; error.hidden = false; input.focus(); return; }
         payload = { text }; if (!blocking()) { method = 'sendPetChat'; chatOpened = true; muted = false; }
@@ -290,7 +297,7 @@
       closeAfterComposition = false;
       chatOpened = true; muted = false;
       if (!speech && activeQuestion() && !blocking()) enqueueSpeech(activeQuestion().question, { id: activeQuestion().id });
-      render(); input.focus({ preventScroll: true });
+      render(); (choiceOnly() ? options.children[0] || cancel : input).focus({ preventScroll: true });
     });
     listen(document, 'pointerdown', event => {
       if (!chatOpened || blocking() || snapshot.running || busy || reactionPending) return;

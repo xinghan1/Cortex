@@ -5,6 +5,7 @@ node_modules/
 /artifacts/
 /src/vendor/siwc/
 /src/vendor/gemini-cli/
+/src/vendor/zcode-agent/
 /vendor/siwc-devkit/packages/local/dist/
 
 # Local application data, test output and caches

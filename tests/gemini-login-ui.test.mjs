@@ -170,3 +170,13 @@ test('API Key action is restricted to unsupported-client errors and remains disa
   assert.equal(f.node('gemini-login-use-api-key').hidden,false);assert.equal(f.node('gemini-login-use-api-key').disabled,false);
   assert.match(f.node('gemini-login-message').textContent,/官方 Antigravity/);
 });
+
+test('Google mode selector offers the complete official agent only to the main model',()=>{
+  const f=fixture();const options=f.node('gemini-auth-mode').children;
+  assert.deepEqual(options.map(option=>option.value),['apiKey','antigravity-agent','gemini-account']);
+  f.ui.fill('antigravity-agent');assert.equal(f.node('gemini-auth-mode').value,'antigravity-agent');assert.equal(f.node('gemini-login-panel').hidden,true);
+  for(const role of ['subagent','approval','completion','sidebar','pet']){
+    const r=fixture({role});r.ui.fill('antigravity-agent');assert.equal(r.node('gemini-auth-mode').value,'apiKey');
+    assert.equal(r.node('gemini-auth-mode').children.find(option=>option.value==='antigravity-agent').disabled,true);
+  }
+});

@@ -59,12 +59,13 @@ function preparePortableMigration() {
 
 let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, createPetTaskHandoff, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
-let deepseek, gemini;
+let deepseek, gemini, antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime, runExternalAgentTurn;
 const roleDeepseekAccounts = new Map(), roleGeminiAccounts = new Map();
-const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account'].includes(mode);
-const accountLabel = mode => mode === 'gemini-account' ? 'Google / Gemini CLI' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
-const accountController = mode => mode === 'gemini-account' ? gemini : mode === 'deepseek-account' ? deepseek : chatgpt;
-const accountBaseUrl = mode => mode === 'gemini-account' ? 'https://generativelanguage.googleapis.com/v1beta' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
+const isExternalAgentMode = mode => ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(mode);
+const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account'].includes(mode) || isExternalAgentMode(mode);
+const accountLabel = mode => mode === 'antigravity-agent' ? 'Antigravity 官方代理' : mode === 'kimi-agent' ? 'Kimi 官方代理' : mode === 'glm-agent' ? 'GLM / ZCode 官方代理' : mode === 'gemini-account' ? 'Google / Gemini CLI' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
+const accountController = mode => mode === 'antigravity-agent' ? antigravity : mode === 'kimi-agent' ? kimiAgent : mode === 'glm-agent' ? glmAgent : mode === 'gemini-account' ? gemini : mode === 'deepseek-account' ? deepseek : chatgpt;
+const accountBaseUrl = mode => ['gemini-account', 'antigravity-agent'].includes(mode) ? 'https://generativelanguage.googleapis.com/v1beta' : mode === 'kimi-agent' ? 'https://api.moonshot.cn/v1' : mode === 'glm-agent' ? 'https://open.bigmodel.cn/api/paas/v4' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
 const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, modelCapacityPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
@@ -130,6 +131,7 @@ function installAppUpdate() {
       requireUpdateIdle();
       await launchInstaller(filename);
       cancelAccountSignIns();
+      await Promise.allSettled([antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose()));
       quitForUpdate();
       return appUpdateSnapshot();
     } finally {
@@ -212,9 +214,55 @@ function cancelAccountSignIns() {
   chatgpt?.cancelSignIn();
   deepseek?.cancelSignIn();
   gemini?.cancelSignIn();
+  void antigravity?.cancelSignIn();
+  antigravityRuntime?.cancel();
+  void kimiAgent?.cancelSignIn(); kimiRuntime?.cancel();
+  void glmAgent?.cancelSignIn(); glmRuntime?.cancel();
   for (const account of roleAccounts.values()) account.cancelSignIn();
   for (const account of roleDeepseekAccounts.values()) account.cancelSignIn();
   for (const account of roleGeminiAccounts.values()) account.cancelSignIn();
+}
+function providerAccountURL({ provider, baseUrl } = {}) {
+  if (!['kimi', 'glm'].includes(provider)) throw new Error('服务商账号入口无效。');
+  const value = baseUrl || store.settings.providers[provider]?.baseUrl;
+  let url; try { url = new URL(value); } catch { throw new Error('服务商地址无效。'); }
+  if (url.username || url.password || url.search || url.hash || !['https:', 'http:'].includes(url.protocol)) throw new Error('服务商地址无效。');
+  const host = url.hostname.toLowerCase();
+  if (provider === 'glm') return host === 'api.z.ai' ? 'https://z.ai/manage-apikey/apikey-list' : 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys';
+  if (host === 'api.kimi.ai') return 'https://www.kimi.ai/code/console';
+  if (host === 'api.kimi.com') return 'https://www.kimi.com/code/console';
+  return host === 'api.moonshot.ai' ? 'https://platform.kimi.ai/' : 'https://platform.kimi.com/';
+}
+async function officialProxyEnvironment(target) {
+  const route = await electronSession.defaultSession.resolveProxy(target);
+  for (const item of route.split(';').map(value => value.trim())) {
+    if (item === 'DIRECT') return {};
+    const match = /^(PROXY|HTTPS) ([a-z\d.\[\]:-]+)$/iu.exec(item); if (!match) continue;
+    const url = new URL(`${match[1] === 'HTTPS' ? 'https' : 'http'}://${match[2]}`);
+    if (url.hostname && url.port && !url.username && !url.password) return { HTTP_PROXY: url.origin, HTTPS_PROXY: url.origin };
+  }
+  return {};
+}
+async function initializeOfficialAgents() {
+  const [{ AntigravityRuntime }, { AntigravityAgent }, { KimiRuntime }, { KimiAgent }, { ZCodeRuntime }, { ZCodeAgent }, turn] = await Promise.all([
+    import('./core/antigravity-runtime.mjs'), import('./core/antigravity-agent.mjs'),
+    import('./core/kimi-runtime.mjs'), import('./core/kimi-agent.mjs'),
+    import('./core/zcode-runtime.mjs'), import('./core/zcode-agent.mjs'), import('./core/external-agent-turn.mjs'),
+  ]);
+  runExternalAgentTurn = turn.runExternalAgentTurn;
+  const onChange = () => { broadcastAllStates().catch(() => {}); };
+  const fetchImpl = (input, options) => electronSession.defaultSession.fetch(input, options);
+  const root = path.join(dataDir, 'official-agents');
+  antigravityRuntime = new AntigravityRuntime({ dataDir: path.join(root, 'antigravity'), fetchImpl, onChange });
+  antigravity = new AntigravityAgent({ dataDir: path.join(root, 'antigravity'), runtime: antigravityRuntime,
+    version: app.getVersion(), onChange, getProxyEnv: () => officialProxyEnvironment('https://cloudcode-pa.googleapis.com') });
+  kimiRuntime = new KimiRuntime({ dataDir: path.join(root, 'kimi'), fetchImpl, onChange });
+  kimiAgent = new KimiAgent({ dataDir: path.join(root, 'kimi'), runtime: kimiRuntime, version: app.getVersion(), onChange,
+    getProxyEnv: async () => officialProxyEnvironment((await kimiAgent.publicState()).region === 'global' ? 'https://auth.kimi.ai' : 'https://auth.kimi.com') });
+  glmRuntime = new ZCodeRuntime({ dataDir: path.join(root, 'glm'), onChange });
+  glmAgent = new ZCodeAgent({ dataDir: path.join(root, 'glm'), runtime: glmRuntime, version: app.getVersion(), onChange,
+    getProxyEnv: async () => officialProxyEnvironment((await glmAgent.publicState()).region === 'zai' ? 'https://z.ai' : 'https://bigmodel.cn') });
+  await Promise.all([antigravity.init(), kimiAgent.init(), glmAgent.init()]);
 }
 async function publishRoleAccount(role, provider = 'openai') {
   const state = await roleAccount(role, provider).publicState();
@@ -375,8 +423,8 @@ let manualOperations = Promise.resolve();
 const pendingPrompts = [];
 let queuePaused = false, queueReason = null, promptOperations = Promise.resolve(), shuttingDown = false, stopGeneration = 0;
 const approvals = new Map();
-const approvalController = createApprovalController({ pending: approvals, getMode: () => permissionMode,
-  decide: approvalDecision, review: reviewOperation, emit, redact, idFactory: randomUUID });
+const approvalController = createApprovalController({ pending: approvals, getMode: () => activeRun?.externalAgent && permissionMode === 'assist' && !roleModels.isEnabled('approval') ? 'request' : permissionMode,
+  decide: (mode, request) => request.kind === 'external-agent' ? mode === 'full' ? 'allow' : 'ask' : approvalDecision(mode, request), review: reviewOperation, emit, redact, idFactory: randomUUID });
 const promptCompletion = createPromptCompletionController({
   getSnapshot() {
     requireSharedReady();
@@ -572,7 +620,10 @@ function recordLiveEvent(run, clean) {
     else events[index] = clean;
   } else {
     if (clean.type === 'assistant-message') run.streamText = '';
-    if (clean.type === 'command-output' && previous?.type === 'command-output') previous.text = (String(previous.text || '') + String(clean.text || '')).slice(-256 * 1024);
+    if (clean.type === 'command-output' && previous?.type === 'command-output' && previous.toolCallId === clean.toolCallId) {
+      previous.text = (clean.replace ? String(clean.text || '') : String(previous.text || '') + String(clean.text || '')).slice(-256 * 1024);
+      previous.replace = previous.replace === true || clean.replace === true;
+    }
     else events.push(clean.type === 'command-output' ? { ...clean, text: String(clean.text || '').slice(-256 * 1024) } : clean);
   }
   // At a completed message/tool boundary it is safe to move the replay prefix
@@ -841,12 +892,78 @@ async function approve(request, { signal } = {}) {
   }
   return approved;
 }
+async function officialAgentUserInput({ questions, signal, localSessionId } = {}) {
+  const run = activeRun;
+  if (!run?.externalAgent || signal?.aborted || run.controller.signal.aborted || !Array.isArray(questions) || !questions.length || questions.length > 8)
+    return { action: 'cancel' };
+  if (localSessionId !== undefined && localSessionId !== run.sessionId) return { action: 'cancel' };
+  const answers = Object.create(null);
+  for (const question of questions) {
+    if (!question || typeof question.question !== 'string' || !question.question.trim() || question.question.length > 4000) return { action: 'cancel' };
+    const options = Array.isArray(question.options) ? question.options : [];
+    if (options.length > 8 || options.some(option => !option || typeof option.label !== 'string' || !option.label.trim() || option.label.length > 160
+        || option.value !== undefined && (typeof option.value !== 'string' || !option.value.trim()))) return { action: 'cancel' };
+    const reply = await petDialog.ask({ question: question.question, options: options.map(option => option.label) },
+      { signal: signal || run.controller.signal, runId: run.id, sessionId: run.sessionId });
+    if (run !== activeRun || run.controller.signal.aborted || signal?.aborted || reply?.source !== 'user' || reply.cancelled) return { action: 'cancel' };
+    const selected = Number.isSafeInteger(reply.choiceIndex) ? options[reply.choiceIndex] : null;
+    const answer = selected ? typeof selected.value === 'string' ? selected.value : selected.label : reply.answer;
+    if (typeof answer !== 'string' || !answer.trim() || answer.length > 4000 || Object.hasOwn(answers, question.question)) return { action: 'cancel' };
+    answers[question.question] = answer;
+  }
+  return { action: 'accept', content: { answers } };
+}
+async function officialAgentPermission({ toolCall, options, signal, localSessionId } = {}) {
+  const run = activeRun;
+  if (!run?.externalAgent || signal?.aborted || run.controller.signal.aborted || !Array.isArray(options)) return null;
+  if (localSessionId !== undefined && localSessionId !== run.sessionId) return null;
+  // Kimi's official question.ts uses allow_once choices q0_opt_i and a
+  // reject_once q0_skip. These are answers, even when permission mode is Full.
+  // interaction-bridge.ts carries the actual question in toolCall.content;
+  // its normal ID is turnId:toolCallId, not an interaction_* identifier.
+  const kimiQuestion = toolCall?.title === 'AskUserQuestion' || options.some(option => /^q\d+_(?:opt_\d+|skip)$/u.test(option?.optionId));
+  // Some official ACP agents express fixed-choice user questions through the
+  // permission channel. They always need an actual answer, including in Full.
+  if (kimiQuestion || String(toolCall?.toolCallId || '').startsWith('interaction_') || options.some(option => !['allow_once', 'allow_always', 'reject_once', 'reject_always'].includes(option?.kind))) {
+    let choices = options, question = String(toolCall?.title || '官方代理需要你的选择');
+    if (kimiQuestion) {
+      const indexes = new Set(options.map(option => /^q(\d+)_(?:opt_\d+|skip)$/u.exec(option?.optionId)?.[1]));
+      if (indexes.size !== 1 || indexes.has(undefined) || options.some(option => /_skip$/u.test(option.optionId) ? option.kind !== 'reject_once' : option.kind !== 'allow_once')) return null;
+      choices = options.filter(option => /_opt_\d+$/u.test(option.optionId));
+      question = (Array.isArray(toolCall?.content) ? toolCall.content : []).filter(item => item?.type === 'content' && item.content?.type === 'text')
+        .map(item => item.content.text).filter(value => typeof value === 'string').join('\n');
+    }
+    if (!question.trim() || question.length > 4000 || !choices.length || choices.length > 8
+        || choices.some(option => !option || typeof option.optionId !== 'string' || !option.optionId || typeof option.name !== 'string' || !option.name.trim() || option.name.length > 160)
+        || new Set(choices.map(option => option.optionId)).size !== choices.length) return null;
+    const reply = await petDialog.ask({ question, options: choices.map(option => option.name) },
+      { signal: signal || run.controller.signal, runId: run.id, sessionId: run.sessionId, choiceOnly: true });
+    if (run !== activeRun || run.controller.signal.aborted || signal?.aborted || reply?.source !== 'user' || reply.cancelled) return null;
+    return Number.isSafeInteger(reply.choiceIndex) && reply.choiceIndex >= 0 ? choices[reply.choiceIndex]?.optionId ?? null : null;
+  }
+  const allow = options.find(option => option.kind === 'allow_once') || (permissionMode === 'full' ? options.find(option => option.kind === 'allow_always') : null);
+  if (!allow) return null;
+  const raw = toolCall?.rawInput && typeof toolCall.rawInput === 'object' ? toolCall.rawInput : {};
+  const detail = JSON.stringify({ agent: accountLabel(publicSettings().authMode), operation: toolCall?.kind, input: raw });
+  const request = { kind: 'external-agent', title: String(toolCall?.title || '官方代理操作').slice(0, 2000),
+    detail: detail.slice(0, 128 * 1024), detailsComplete: detail.length <= 128 * 1024,
+    ...(detail.length > 128 * 1024 ? { truncated: true } : {}) };
+  if (toolCall?.kind === 'execute' && typeof raw.command === 'string' && raw.command.length <= 128 * 1024) { request.kind = 'command'; request.command = raw.command; }
+  else if (toolCall?.kind === 'edit' && typeof raw.path === 'string') { request.kind = 'write'; request.path = raw.path; request.detailsComplete = false; }
+  const approved = await approve(request, { signal: signal || run.controller.signal });
+  if (!approved) return options.find(option => option.kind === 'reject_once')?.optionId || null;
+  return allow.optionId;
+}
 function dispatchModelRequest(config) {
+  if (isExternalAgentMode(config.authMode)) throw new Error('官方代理用于主会话；此辅助功能请在模型分工中单独配置 API 模型。');
   if (config.modelRole) return roleRuntime.dispatch(config);
   return isAccountMode(config.authMode) ? accountController(config.authMode).requestModel({ ...config, requestModel }) : requestModel(config);
 }
 async function roleRequestConfig(role, run, modelOverride) {
-  if (!roleModels.isEnabled(role)) return currentRequestConfig(run, modelOverride);
+  if (!roleModels.isEnabled(role)) {
+    if (isExternalAgentMode(publicSettings().authMode)) throw new Error('当前使用完整的官方代理；请为此辅助功能单独配置 API 模型。');
+    return currentRequestConfig(run, modelOverride);
+  }
   const config = await roleRuntime.config(role, { signal: run.controller.signal, permissionMode });
   const context = { provider: config.provider, authMode: config.authMode,
     config: { baseUrl: config.baseUrl, apiProtocol: config.apiProtocol },
@@ -855,10 +972,12 @@ async function roleRequestConfig(role, run, modelOverride) {
   const effective = applyModelCapacity({ capabilities: config.modelCapabilities,
     manualTokens: modelCapacityPreferences.get(connection, config.model) });
   return { ...config, modelCapabilities: effective.capabilities,
+    appVersion: app.getVersion(), sessionId: run.sessionId || currentSession?.id,
     contextCompressionTriggerTokens: effective.modelCapacity.capacityTokens ?? 850000 };
 }
 async function currentRequestConfig(run, modelOverride) {
   run.controller.signal.throwIfAborted();
+  if (isExternalAgentMode(publicSettings().authMode)) throw new Error('官方代理用于主会话；此辅助功能请单独配置 API 模型。');
   const settings = publicSettings(), context = await catalogContext();
   if (settings.provider === 'ollama' && !catalogSnapshots.has(context.key)) await fetchModelCatalog();
   if (['chatgpt', 'gemini-account'].includes(settings.authMode) && !catalogSnapshots.has(context.key)) {
@@ -882,7 +1001,7 @@ async function currentRequestConfig(run, modelOverride) {
     ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
     ...(settings.authMode === 'gemini-account' ? { geminiProfileId: context.account.session.profileId } : {}),
     model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
-    permissionMode, connectionKey: context.key, configRevision,
+    permissionMode, connectionKey: context.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession?.id,
     contextCompressionTriggerTokens: modelCapabilities.contextWindow ?? 850000 };
 }
 async function recordRunUsage(record) {
@@ -911,8 +1030,12 @@ async function state() {
   const account = chatgpt ? await chatgpt.publicState() : null;
   const deepseekAccount = deepseek ? await deepseek.publicState() : null;
   const geminiAccount = gemini ? await gemini.publicState() : null;
+  const antigravityAccount = antigravity ? await antigravity.publicState() : null;
+  const kimiAccount = kimiAgent ? await kimiAgent.publicState() : null;
+  const glmAccount = glmAgent ? await glmAgent.publicState() : null;
   const roleState = await roleRuntime.publicState(publicSettings());
-  const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount });
+  const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount,
+    antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount });
   restoreApprovalReviewer(context);
   if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
@@ -929,7 +1052,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -938,13 +1061,15 @@ async function catalogContext(arg = {}, account) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const config = settings.providers[provider];
   const authMode = arg.authMode ?? config.authMode;
-  if (!['apiKey','chatgpt','deepseek-account','gemini-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek') || (authMode === 'gemini-account' && provider !== 'gemini')) throw new Error('此服务商不支持所选的连接方式。');
-  const chatgptState = isAccountMode(authMode) ? account?.[authMode === 'chatgpt' ? 'chatgpt' : authMode === 'gemini-account' ? 'gemini' : 'deepseek'] ?? await accountController(authMode).publicState() : null;
+  if (!['apiKey','chatgpt','deepseek-account','gemini-account','antigravity-agent','kimi-agent','glm-agent'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek') || (['gemini-account','antigravity-agent'].includes(authMode) && provider !== 'gemini') || (authMode === 'kimi-agent' && provider !== 'kimi') || (authMode === 'glm-agent' && provider !== 'glm')) throw new Error('此服务商不支持所选的连接方式。');
+  const keyName = { chatgpt: 'chatgpt', 'gemini-account': 'gemini', 'deepseek-account': 'deepseek', 'antigravity-agent': 'antigravity', 'kimi-agent': 'kimiAgent', 'glm-agent': 'glmAgent' }[authMode];
+  const chatgptState = isAccountMode(authMode) ? account?.[keyName] ?? await accountController(authMode).publicState() : null;
   const key = catalogConnectionKey(provider, authMode, config, chatgptState);
   return { provider, authMode, config, account: chatgptState, key };
 }
 function catalogConnectionKey(provider, authMode, config, account) {
-  const credential = isAccountMode(authMode) ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId] : store.settings.providers[provider].encryptedKey || '';
+  const credential = isAccountMode(authMode) ? [account?.session?.status, account?.session?.sharing, account?.session?.profileId,
+    ...(isExternalAgentMode(authMode) ? [account?.region, account?.runtime?.status, account?.runtime?.version] : [])] : store.settings.providers[provider].encryptedKey || '';
   return createHash('sha256').update(JSON.stringify([provider, authMode, isAccountMode(authMode) ? 'official' : config.baseUrl, credential,
     ...(provider === 'ollama' ? [config.contextWindowTokens] : [])])).digest('hex');
 }
@@ -1004,6 +1129,7 @@ async function modelSettingsDraft(arg) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const authMode = arg.authMode ?? settings.providers[provider].authMode;
   const input = { provider, authMode, model: '' };
+  if (isExternalAgentMode(authMode) && Object.hasOwn(arg, 'region')) input.region = arg.region;
   if (!isAccountMode(authMode)) {
     for (const field of ['baseUrl', 'apiProtocol', 'apiKey', 'clearKey', 'contextWindowTokens']) if (Object.hasOwn(arg, field)) input[field] = arg[field];
   }
@@ -1016,6 +1142,7 @@ async function modelSettingsDraft(arg) {
   const config = validated.providers[provider];
   const account = isAccountMode(authMode) ? await accountController(authMode).publicState() : null;
   if (account && (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId)) throw new Error(`请先连接 ${accountLabel(authMode)} 并完成授权，再获取模型目录。`);
+  if (isExternalAgentMode(authMode) && config.region && config.region !== account.region) throw new Error('所选账号地区尚未连接，请先登录该地区账号。');
   const apiKey = isAccountMode(authMode) ? '' : validator.key(provider);
   if (!isAccountMode(authMode) && provider !== 'ollama' && !apiKey) throw new Error('请填写 API Key，再获取模型目录。');
   const connection = createHash('sha256').update(JSON.stringify([
@@ -1033,6 +1160,8 @@ async function previewModelSettingsCatalog(arg) {
   if (draft.authMode === 'chatgpt') {
     const models = (await chatgpt.listModels({ force: true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
     result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+  } else if (isExternalAgentMode(draft.authMode)) {
+    result = { models: await accountController(draft.authMode).listModels({ cwd: tools?.root }), fetchedAt: new Date().toISOString(), source: draft.authMode };
   } else if (draft.authMode === 'gemini-account') {
     result = { models: await gemini.listModels({ force: true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
   } else if (draft.authMode === 'deepseek-account') {
@@ -1075,6 +1204,8 @@ async function fetchModelCatalog(arg = {}) {
       if (!context.account.session.sharing) throw new Error('请先授权 ChatGPT 套餐用量，再获取模型目录。');
       const models = (await chatgpt.listModels({ force: arg.force === true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
       result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
+    } else if (isExternalAgentMode(context.authMode)) {
+      result = { models: await accountController(context.authMode).listModels({ cwd: tools?.root }), fetchedAt: new Date().toISOString(), source: context.authMode };
     } else if (context.authMode === 'gemini-account') {
       result = { models: await gemini.listModels({ force: arg.force === true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
     } else if (context.authMode === 'deepseek-account') {
@@ -1175,9 +1306,10 @@ async function startTask(input) {
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
   const useDeepSeekAccount = provider === 'deepseek' && settings.authMode === 'deepseek-account';
   const useGeminiAccount = provider === 'gemini' && settings.authMode === 'gemini-account';
+  const useExternalAgent = isExternalAgentMode(settings.authMode);
   const modelContext = await catalogContext();
   if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
-  if (!demo && (useChatGPT || useGeminiAccount) && !catalogSnapshots.has(modelContext.key)) {
+  if (!demo && (useChatGPT || useGeminiAccount || useExternalAgent) && !catalogSnapshots.has(modelContext.key)) {
     try { await fetchModelCatalog(); } catch { /* Missing catalog capacity stays conservative until discovery succeeds. */ }
     if ((await catalogContext()).key !== modelContext.key) throw new Error('模型连接已变更，请重新开始任务。');
   }
@@ -1192,13 +1324,19 @@ async function startTask(input) {
   let chatgptProfileId = null;
   let deepseekProfileId = null;
   let geminiProfileId = null;
+  let officialAgentProfileId = null;
   let apiKey = '';
   if (!demo) {
     if (!settings.model) throw new Error('请先在模型设置中填写模型 ID。');
     if (modelCapabilities.supportsTools === false) throw new Error('此模型不支持编程工具调用，请从目录选择兼容模型。');
     if (attachments.length && modelCapabilities.supportsImages === false) throw new Error('当前模型不支持图片，请选择支持图片的模型后发送。');
     if (reasoningEffort !== 'default' && Array.isArray(modelCapabilities.reasoningEfforts) && !modelCapabilities.reasoningEfforts.includes(reasoningEffort)) throw new Error('所选模型不支持当前推理强度，请改用默认或目录支持的档位。');
-    if (useChatGPT) {
+    if (useExternalAgent) {
+      const account = await accountController(settings.authMode).publicState();
+      if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error(`请先连接 ${accountLabel(settings.authMode)}。`);
+      if (settings.region && settings.region !== account.region) throw new Error('所选账号地区尚未连接，请重新登录该地区账号。');
+      officialAgentProfileId = account.session.profileId;
+    } else if (useChatGPT) {
       const account = await chatgpt.publicState();
       if (account.session.status !== 'connected') throw new Error('请先在模型设置中登录 ChatGPT。');
       if (!account.session.sharing) throw new Error('ChatGPT 已登录，但尚未授权套餐用量；请在模型设置中连接套餐。');
@@ -1218,10 +1356,14 @@ async function startTask(input) {
     }
   }
   if (!demo) {
-    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId)) await createSession({ temporary: currentSession.temporary === true });
+    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId
+        || (currentSession.officialAgentProfileId || null) !== officialAgentProfileId
+        || (currentSession.officialAgentMode || null) !== (useExternalAgent ? settings.authMode : null))) await createSession({ temporary: currentSession.temporary === true });
     currentSession.chatgptProfileId = chatgptProfileId;
     currentSession.deepseekProfileId = deepseekProfileId;
     currentSession.geminiProfileId = geminiProfileId;
+    currentSession.officialAgentProfileId = officialAgentProfileId;
+    currentSession.officialAgentMode = useExternalAgent ? settings.authMode : null;
   }
   if (loadedSnapshot) {
     petDialog.close();
@@ -1252,6 +1394,8 @@ async function startTask(input) {
   run.chatgptProfileId = chatgptProfileId;
   run.deepseekProfileId = deepseekProfileId;
   run.geminiProfileId = geminiProfileId;
+  run.externalAgent = useExternalAgent;
+  run.officialAgentProfileId = officialAgentProfileId;
   run.demo = demo;
   run.messageStartIndex = currentSession.messages.length - 1;
   activeRun = run;
@@ -1278,8 +1422,16 @@ async function startTask(input) {
           if (event.type === 'assistant-message') currentSession.messages.push({ role: 'assistant', content: event.text, toolCalls: [] });
           emit(event);
         }, approve });
+      } else if (useExternalAgent) {
+        const controller = accountController(settings.authMode), connection = await controller.publicState();
+        if (connection.session.profileId !== officialAgentProfileId) throw new Error('官方代理账号已变化，请重新开始任务。');
+        await runExternalAgentTurn({ agent: controller, session: currentSession, cwd: tools.root, prompt: userText, attachments,
+          modelId: settings.model, provider, runId: run.id, signal: run.controller.signal, emit,
+          onPermission: officialAgentPermission, onUserInput: officialAgentUserInput,
+          onUsage: record => recordRunUsage(record).catch(() => {}), redact });
+        emit({ type: 'files-changed', operation: 'official-agent', path: '' });
       } else {
-        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : 'apiKey', deepseekProfileId, geminiProfileId, connectionKey: modelContext.key, configRevision, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : 'apiKey', deepseekProfileId, geminiProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
           if (name === PET_QUESTION_TOOL.name)
             return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(value => JSON.stringify(value));
           if (name === 'read_url' || name.startsWith('browser_')) {
@@ -1703,6 +1855,22 @@ function buildHandlers() {
     geminiRetryStorage: () => mutateShared(async () => {
       await gemini.retryLocalRead(); await broadcastAllStates(); return state();
     }),
+    openProviderAccount: async arg => { await shell.openExternal(providerAccountURL(arg)); return null; },
+    antigravityInstall: () => mutateShared(async () => { await antigravityRuntime.ensure(); await broadcastAllStates(); return state(); }),
+    antigravitySignIn: () => mutateShared(async () => { await antigravity.signIn(); await broadcastAllStates(); return state(); }),
+    antigravityCancelSignIn: () => { antigravityRuntime.cancel(); void antigravity.cancelSignIn().catch(() => {}); return null; },
+    antigravityDisconnect: () => mutateShared(async () => { await antigravity.disconnect(); await broadcastAllStates(); return state(); }),
+    antigravityRetryStorage: () => mutateShared(async () => { await antigravity.retryLocalRead(); await broadcastAllStates(); return state(); }),
+    kimiAgentInstall: () => mutateShared(async () => { await kimiRuntime.ensure(); await broadcastAllStates(); return state(); }),
+    kimiAgentSignIn: arg => mutateShared(async () => { await kimiAgent.signIn({ region: arg?.region }); await broadcastAllStates(); return state(); }),
+    kimiAgentCancelSignIn: () => { kimiRuntime.cancel(); void kimiAgent.cancelSignIn().catch(() => {}); return null; },
+    kimiAgentDisconnect: () => mutateShared(async () => { await kimiAgent.disconnect(); await broadcastAllStates(); return state(); }),
+    kimiAgentRetryStorage: () => mutateShared(async () => { await kimiAgent.retryLocalRead(); await broadcastAllStates(); return state(); }),
+    glmAgentInstall: () => mutateShared(async () => { await glmRuntime.ensure(); await broadcastAllStates(); return state(); }),
+    glmAgentSignIn: arg => mutateShared(async () => { await glmAgent.signIn({ region: arg?.region }); await broadcastAllStates(); return state(); }),
+    glmAgentCancelSignIn: () => { glmRuntime.cancel(); void glmAgent.cancelSignIn().catch(() => {}); return null; },
+    glmAgentDisconnect: () => mutateShared(async () => { await glmAgent.disconnect(); await broadcastAllStates(); return state(); }),
+    glmAgentRetryStorage: () => mutateShared(async () => { await glmAgent.retryLocalRead(); await broadcastAllStates(); return state(); }),
     sideChatOpen: () => { requireSharedReady(); return sideChat.open(); },
     sideChatSend: arg => {
       requireSharedReady();
@@ -2322,6 +2490,7 @@ async function boot() {
     } };
   gemini = new GeminiConnection({ ...geminiRuntime, dataDir, onChange: () => { broadcastAllStates().catch(() => {}); } });
   await gemini.init();
+  await initializeOfficialAgents();
   roleModels = await new RoleModels(dataDir, safeStorage).init();
   for (const role of ROLE_KEYS) {
     const account = new ChatGPTConnection({ dataDir: path.join(dataDir, 'role-accounts', role), safeStorage,
@@ -2370,6 +2539,33 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'official-agent-runtime') {
+    const result = { version: app.getVersion(), packaged: app.isPackaged,
+      ...await require('./core/smoke-official-runtime.cjs')({ runtime: glmRuntime, dataDir }) };
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_OFFICIAL_RUNTIME_SMOKE_OK ' + JSON.stringify(result)); app.quit(); return;
+  }
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'official-agents') {
+    const [{ AntigravityAgent }, { KimiAgent }, { ZCodeAgent }] = await Promise.all([
+      import('./core/antigravity-agent.mjs'), import('./core/kimi-agent.mjs'), import('./core/zcode-agent.mjs'),
+    ]);
+    const installOfficialAgentFixtures = async fixtures => {
+      const original = { antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime };
+      ({ antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime } = fixtures);
+      await broadcastAllStates();
+      return async () => {
+        ({ antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime } = original);
+        await broadcastAllStates();
+      };
+    };
+    const result = { version: app.getVersion(), officialAgents: await require('./core/smoke-official-agents.cjs')({
+      win, output, dataDir, store, AntigravityAgent, KimiAgent, ZCodeAgent,
+      installOfficialAgentFixtures, broadcastState: broadcastAllStates,
+    }) };
+    if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('SYNORA_OFFICIAL_AGENTS_SMOKE_OK ' + JSON.stringify(result)); app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'extensions') {
     const result = { version: app.getVersion(), extensions: await require('./core/smoke-extensions.cjs')({
       win, output, dataDir, pluginManager, pluginRuntime, dshPet, createAppWindow, dialog }) };
@@ -2790,6 +2986,7 @@ app.on('will-quit', () => {
   backgroundTray?.dispose();
   void deepseek?.dispose();
   void gemini?.dispose();
+  for (const component of [antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime]) void component?.dispose();
   for (const account of roleDeepseekAccounts.values()) void account.dispose();
   for (const account of roleGeminiAccounts.values()) void account.dispose();
   pluginRuntime?.dispose();
@@ -2803,7 +3000,8 @@ app.on('before-quit', event => {
     cancelAccountSignIns();
     if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations || pluginManager || dshPet) {
       event.preventDefault(); quitting = 'pending';
-      Promise.all([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), modelCapacityPreferences?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue]).finally(() => { quitting = true; app.quit(); });
+      Promise.allSettled([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), modelCapacityPreferences?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue,
+        ...[antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose())]).finally(() => { quitting = true; app.quit(); });
     }
     return;
   }
@@ -2817,6 +3015,7 @@ app.on('before-quit', event => {
     }
     cancelAccountSignIns();
     await Promise.allSettled(contexts.map(context => context.shutdown()));
+    await Promise.allSettled([antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose()));
     await sessionRestore?.flush();
     await persistentTaskUndo?.flush();
     await pluginManager?.settled();

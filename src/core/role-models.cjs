@@ -62,6 +62,8 @@ class RoleModels {
   async #draft(role, input) {
     const store = this.#store(this.#role(role).store.settings);
     await store.saveSettings(input);
+    if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(store.publicSettings().authMode))
+      throw failure('此登录方式是完整官方代理；请为此功能单独配置 API 模型。', 'ROLE_MODELS_AGENT_UNSUPPORTED');
     if (this.#requiresKey(store) && !store.key(store.settings.provider)) {
       throw failure('请为此角色填写独立的 API Key。', 'ROLE_MODELS_API_KEY_REQUIRED');
     }
@@ -73,16 +75,26 @@ class RoleModels {
     const providers = Object.keys(defaults.providers);
     // Versions before Gemini have the exact previous provider set. Add a
     // fresh empty connection without borrowing a key or changing any role.
-    if (object(saved) && exactKeys(saved.providers, providers.filter(provider => provider !== 'gemini')))
-      saved = { ...saved, providers: { ...saved.providers, gemini: structuredClone(defaults.providers.gemini) } };
+    if (object(saved) && [providers.filter(provider => !['kimi', 'glm'].includes(provider)),
+      providers.filter(provider => !['gemini', 'kimi', 'glm'].includes(provider))].some(legacy => exactKeys(saved.providers, legacy)))
+      saved = { ...saved, providers: Object.fromEntries(providers.map(provider => [provider,
+        Object.hasOwn(saved.providers, provider) ? saved.providers[provider] : structuredClone(defaults.providers[provider])])) };
     if (!exactKeys(saved, ['provider', 'providers']) || !providers.includes(saved.provider)
         || !exactKeys(saved.providers, providers)) throw new Error('Invalid role settings');
     for (const provider of providers) {
       const value = structuredClone(saved.providers[provider]), baseline = defaults.providers[provider];
+      if (provider === 'gemini' && object(value) && exactKeys(value.modelsByAuth, ['apiKey', 'gemini-account']))
+        value.modelsByAuth['antigravity-agent'] = '';
       // Version-one role files written before account login have no DeepSeek
       // auth fields. Preserve their model, endpoint and independent API key.
       if (provider === 'deepseek' && object(value) && !Object.hasOwn(value, 'authMode') && !Object.hasOwn(value, 'modelsByAuth')) {
         value.authMode = 'apiKey'; value.modelsByAuth = { apiKey: value.model, 'deepseek-account': '' };
+      }
+      if (['kimi', 'glm'].includes(provider) && object(value)) {
+        if (!Object.hasOwn(value, 'authMode') && !Object.hasOwn(value, 'modelsByAuth')) {
+          value.authMode = 'apiKey'; value.modelsByAuth = { apiKey: value.model, [`${provider}-agent`]: '' };
+        }
+        if (!Object.hasOwn(value, 'region')) value.region = baseline.region;
       }
       const keys = Object.keys(baseline);
       if (!object(value) || !keys.every(key => Object.hasOwn(value, key))
@@ -102,10 +114,13 @@ class RoleModels {
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'deepseek-account'].includes(value.authMode)
           || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
-      if (provider === 'gemini' && (!exactKeys(value.modelsByAuth, ['apiKey', 'gemini-account'])
+      if (provider === 'gemini' && (!exactKeys(value.modelsByAuth, ['apiKey', 'gemini-account', 'antigravity-agent'])
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'gemini-account'].includes(value.authMode)
           || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
+      if (['kimi', 'glm'].includes(provider) && (!exactKeys(value.modelsByAuth, ['apiKey', `${provider}-agent`])
+          || !Object.values(value.modelsByAuth).every(model => validText(model, 200)) || value.authMode !== 'apiKey'
+          || value.model !== value.modelsByAuth.apiKey || !(provider === 'kimi' ? ['mainland-cn', 'global'] : ['bigmodel', 'zai']).includes(value.region))) throw new Error('Invalid role agent settings');
       // An untouched relay has no endpoint. Store validates only the selected
       // provider, so do not turn this legitimate default into a corrupt file.
       if (provider === 'relay' && value.baseUrl === ''
@@ -128,7 +143,8 @@ class RoleModels {
           await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
         input.authMode = value.authMode;
       }
-      if (provider === 'relay') input.apiProtocol = value.apiProtocol;
+      if (['relay', 'kimi', 'glm'].includes(provider)) input.apiProtocol = value.apiProtocol;
+      if (['kimi', 'glm'].includes(provider)) { input.authMode = 'apiKey'; input.region = value.region; }
       if (provider === 'ollama') input.contextWindowTokens = value.contextWindowTokens;
       await store.saveSettings(input);
     }

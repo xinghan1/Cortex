@@ -13,7 +13,7 @@ const { Store } = createRequire(import.meta.url)('../src/core/store.cjs');
 const source=(await fs.readFile(new URL('../src/main.cjs',import.meta.url),'utf8')).replaceAll('\r\n','\n');
 const preload=await fs.readFile(new URL('../src/preload.cjs',import.meta.url),'utf8');
 const roles=['subagent','approval','completion','sidebar','pet'];
-const helpers=source.slice(source.indexOf('const isAccountMode ='),source.indexOf('\nconst roleAccountIdentities'));
+const helpers=source.slice(source.indexOf('const isExternalAgentMode ='),source.indexOf('\nconst roleAccountIdentities'));
 const plain=value=>JSON.parse(JSON.stringify(value));
 function fn(name){const start=source.search(new RegExp(`(?:async )?function ${name}\\(`,'u'));assert.ok(start>0,name);const tail=source.slice(start),end=tail.slice(1).search(/\n(?:async )?function /u);return end<0?tail:tail.slice(0,end+1);}
 const crypto={isEncryptionAvailable:()=>true,encryptString:value=>Buffer.from(value),decryptString:value=>value.toString()};
@@ -25,7 +25,7 @@ function fixture({mode='gemini-account',profile='google-main-a',historyProfile=p
   const account={session:{status:'connected',sharing:true,profileId:profile}},calls=[],enabled=new Set(),snapshots=new Map(),sentinel=new Error('owner-state-captured');
   const gemini={publicState:async()=>structuredClone(account),listModels:async()=>{calls.push('account-models');return[{id:'gemini-fixture',compatible:true,supportsTools:true}];},requestModel:async config=>{calls.push({transport:'google-account',config});return'account';},redact:String};
   const c=vm.createContext({Store,safeStorage:crypto,store,createHash,randomUUID,structuredClone,AbortController,DOMException,path,
-    gemini,chatgpt:null,deepseek:null,permissionMode:'request',configRevision:1,workspaceId:'workspace-a',
+    gemini,chatgpt:null,deepseek:null,antigravity:null,kimiAgent:null,glmAgent:null,app:{getVersion:()=> '0.23.0'},permissionMode:'request',configRevision:1,workspaceId:'workspace-a',
     publicSettings:()=>store.publicSettings(),state:async()=>({settings:store.publicSettings()}),catalogSnapshots:snapshots,modelCatalog:{list:async input=>{calls.push({transport:'native-catalog',input});return{models:[{id:'gemini-fixture',compatible:true,supportsTools:true}]};}},
     redact:String,broadcastState:async()=>{},broadcastAllStates:async()=>{},requireIdle(){},requireSharedReady(){},mutateShared:async action=>action(),
     settingsCatalogSelections:new SettingsCatalogSelections(),settingsCatalogPreviews:new Map(),rememberSelection(){},

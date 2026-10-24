@@ -16,10 +16,13 @@ import { randomUUID } from 'node:crypto';
 import { ollamaEndpoint } from './ollama-endpoint.mjs';
 import { retryAfterMilliseconds } from './request-retry.mjs';
 import { requestGeminiModel } from './gemini-provider.mjs';
+import { isKimiGlm, vendorBinding, vendorMessages, vendorRequest, vendorResult } from './kimi-glm-contracts.mjs';
 
 const DEFAULT_URLS = Object.freeze({
   openai: 'https://api.openai.com/v1',
   deepseek: 'https://api.deepseek.com',
+  kimi: 'https://api.moonshot.cn/v1',
+  glm: 'https://open.bigmodel.cn/api/paas/v4',
   anthropic: 'https://api.anthropic.com/v1',
   relay: '',
   ollama: 'http://localhost:11434',
@@ -27,6 +30,8 @@ const DEFAULT_URLS = Object.freeze({
 const RESOURCES = Object.freeze({
   openai: '/responses',
   deepseek: '/chat/completions',
+  kimi: '/responses',
+  glm: '/chat/completions',
   anthropic: '/messages',
 });
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -41,6 +46,8 @@ const CHATGPT_NAMESPACE = 'forge';
 const REASONING_LEVELS = Object.freeze({
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['default', 'none', 'low', 'high', 'max'],
+  kimi: ['default', 'none', 'low', 'high', 'max'],
+  glm: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   relay: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   ollama: ['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -159,7 +166,8 @@ function requireString(value, label) {
 function protocolName(provider, apiProtocol) {
   if (provider === 'ollama') return 'Ollama 原生 Chat';
   if (provider === 'relay') return apiProtocol === 'chat-completions' ? '中转站 Chat Completions' : '中转站 Responses';
-  if (provider === 'openai') return apiProtocol === 'chat-completions' ? 'OpenAI Chat Completions' : 'OpenAI Responses';
+  if (provider === 'openai' || provider === 'kimi') return `${provider === 'kimi' ? 'Kimi' : 'OpenAI'} ${apiProtocol === 'chat-completions' ? 'Chat Completions' : 'Responses'}`;
+  if (provider === 'glm') return 'GLM Chat Completions';
   return provider === 'deepseek' ? 'DeepSeek Chat Completions' : 'Claude Messages';
 }
 
@@ -190,7 +198,7 @@ function endpointFor(provider, baseUrl, apiProtocol) {
     fail('API 地址必须使用 HTTPS；本机 localhost 可使用 HTTP。', 'INVALID_BASE_URL');
   }
   const path = url.pathname.replace(/\/+$/u, '').replace(/\/models$/u, '');
-  const resource = ['openai', 'relay'].includes(provider)
+  const resource = ['openai', 'relay', 'kimi'].includes(provider)
     ? apiProtocol === 'chat-completions' ? '/chat/completions' : '/responses' : RESOURCES[provider];
   const existingResource = path.match(/\/(?:responses|chat\/completions|messages)$/u)?.[0];
   if (existingResource && existingResource !== resource) {
@@ -621,7 +629,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
   // The standard protocols require serialized arguments. Some relays return a
   // fully parsed object instead; accept only this explicit complete snapshot,
   // never infer cumulative deltas or attempt to repair malformed JSON.
-  const relayObjects = sourceProvider === 'relay';
+  const relayObjects = sourceProvider === 'relay' || sourceProvider === 'glm';
   const registeredToolNames = new Set(toolNames);
   const payload = createPayloadBudget(maxModelPayloadBytes);
   const textParts = new Map();
@@ -1430,7 +1438,8 @@ export async function requestModel(options = {}) {
 
 async function requestStandardModel({
   provider, apiKey, baseUrl, model, messages, tools = [], signal, onTextDelta, onProgress, reasoningEffort = 'default',
-  authMode = 'apiKey', apiProtocol = provider === 'relay' ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
+  authMode = 'apiKey', apiProtocol = ['relay', 'glm'].includes(provider) ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
+  connectionKey, sessionId, promptCacheKey, appVersion = 'unknown',
   timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens, contextWindowTokens,
   maxEventBytes = DEFAULT_EVENT_LIMIT, maxModelPayloadBytes = DEFAULT_MODEL_PAYLOAD_LIMIT,
 } = {}) {
@@ -1439,10 +1448,12 @@ async function requestStandardModel({
       || (authMode === 'deepseek-account' && provider !== 'deepseek')) {
     fail('此供应商不支持所选的登录方式。', 'INVALID_AUTH_MODE');
   }
-  const transportProvider = authMode === 'deepseek-account' ? 'anthropic' : provider === 'relay' ? 'openai' : provider;
+  const transportProvider = authMode === 'deepseek-account' ? 'anthropic' : provider === 'relay' ? 'openai'
+    : isKimiGlm(provider) ? provider === 'kimi' && apiProtocol === 'responses' ? 'openai' : 'deepseek' : provider;
   // A persisted API Key preference must never select a different OAuth route.
   const effectiveProtocol = authMode === 'chatgpt' ? 'responses' : apiProtocol;
-  if (['openai', 'relay'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)) {
+  if (['openai', 'relay', 'kimi'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)
+      || provider === 'glm' && effectiveProtocol !== 'chat-completions') {
     fail('API 协议无效，请选择 Responses 或 Chat Completions。', 'INVALID_API_PROTOCOL');
   }
   if (provider === 'ollama') {
@@ -1476,7 +1487,11 @@ async function requestStandardModel({
   const filteredMessages = Array.isArray(messages)
     ? messages.filter(message => !(message?.role === 'assistant' && message.localOnly === true)) : messages;
   validateInput(filteredMessages, tools);
-  const modelMessages = normalizeMessageImages(filteredMessages);
+  let modelMessages = normalizeMessageImages(filteredMessages);
+  const vendor = isKimiGlm(provider) ? { provider, model, endpoint, apiProtocol: effectiveProtocol,
+    reasoningEffort, sessionId, promptCacheKey, messages: modelMessages,
+    binding: vendorBinding({ provider, model, endpoint, apiProtocol: effectiveProtocol, apiKey, connectionKey }) } : null;
+  if (vendor) modelMessages = vendorMessages(modelMessages, vendor);
   // Missing relay metadata leaves the user's explicit effort choice available.
   // Only an explicit empty list disables overrides; aliases/suffixes never
   // rewrite the model or establish a different set of supported parameters.
@@ -1485,9 +1500,14 @@ async function requestStandardModel({
   const effectiveReasoningEffort = provider === 'relay' && relayEffortDisabled ? 'default' : reasoningEffort;
   validateCapabilities(modelCapabilities, effectiveReasoningEffort, modelMessages, tools);
   let body;
-  try { body = JSON.stringify(makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint, effectiveReasoningEffort, authMode, effectiveProtocol, modelCapabilities, contextWindowTokens)); }
+  try {
+    const value = makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint,
+      vendor ? 'default' : effectiveReasoningEffort, authMode, effectiveProtocol, modelCapabilities, contextWindowTokens);
+    if (vendor) vendorRequest(value, vendor);
+    body = JSON.stringify(value);
+  }
   catch (error) {
-    if (error instanceof ProviderError) throw error;
+    if (error instanceof ProviderError || vendor && error?.name === 'ProviderError') throw error;
     fail('对话或工具定义不能序列化为 JSON。', 'INVALID_MODEL_INPUT');
   }
   const lifetime = requestLifetime(signal, timeoutMs);
@@ -1507,6 +1527,7 @@ async function requestStandardModel({
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: {
         'Content-Type': 'application/json', Accept: provider === 'ollama' ? 'application/x-ndjson, application/json' : authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
+        ...(vendor ? { 'User-Agent': `Synora-code/${typeof appVersion === 'string' && /^[A-Za-z0-9.+_-]{1,80}$/u.test(appVersion) ? appVersion : 'unknown'}` } : {}),
         ...(authMode === 'deepseek-account' ? { 'x-dsh-auth-token': apiKey.trim(), 'anthropic-version': '2023-06-01' }
           : provider === 'anthropic'
           ? { 'x-api-key': apiKey.trim(), 'anthropic-version': '2023-06-01' }
@@ -1545,7 +1566,8 @@ async function requestStandardModel({
       : createAccumulator(transportProvider, textDelta, accumulatorOptions);
     await consumeResponse(response, accumulator, { maxResponseBytes, maxEventBytes, read: reader => transport(() => lifetime.read(reader)) }, authMode === 'chatgpt', provider === 'ollama');
     if (controller.signal.aborted) throw new DOMException('请求已取消。', 'AbortError');
-    return accumulator.result();
+    const result = accumulator.result();
+    return vendor ? vendorResult(result, vendor) : result;
   } catch (error) {
     if (lifetime.timedOut()) {
       const duration = timeoutMs < 1000 ? `${timeoutMs} 毫秒` : `${timeoutMs / 1000} 秒`;

@@ -8,6 +8,8 @@ const { normalizeSessionTitle, sessionTitle } = require('./session-title.cjs');
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const EFFORTS = {
   gemini: ['default', 'minimal', 'low', 'medium', 'high'],
+  kimi: ['default', 'none', 'low', 'high', 'max'],
+  glm: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['default', 'none', 'low', 'high', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -87,7 +89,9 @@ const DEFAULTS = {
   providers: {
     openai: { model: '', modelsByAuth: { apiKey: '', chatgpt: '' }, baseUrl: 'https://api.openai.com/v1', reasoningEffort: 'default', authMode: 'apiKey', apiProtocol: 'responses' },
     deepseek: { model: '', baseUrl: 'https://api.deepseek.com', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'deepseek-account': '' } },
-    gemini: { model: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'gemini-account': '' } },
+    gemini: { model: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'gemini-account': '', 'antigravity-agent': '' } },
+    kimi: { model: '', baseUrl: 'https://api.moonshot.cn/v1', reasoningEffort: 'default', apiProtocol: 'responses', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'kimi-agent': '' }, region: 'mainland-cn' },
+    glm: { model: '', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', reasoningEffort: 'default', apiProtocol: 'chat-completions', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'glm-agent': '' }, region: 'bigmodel' },
     anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default' },
     relay: { model: '', baseUrl: '', reasoningEffort: 'default', apiProtocol: 'chat-completions' },
     ollama: { model: '', baseUrl: 'http://localhost:11434', reasoningEffort: 'default', contextWindowTokens: 32768 },
@@ -120,7 +124,8 @@ class Store {
         if (!EFFORTS[name].includes(saved.providers?.[name]?.reasoningEffort)) {
           this.settings.providers[name].reasoningEffort = 'default'; migrated = true;
         }
-        if (['openai', 'relay'].includes(name) && !API_PROTOCOLS.includes(saved.providers?.[name]?.apiProtocol)) {
+        if (['openai', 'relay', 'kimi', 'glm'].includes(name) && (!API_PROTOCOLS.includes(saved.providers?.[name]?.apiProtocol)
+            || name === 'glm' && saved.providers?.[name]?.apiProtocol !== 'chat-completions')) {
           this.settings.providers[name].apiProtocol = DEFAULTS.providers[name].apiProtocol; migrated = true;
         }
       }
@@ -135,24 +140,32 @@ class Store {
       if (!['apiKey', 'deepseek-account'].includes(deepseek.authMode)) deepseek.authMode = 'apiKey';
       deepseek.modelsByAuth = { apiKey: '', 'deepseek-account': '', ...deepseek.modelsByAuth, [deepseek.authMode]: deepseek.model };
       const gemini = this.settings.providers.gemini;
-      if (!['apiKey', 'gemini-account'].includes(gemini.authMode)) gemini.authMode = 'apiKey';
-      gemini.modelsByAuth = { apiKey: '', 'gemini-account': '', ...gemini.modelsByAuth, [gemini.authMode]: gemini.model };
+      if (!['apiKey', 'gemini-account', 'antigravity-agent'].includes(gemini.authMode)) gemini.authMode = 'apiKey';
+      gemini.modelsByAuth = { apiKey: '', 'gemini-account': '', 'antigravity-agent': '', ...gemini.modelsByAuth, [gemini.authMode]: gemini.model };
+      for (const name of ['kimi', 'glm']) {
+        const value = this.settings.providers[name], agentMode = `${name}-agent`;
+        if (!['apiKey', agentMode].includes(value.authMode)) { value.authMode = 'apiKey'; migrated = true; }
+        value.modelsByAuth = { apiKey: '', [agentMode]: '', ...value.modelsByAuth, [value.authMode]: value.model };
+        const allowed = name === 'kimi' ? ['mainland-cn', 'global'] : ['bigmodel', 'zai'];
+        if (!allowed.includes(value.region)) { value.region = DEFAULTS.providers[name].region; migrated = true; }
+      }
       if (migrated) await this.write('settings.json', this.settings);
     } catch (error) { if (error.code !== 'ENOENT') throw new Error('设置文件损坏，请备份 data/settings.json 后重试。'); }
     await this.initUsage();
   }
   publicSettings() {
     const providers = {};
-    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek', 'gemini'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek', 'gemini'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['openai', 'relay'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
+    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['kimi', 'glm'].includes(name) ? { region: value.region } : {}), ...(['openai', 'relay', 'kimi', 'glm'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
     return { provider: this.settings.provider, ...providers[this.settings.provider], providers };
   }
   async saveSettings(input) {
     if (!input || !Object.hasOwn(DEFAULTS.providers, input.provider)) throw new Error('请选择有效的模型供应商。');
     if (input.apiProtocol !== undefined && (!API_PROTOCOLS.includes(input.apiProtocol)
-        || (!['openai', 'relay'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
+        || input.provider === 'glm' && input.apiProtocol !== 'chat-completions'
+        || (!['openai', 'relay', 'kimi', 'glm'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
     const previous = this.settings.providers[input.provider];
-    const authMode = ['openai', 'deepseek', 'gemini'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
-    const model = String(input.model ?? (['openai', 'deepseek', 'gemini'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
+    const authMode = ['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
+    const model = String(input.model ?? (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
     const baseUrl = String(input.baseUrl === undefined ? previous.baseUrl : input.baseUrl || DEFAULTS.providers[input.provider].baseUrl).trim();
     if (model.length > 200 || /[\r\n]/.test(model)) throw new Error('模型 ID 格式不正确。');
     let parsed;
@@ -169,14 +182,19 @@ class Store {
     if (input.authMode !== undefined && !(input.authMode === 'apiKey'
         || input.provider === 'openai' && input.authMode === 'chatgpt'
         || input.provider === 'deepseek' && input.authMode === 'deepseek-account'
-        || input.provider === 'gemini' && input.authMode === 'gemini-account')) throw new Error('此服务商不支持所选的登录方式。');
-    if (['openai', 'deepseek', 'gemini'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
-    if (['openai', 'relay'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
+        || input.provider === 'gemini' && ['gemini-account', 'antigravity-agent'].includes(input.authMode)
+        || input.provider === 'kimi' && input.authMode === 'kimi-agent'
+        || input.provider === 'glm' && input.authMode === 'glm-agent')) throw new Error('此服务商不支持所选的登录方式。');
+    if (input.region !== undefined && !(input.provider === 'kimi' && ['mainland-cn', 'global'].includes(input.region)
+        || input.provider === 'glm' && ['bigmodel', 'zai'].includes(input.region))) throw new Error('此服务商不支持所选的账号区域。');
+    if (['kimi', 'glm'].includes(input.provider) && input.region !== undefined) value.region = input.region;
+    if (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
+    if (['openai', 'relay', 'kimi', 'glm'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
     const reasoningEffort = input.reasoningEffort === undefined ? value.reasoningEffort || 'default' : input.reasoningEffort;
     if (!EFFORTS[input.provider].includes(reasoningEffort)) throw new Error('此供应商不支持所选的思考强度。');
     value.reasoningEffort = reasoningEffort;
     value.model = model; value.baseUrl = baseUrl;
-    if (['openai', 'deepseek', 'gemini'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
+    if (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
     if (input.clearKey === true) delete value.encryptedKey;
     const key = String(input.apiKey || '').trim();
     if (key) {

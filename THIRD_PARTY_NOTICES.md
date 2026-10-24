@@ -28,6 +28,31 @@ Synora code 的 DeepSeek 账号接入参考 [DeepSeek Harness 官方账号授权
 
 ## 其他依赖
 
+### Google Antigravity 官方代理
+
+本软件通过公开 ACP 协议连接 Google 原版 Antigravity 1.4.3 完整代理，由该代理管理自己的登录、模型与工具执行。代理程序不随 Synora 安装包分发，用户首次使用时从 Google 官方地址下载并校验 ZIP 及解包文件 SHA-256。原始发布地址与校验值见 [ACP Registry 的 Antigravity 条目](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json)，本地固定值见 `src/core/antigravity-runtime.mjs`。
+
+Antigravity 是 Google 的专有软件，适用 [Google Antigravity 服务条款](https://antigravity.google/terms)，不因 Synora 的适配而改用开源许可。Synora 不分发其账号凭据，不将其内部授权令牌转换为通用 API Key。应用配置与会话目录独立；官方系统凭据存储可能与其他 Google 官方客户端共用，断开 Synora 本机连接不会执行系统级退出登录。
+
+### Kimi Code 官方代理
+
+来源：[MoonshotAI / Kimi CLI](https://github.com/MoonshotAI/kimi-cli)，上游源码采用 [Apache License 2.0](https://github.com/MoonshotAI/kimi-cli/blob/main/LICENSE)。Synora 按需下载 Moonshot 官方 Windows x64 二进制 2.3.1，不随安装包重新分发该二进制。下载来源为 `https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-win32-x64.exe`，SHA-256 依据 [官方版本清单](https://code.kimi.com/kimi-code/binaries/2.3.1/manifest.json) 固定在 `src/core/kimi-runtime.mjs`。
+
+软件使用原版登录命令与 ACP 协议，由官方代理完整执行任务。中国大陆与国际账号使用各自官方授权流程，每次授权使用独立本机目录；Synora 不读取、导出或重用其账号令牌。服务访问与套餐额度仍受 Moonshot 官方账号条款约束。
+
+### ZCode 官方代理
+
+来源：[zai-org / ZCode](https://github.com/zai-org/ZCode/tree/3c5b227649371507ddc4eb46ac5133afe6db1cab)，固定提交 `3c5b227649371507ddc4eb46ac5133afe6db1cab`，CLI 版本 0.17.0，上游采用 Apache License 2.0，Copyright 2026 Z.AI Co., Ltd。
+
+`npm run prepare:zcode` 从该提交构建完整 Windows x64 SEA 程序，保留上游运行资源与官方 `app-server` 协议，不修改上游受版本控制的源代码。Synora 通过原生协议转交会话、权限与用户问题，由 ZCode 自行处理智谱 / Z.AI 登录及工具执行，不读取其私有凭据。随包文件位于 `src/vendor/zcode-agent/`：
+
+- `zcode-windows-x64.exe`：完整代理程序，包含上游构建收集的运行资源。
+- `provenance.json`：上游提交、版本、工具链校验值与产物 SHA-256。
+- `LICENSE`、`NOTICE.md`、`THIRD-PARTY-NOTICES.md`：原版许可、来源和完整依赖声明。
+- `NODE-LICENSE.txt`：SEA 内嵌的 Node.js 24.14.0 运行时完整许可。
+
+各内嵌依赖保持原许可。该源码许可不授予 Z.AI 品牌、账号、订阅或服务访问权。
+
 ### Google Gemini CLI
 
 Google 官方 Gemini CLI 0.65.0 以原版程序随软件分发，采用 Apache License 2.0；来源为 [官方仓库](https://github.com/google-gemini/gemini-cli/releases/tag/v0.65.0) 及官方 npm 发布包。软件通过公开 ACP 协议调用它，不复制登录令牌或 OAuth 客户端实现。原版许可证及运行资源保留在 `src/vendor/gemini-cli/`，`provenance.json` 记录发布包完整性与文件哈希。生成目录由 `npm run prepare:gemini` 还原。
