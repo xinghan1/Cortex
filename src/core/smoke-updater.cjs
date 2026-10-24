@@ -81,8 +81,8 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     const get=name=>document.getElementById('app-update-dialog'+(name?'-'+name:'')),dialog=get(''),progress=get('progress'),primary=get('primary');
     const box=dialog.getBoundingClientRect(),style=getComputedStyle(dialog),root=getComputedStyle(document.documentElement);
     const probe=document.createElement('span');probe.style.color=(root.getPropertyValue('--ui-accent')||root.getPropertyValue('--accent')).trim();dialog.append(probe);const accent=getComputedStyle(probe).color;probe.remove();
-    return {open:dialog.open,status:dialog.dataset.status,title:get('title').textContent,description:get('status').textContent,
-      percent:get('percent').textContent,bytes:get('bytes').textContent,error:get('error').textContent,errorHidden:get('error').hidden,
+    return {open:dialog.open,status:dialog.dataset.status,title:get('title').textContent,description:get('status').textContent,descriptionHidden:get('status').hidden,
+      percent:get('percent').textContent,percentLive:get('percent').getAttribute('aria-live'),bytes:get('bytes').textContent,error:get('error').textContent,errorHidden:get('error').hidden,
       progress:progress.value,progressHasValue:progress.hasAttribute('value'),ariaProgress:progress.getAttribute('aria-valuenow'),progressLabel:progress.getAttribute('aria-label'),
       primary:primary.textContent,primaryDisabled:primary.disabled,background:getComputedStyle(primary).backgroundColor,
       accent,progressAccent:getComputedStyle(progress).accentColor,region:style.getPropertyValue('-webkit-app-region'),
@@ -95,7 +95,9 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     assert.ok(Math.abs((rendered.box.left + rendered.box.right) / 2 - rendered.width / 2) <= 1, 'Update dialog must be horizontally centered');
     assert.ok(Math.abs((rendered.box.top + rendered.box.bottom) / 2 - rendered.height / 2) <= 1, 'Update dialog must be vertically centered');
     assert.ok(rendered.box.left >= 0 && rendered.box.right <= rendered.width && rendered.box.top >= 0 && rendered.box.bottom <= rendered.height);
-    assert.equal(rendered.ariaLabelledby, 'app-update-dialog-title'); assert.equal(rendered.ariaDescribedby, 'app-update-dialog-status');
+    assert.equal(rendered.ariaLabelledby, 'app-update-dialog-title');
+    assert.equal(rendered.ariaDescribedby, rendered.descriptionHidden ? null : 'app-update-dialog-status');
+    assert.equal(rendered.percentLive, 'polite');
     assert.ok(rendered.progressLabel); assert.ok(!/NaN|Infinity|undefined/u.test(rendered.percent + rendered.bytes));
   };
   const assertIcon = rendered => {
@@ -217,6 +219,8 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     assertIcon(await inspect());
     const half = await until('modal live percentage and byte counts', async () => {const value=await inspectDialog();return value.open&&value.percent==='50%'&&value.bytes.includes('0.5 KB')&&value;});
     assertDialog(half); assert.equal(half.progress, 50); assert.equal(half.ariaProgress, '50'); assert.match(half.bytes, /总大小 1 KB/u); assert.equal(half.primaryDisabled, true);
+    assert.equal(half.description, ''); assert.equal(half.descriptionHidden, true);
+    assert.equal(await js("document.getElementById('notice').hidden"), true, 'Retry must dismiss its own old download error without adding another status notice');
     await capture('updater-progress.png');
     const downloadRequests = requests.length;
     for (const dismiss of ['background','close','Escape']) {
@@ -252,6 +256,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     assertIcon(await inspect());
     const completedDialog = await until('completed modal explicitly offers restart',async()=>{const value=await inspectDialog();return value.open&&value.primary==='重启更新'&&!value.primaryDisabled&&value;});
     assertDialog(completedDialog); assert.equal(completedDialog.percent,'100%'); assert.match(completedDialog.bytes,/1 KB.*1 KB/u);
+    assert.equal(completedDialog.description, ''); assert.equal(completedDialog.descriptionHidden, true);
     await capture('updater-dialog-completed.png');
     assert.equal(launches.length, 0, 'Download triggered automatic installation');
     await call('setEditorDirty', { dirty: true }); await rejectInstall(/保存|修改/u);
@@ -280,7 +285,7 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
       nativeTitlebarButton: true, circularDownloadSvg: true, nextToHelp: true, noVisibleButtonText: true,
       themes: ['glass','black','white','industrial'], customColorStyleAndReset: true, paletteChecks, currentHidden: true,
       checkFailureRetry: true, checksumFailureRetry: true, liveDownloadProgress: 50, explicitRestartOnly: true,
-      centeredDownloadDialog: true, liveByteCounts: true, backgroundCloseAndEscapeKeepDownloading: true,
+      centeredDownloadDialog: true, liveByteCounts: true, conciseDownloadDialog: true, staleDownloadErrorClearedOnRetry: true, backgroundCloseAndEscapeKeepDownloading: true,
       iconReopensWithoutDuplicateRequest: true, syntheticUnknownTotalUI: true, dialogThemes,
       unsavedInstallBlocked: true, activeTaskInstallBlocked: true, launchFailureRetry: true, fakeLaunches: launches.length,
       fakeQuitCalls: control.quitCalls, installTransactionLocked: true, screenshots };

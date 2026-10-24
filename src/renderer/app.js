@@ -146,10 +146,13 @@ function errorText(error) {
   return message.replace(/^Error invoking remote method ['"]forge:[^'"]+['"]:\s*(?:(?:Error|FileManagerError|ImageAttachmentError):\s*)?/u, '');
 }
 
+let noticeRevision = 0;
 function notice(message, error = false) {
+  const revision = ++noticeRevision;
   $('notice-text').textContent = error && !String(message).startsWith('错误') ? `错误：${message}` : message;
   $('notice').classList.toggle('error', error);
   $('notice').hidden = false;
+  return () => { if (revision === noticeRevision) $('notice').hidden = true; };
 }
 
 function scrollBottom(force = false) {
@@ -4427,8 +4430,9 @@ async function initialize() {
   appUpdateControls = window.ForgeAppUpdate.create({ bridge, button: $('app-update-button'), label: $('app-update-label'), progress: $('app-update-progress'), notice, isBusy: () => contextBusy() || editorSaving || isChatGPTBusy() });
   window.synoraAppUpdate = appUpdateControls;
   window.synoraPetOverlay = window.ForgePetOverlay.create({ document, bridge, notice,
-    onConfigure: () => window.synoraExtensions?.open({ section: 'pet' }) });
-  window.synoraExtensions = window.ForgeExtensions.create({ document, bridge, pet: window.synoraPetOverlay, notice });
+    onConfigure: () => window.synoraPetSettings?.open() });
+  window.synoraExtensions = window.ForgeExtensions.create({ document, bridge, notice });
+  window.synoraPetSettings = window.ForgePetSettings.create({ document, bridge, pet: window.synoraPetOverlay, notice });
   window.synoraRoleModels = window.ForgeRoleModels.create({ document, bridge, onConfigure: openSettings,
     onState: updateState, notice, isBusy: () => contextBusy() || settingsSaving || isChatGPTBusy() });
   sideChatControls = window.ForgeSideChat.create({ bridge, getWorkspaceId: currentWorkspaceId, notice,
@@ -4490,6 +4494,7 @@ window.aiCodeCommands = Object.freeze({
       case 'quit': return bridge.quitApp();
       case 'settings': return openSettings();
       case 'extensions': return window.synoraExtensions?.open();
+      case 'pet-settings': return window.synoraPetSettings?.open();
       case 'role-settings': return window.synoraRoleModels?.openList();
       case 'role-subagent-settings': return window.synoraRoleModels?.open('subagent');
       case 'role-approval-settings': return window.synoraRoleModels?.open('approval');

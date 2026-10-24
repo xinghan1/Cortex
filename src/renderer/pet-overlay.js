@@ -16,20 +16,31 @@
     video.muted = true; video.playsInline = true; video.preload = 'auto'; video.tabIndex = 0;
     video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
     video.setAttribute('role', 'button'); video.setAttribute('aria-haspopup', 'menu');
+    const gazeCanvas = el('canvas', 'pet-overlay-gaze', 'pet-overlay-gaze');
+    gazeCanvas.hidden = true; gazeCanvas.setAttribute('aria-hidden', 'true');
     const fallback = el('button', 'pet-overlay-fallback', 'pet-overlay-fallback');
     fallback.type = 'button'; fallback.textContent = '🐾'; fallback.hidden = true;
     fallback.setAttribute('aria-label', '打开宠物设置');
     const menu = el('div', 'pet-overlay-menu', 'pet-overlay-menu');
     menu.hidden = true; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', '宠物操作');
-    overlay.append(video, fallback); document.body.append(overlay, menu);
-    let state = { enabled: false, size: 220, x: 1, y: 1, workStatus: true, packId: '', packs: [] };
+    overlay.append(video, gazeCanvas, fallback); document.body.append(overlay, menu);
+    let state = { enabled: false, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: '', packs: [] };
     let disposed = false, revision = 0, writeRevision = 0, animationIndex = 0, currentKind = '', currentURL = '', mediaFailed = false;
     let running = false, waiting = false, workspaceId = '', phase = 'idle', drag = null, selectedPack = null;
-    let transient = false;
+    let transient = false, blurred = false;
     const tools = new Set(), approvals = new Set(), listeners = new Set();
     const motion = view.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => motion?.matches === true;
     const available = kind => selectedPack?.animations?.[kind] || [];
+    const gaze = root.ForgePetGaze?.create({ document, video, canvas: gazeCanvas,
+      bounds: () => overlay.getBoundingClientRect(),
+      onVisible: visible => { if (visible) overlay.classList.add('gaze-active'); else overlay.classList.remove('gaze-active'); },
+    });
+    function syncGaze() {
+      gaze?.setActive(!disposed && state.followCursor && selectedPack?.id === 'dsh-pet'
+        && !overlay.hidden && !document.hidden && !blurred && !reduced() && !mediaFailed
+        && !drag && !transient && phase === 'idle' && !running && !waiting && !tools.size && currentKind === 'idle');
+    }
     const inputRegions = [document.querySelector?.('.composer-area'), document.getElementById?.('task-form'), document.getElementById?.('composer-approval')].filter(Boolean);
     const frame = () => {
       const width = Math.max(1, view.innerWidth || document.documentElement?.clientWidth || 1024);
@@ -54,12 +65,14 @@
       overlay.hidden = !state.enabled || !selectedPack || noRoom;
       if (overlay.hidden) { video.pause(); closeMenu(); }
       else if (wasHidden) playback();
+      syncGaze();
     }
     function closeMenu(restore = false) {
       menu.hidden = true; video.setAttribute('aria-expanded', 'false');
       if (restore && !overlay.hidden) video.focus?.({ preventScroll: true });
     }
     function playback() {
+      syncGaze();
       if (overlay.hidden || document.hidden || reduced() || mediaFailed) { video.pause(); return; }
       const result = video.play(); result?.catch?.(() => {});
     }
@@ -90,7 +103,7 @@
       if (disposed || !value || typeof value !== 'object' || !Array.isArray(value.packs)) return;
       const oldPack = state.packId;
       state = { enabled: value.enabled === true, size: bounded(value.size, 80, 600, 220),
-        x: bounded(value.x, 0, 1, 1), y: bounded(value.y, 0, 1, 1), workStatus: value.workStatus !== false,
+        x: bounded(value.x, 0, 1, 1), y: bounded(value.y, 0, 1, 1), workStatus: value.workStatus !== false, followCursor: value.followCursor !== false,
         packId: text(value.packId), packs: value.packs };
       if (state.packId !== oldPack) { currentKind = ''; currentURL = ''; transient = false; }
       render(); for (const listener of listeners) listener(state);
@@ -111,6 +124,7 @@
       const next = waiting ? 'waiting' : tools.size ? 'working' : running ? 'thinking' : 'idle';
       if (next === phase) return;
       phase = next; transient = false; if (state.workStatus) play(phase, false, true);
+      syncGaze();
     }
     function updateState(value) {
       if (!value || disposed) return;
@@ -126,8 +140,8 @@
     }
     function handleEvent(event) {
       if (disposed || !event) return;
+      if (event.type === 'pet-pointer') { gaze?.point(event); return; }
       if (event.type === 'pet-state') { ++revision; update(event.pet); return; }
-      if (event.type === 'extensions' && event.extensions?.pet) { ++revision; update(event.extensions.pet); return; }
       if (event.type === 'workspace-activated') { updateState(event.state); return; }
       if (event.workspaceId && workspaceId && event.workspaceId !== workspaceId) return;
       if (event.type === 'state') { updateState(event.state); return; }
@@ -142,6 +156,7 @@
         running = false; waiting = false; tools.clear(); approvals.clear(); phase = 'idle';
         if (state.workStatus) play(['failed', 'error'].includes(event.status) ? 'error' : event.status === 'stopped' ? 'idle' : 'success', event.status !== 'stopped', true);
       }
+      syncGaze();
     }
     function addMenu(label, action, id) {
       const button = el('button', id, 'pet-overlay-menu-item'); button.type = 'button'; button.textContent = label;
@@ -166,6 +181,7 @@
       if (event.button !== 0 || disposed) return;
       closeMenu(); event.preventDefault();
       drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.x, y: state.y, moved: false };
+      syncGaze();
       video.setPointerCapture?.(event.pointerId);
     };
     const pointerMove = event => {
@@ -183,6 +199,7 @@
       if (video.hasPointerCapture?.(event.pointerId)) video.releasePointerCapture(event.pointerId);
       if (moved) { transient = false; play(state.workStatus ? phase : 'idle', false, true); void save({ x: state.x, y: state.y }).catch(() => {}); }
       else if (event.type !== 'pointercancel') play('clicks', true, true);
+      syncGaze();
     };
     const contextMenu = event => { event.preventDefault(); openMenu(event.clientX, event.clientY); };
     const keyDown = event => {
@@ -205,7 +222,7 @@
       }
     };
     const ended = () => { if (transient) { transient = false; play(state.workStatus ? phase : 'idle', false, true); } };
-    const failed = () => { mediaFailed = true; video.pause(); video.hidden = true; fallback.hidden = false; };
+    const failed = () => { mediaFailed = true; video.pause(); video.hidden = true; fallback.hidden = false; syncGaze(); };
     const resized = () => { position(); closeMenu(); };
     let layoutFrame = null;
     const scheduleLayout = () => {
@@ -217,6 +234,10 @@
     };
     const visibility = () => playback();
     const motionChanged = () => playback();
+    const cursorMoved = event => { if (event.pointerType !== 'touch') gaze?.point({ x: event.clientX, y: event.clientY }); };
+    const cursorLeft = () => gaze?.point(null);
+    const windowBlurred = () => { blurred = true; syncGaze(); };
+    const windowFocused = () => { blurred = false; syncGaze(); };
     video.addEventListener('pointerdown', pointerDown); video.addEventListener('pointermove', pointerMove);
     video.addEventListener('pointerup', pointerEnd); video.addEventListener('pointercancel', pointerEnd);
     video.addEventListener('contextmenu', contextMenu); video.addEventListener('keydown', keyDown);
@@ -224,6 +245,8 @@
     fallback.addEventListener('click', onConfigure); fallback.addEventListener('contextmenu', contextMenu);
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
     document.addEventListener('visibilitychange', visibility); view.addEventListener?.('resize', resized);
+    document.addEventListener('pointermove', cursorMoved, { passive: true }); document.addEventListener('mouseleave', cursorLeft);
+    view.addEventListener?.('blur', windowBlurred); view.addEventListener?.('focus', windowFocused);
     motion?.addEventListener?.('change', motionChanged);
     const layoutObserver = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(scheduleLayout) : null;
     const layoutRegions = new Set([...inputRegions, document.getElementById?.('message-scroll'), document.querySelector?.('.conversation')].filter(Boolean));
@@ -240,6 +263,8 @@
         if (disposed) return; disposed = true; drag = null; listeners.clear(); unsubscribe?.();
         document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
         document.removeEventListener('visibilitychange', visibility); view.removeEventListener?.('resize', resized);
+        document.removeEventListener('pointermove', cursorMoved); document.removeEventListener('mouseleave', cursorLeft);
+        view.removeEventListener?.('blur', windowBlurred); view.removeEventListener?.('focus', windowFocused); gaze?.destroy();
         motion?.removeEventListener?.('change', motionChanged); layoutObserver?.disconnect();
         if (layoutFrame !== null) { view.cancelAnimationFrame(layoutFrame); layoutFrame = null; }
         video.pause(); video.removeAttribute('src'); video.load();

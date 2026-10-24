@@ -10,7 +10,7 @@ const BUILTIN = Object.freeze({
   idle: ['待机呼吸休闲'], clicks: ['点击回应-开心跃动'], drag: ['被鼠标拖拽悬空反馈'], turn: ['东张西望'], actions: ['写代码'],
   thinking: ['工作状态-思考冒泡'], working: ['工作状态-忙碌点按'], result: ['工作状态-清点归档'], waiting: ['工作状态-原地踱步张望'], success: ['工作状态-雀跃庆祝'], error: ['工作状态-垂头叹气冒汗'],
 });
-const defaults = () => ({ enabled: true, size: 220, x: 1, y: 1, workStatus: true, packId: 'dsh-pet' });
+const defaults = () => ({ enabled: true, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: 'dsh-pet' });
 const fail = (message = '宠物素材包无效，请选择 dsh-pet 的 JSON 或 JSONC 配置及配套 WebM 动画。', code = 'PET_INVALID_PACK') => Object.assign(new Error(message), { code });
 const plainObject = value => value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 const validName = value => typeof value === 'string' && value.length > 0 && value.length <= 120 && !/[\\/<>:"|?*\p{Cc}\p{Cf}]/u.test(value) && value !== '.' && value !== '..' && !/[. ]$/u.test(value);
@@ -147,6 +147,7 @@ function validSettings(value, partial) {
   if (!plainObject(value) || !Object.keys(value).length || Object.keys(value).some(key => !settingsKeys.includes(key)) || (!partial && settingsKeys.some(key => !Object.hasOwn(value, key)))) return false;
   return (!Object.hasOwn(value, 'enabled') || typeof value.enabled === 'boolean')
     && (!Object.hasOwn(value, 'workStatus') || typeof value.workStatus === 'boolean')
+    && (!Object.hasOwn(value, 'followCursor') || typeof value.followCursor === 'boolean')
     && (!Object.hasOwn(value, 'size') || Number.isInteger(value.size) && value.size >= 80 && value.size <= 600)
     && ['x', 'y'].every(key => !Object.hasOwn(value, key) || Number.isFinite(value[key]) && value[key] >= 0 && value[key] <= 1)
     && (!Object.hasOwn(value, 'packId') || validId(value.packId));
@@ -160,6 +161,7 @@ class DshPetStore {
     this.#packs = [{ id: 'dsh-pet', name: 'DSH 蓝色桌宠', source: 'dsh-pet 0.3.8 · PC2005-cloud', license: 'MIT', dir: this.#builtinDir, animations: BUILTIN }];
   }
   snapshot() { return { ...this.#state, packs: this.#packs.map(packView) }; }
+  cursorTrackingEnabled() { return this.#state.enabled && this.#state.followCursor && this.#state.packId === 'dsh-pet'; }
   init() {
     if (!this.#initializing) this.#initializing = (async () => {
       let entries = [];
@@ -184,6 +186,7 @@ class DshPetStore {
       try {
         const stored = JSON.parse((await readBounded(this.#file, 16384)).toString('utf8'));
         const { version, ...value } = stored;
+        if (!Object.hasOwn(value, 'followCursor')) value.followCursor = true;
         if (version === 1 && validSettings(value, false)) this.#state = { ...value, packId: this.#packs.some(pack => pack.id === value.packId) ? value.packId : 'dsh-pet' };
       } catch { /* Preserve corrupt preferences for diagnosis; defaults remain usable. */ }
       return this;

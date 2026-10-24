@@ -34,6 +34,20 @@ const card = (text = 'original card', status = 'running') => {
 const finish = (element, status = 'completed') => { element.classList.remove('running'); element.dataset.status = status; api.refresh(element); };
 const groups = target => target.querySelectorAll('.tool-operation-group');
 
+test('mixed status counts retain separate semantic colors as operations change status', () => {
+  const target = new Element('div');
+  const entries = ['running', 'completed', 'failed', 'denied'].map(status => card(status, status));
+  for (const entry of entries) api.appendTool(target, entry, event('run_command'));
+  const group = groups(target)[0], summary = group.querySelector('.tool-operation-group-status');
+  assert.equal(summary.textContent, '1 进行中 · 1 已完成 · 1 未完成 · 1 未执行');
+  assert.deepEqual(summary.querySelectorAll('.tool-operation-status-count').map(item => [item.dataset.status, item.textContent]),
+    [['running', '1 进行中'], ['completed', '1 已完成'], ['failed', '1 未完成'], ['denied', '1 未执行']]);
+  finish(entries[0]);
+  assert.equal(group.dataset.status, 'failed');
+  assert.deepEqual(summary.querySelectorAll('.tool-operation-status-count').map(item => item.dataset.status), ['completed', 'failed', 'denied']);
+  assert.equal(summary.textContent, '2 已完成 · 1 未完成 · 1 未执行');
+});
+
 test('two adjacent reads move the same original cards into one collapsed group; completion updates its visible summary', () => {
   const target = new Element('div'), first = card('a.txt'), second = card('b.txt'), created = [];
   assert.equal(api.appendTool(target, first, event()), null);

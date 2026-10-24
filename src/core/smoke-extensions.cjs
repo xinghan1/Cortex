@@ -12,7 +12,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
   assert.equal(win.webContents.isOffscreen(), true);
   const fixtureRoot = path.join(dataDir, 'extensions-smoke-' + randomUUID());
   const project = path.join(fixtureRoot, 'project'), otherProject = path.join(fixtureRoot, 'other-project');
-  const screenshots = [], themes = [], statusAnimations = [], decisions = [], pickerRequests = [], composerLayouts = [];
+  const screenshots = [], themes = [], statusAnimations = [], decisions = [], pickerRequests = [], composerLayouts = [], operationColors = [];
   let child, panel, stage = 'initialize', nextPick = null, nextWrite = 'allow', originalAppearance;
   const originalOpenDialog = dialog.showOpenDialog, originalMessageBox = dialog.showMessageBox;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -30,7 +30,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     while (Date.now() < deadline) { const value = await bounded(Promise.resolve().then(predicate), label, Math.max(1, deadline - Date.now())); if (value) return value; await wait(30); }
     throw new Error('Extensions smoke timed out: ' + label);
   };
-  const point = selector => until('click target ' + selector, () => js(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n||n.disabled||!n.checkVisibility({visibilityProperty:true,opacityProperty:true}))return null;n.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null})()`));
+  const point = selector => until('click target ' + selector, () => js(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n||n.disabled||!n.checkVisibility({visibilityProperty:true,opacityProperty:${selector !== '#pet-overlay-video'}}))return null;n.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null})()`));
   const pointer = async (location, button = 'left') => {
     child.focus(); child.webContents.focus();
     for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) child.webContents.sendInputEvent({ type, ...location, ...(type === 'mouseMove' ? {} : { button, clickCount: 1 }) });
@@ -42,7 +42,29 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     const image = await child.webContents.capturePage(); assert.ok(!image.isEmpty());
     await fs.writeFile(path.join(output, filename), image.toPNG()); screenshots.push(filename);
   };
-  const ready = () => until('extensions renderer ready', () => js('Boolean(window.synoraPetOverlay&&window.synoraExtensions&&appState&&!projectSwitching)'));
+  const verifyOperationColors = async style => {
+    const colors = await js(`(()=>{
+      document.getElementById('native-operation-colors')?.remove();
+      const target=document.createElement('section');target.id='native-operation-colors';document.getElementById('messages').append(target);
+      for(const status of ['running','completed','failed','denied']){
+        const card=document.createElement('details');card.className='tool-card'+(status==='running'?' running':'');card.dataset.status=status;
+        const summary=document.createElement('summary');summary.textContent=status;card.append(summary);
+        window.ForgeToolOperationGroups.appendTool(target,card,{name:'run_command',runId:'native-status-colors'});
+      }
+      target.scrollIntoView({block:'nearest',behavior:'instant'});
+      return [...target.querySelectorAll('.tool-operation-status-count')].map(n=>({status:n.dataset.status,text:n.textContent,color:getComputedStyle(n).color}));
+    })()`);
+    assert.deepEqual(colors.map(value => value.status), ['running', 'completed', 'failed', 'denied']);
+    const rgb = value => value.match(/[\d.]+/gu).slice(0, 3).map(Number);
+    const [blue, green, red, gray] = colors.map(value => rgb(value.color));
+    assert.ok(blue[2] > blue[0] + 15 && blue[2] > blue[1], 'Running count must be blue in ' + style + ': ' + colors[0].color);
+    assert.ok(green[1] > green[0] + 10 && green[1] > green[2], 'Completed count must be green in ' + style + ': ' + colors[1].color);
+    assert.ok(red[0] > red[1] + 15 && red[0] > red[2], 'Failed count must be red in ' + style + ': ' + colors[2].color);
+    assert.ok(Math.max(...gray) - Math.min(...gray) <= 35, 'Not-executed count must be gray in ' + style + ': ' + colors[3].color);
+    operationColors.push({ style, colors }); await capture('operation-status-colors-' + style + '.png');
+    await js("document.getElementById('native-operation-colors').remove();true");
+  };
+  const ready = () => until('extensions renderer ready', () => js('Boolean(window.synoraPetOverlay&&window.synoraExtensions&&window.synoraPetSettings&&appState&&!projectSwitching)'));
   const inspectPet = () => js(`(()=>{const o=document.getElementById('pet-overlay'),v=document.getElementById('pet-overlay-video'),r=o.getBoundingClientRect();return {hidden:o.hidden,animation:o.dataset.animation,readyState:v.readyState,width:v.videoWidth,height:v.videoHeight,error:v.error?.code||null,paused:v.paused,src:v.currentSrc||v.src,box:{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height},viewport:{width:innerWidth,height:innerHeight},state:window.synoraPetOverlay.snapshot()}})()`);
   const decoded = async kind => until('real WebM decode ' + (kind || ''), async () => { const value = await inspectPet(); return !value.hidden && (!kind || value.animation === kind) && value.readyState >= 2 && value.width > 0 && value.height > 0 && !value.error && value; });
   const assertComposerTargets = async label => {
@@ -59,7 +81,19 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     })()`));
     composerLayouts.push({ label, ...layout }); return layout;
   };
-  const visibleDialog = () => until('extensions dialog', () => js("document.getElementById('extensions-dialog').open&&!document.getElementById('extensions-dialog').getAttribute('aria-busy').includes('true')"));
+  const visibleDialog = (id = 'extensions-dialog') => until(id, () => js(`document.getElementById(${JSON.stringify(id)}).open&&!document.getElementById(${JSON.stringify(id)}).getAttribute('aria-busy')?.includes('true')`));
+  const openSettings = async kind => {
+    const isPet = kind === 'pet';
+    await click('#menu-settings');
+    const actions = await js("[...document.querySelectorAll('#app-menu-popup [data-action]')].map(node=>({id:node.dataset.action,label:node.textContent}))");
+    assert.ok(actions.some(value => value.id === 'extensions' && /插件管理/u.test(value.label)));
+    assert.ok(actions.some(value => value.id === 'pet-settings' && /宠物设置/u.test(value.label)));
+    await click(`#app-menu-popup [data-action="${isPet ? 'pet-settings' : 'extensions'}"]`);
+    await visibleDialog(isPet ? 'pet-settings-dialog' : 'extensions-dialog');
+    const independent = await js("({plugin:document.getElementById('extensions-dialog').open,pet:document.getElementById('pet-settings-dialog').open,pluginTitle:document.getElementById('extensions-title').textContent,petTitle:document.getElementById('pet-settings-title').textContent,pluginHasPet:!!document.querySelector('#extensions-dialog #pet-settings-enabled')})");
+    assert.equal(independent.plugin, !isPet); assert.equal(independent.pet, isPet);
+    assert.equal(independent.pluginTitle, '插件'); assert.equal(independent.petTitle, '宠物'); assert.equal(independent.pluginHasPet, false);
+  };
   const pluginRow = id => `[data-extension-id=${JSON.stringify(id)}]`;
   const resultError = expression => panelJs(`(async()=>{try{await (${expression});return null;}catch(error){return String(error.message)}})()`);
   const windowForPlugin = id => until('native plugin window', () => {
@@ -93,14 +127,14 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     child = BrowserWindow.fromId((await win.webContents.executeJavaScript('window.forge.newWindow()')).id);
     assert.ok(child && child !== win && child.webContents.isOffscreen());
     child.setContentSize(1280, 960); child.setOpacity(0); child.showInactive(); await ready();
-    await js('Promise.all([window.synoraPetOverlay.ready,window.synoraExtensions.ready])');
+    await js('Promise.all([window.synoraPetOverlay.ready,window.synoraExtensions.ready,window.synoraPetSettings.ready])');
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);
     await until('isolated project activated', async () => (await call('getState')).workspace.root === project && await js('!projectSwitching'));
     originalAppearance = await call('getAppearance');
 
     await step('original video decoding and transparency');
     let pet = await decoded('idle');
-    assert.equal(pet.state.enabled, true); assert.equal(pet.state.size, 220); assert.equal(pet.width / pet.height, 16 / 9);
+    assert.equal(pet.state.enabled, true); assert.equal(pet.state.size, 220); assert.equal(pet.state.followCursor, true); assert.equal(pet.width / pet.height, 16 / 9);
     const transparency = await js(`(async()=>{const v=document.getElementById('pet-overlay-video');v.currentTime=Math.min(1,Math.max(0,v.duration/2));await new Promise(resolve=>{if(!v.seeking)resolve();else v.addEventListener('seeked',resolve,{once:true})});const c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(v,0,0);const data=x.getImageData(0,0,c.width,c.height).data;let transparent=0,opaque=0,minAlpha=255,maxAlpha=0;for(let i=3;i<data.length;i+=4){if(data[i]<=8)transparent++;if(data[i]>200)opaque++;minAlpha=Math.min(minAlpha,data[i]);maxAlpha=Math.max(maxAlpha,data[i]);}return {transparent,opaque,minAlpha,maxAlpha,pixels:c.width*c.height}})()`);
     assert.ok(transparency.transparent > transparency.pixels / 3, 'The genuine upstream frame must retain its alpha background: ' + JSON.stringify(transparency));
     assert.ok(transparency.opaque > 1000, 'A decoded pet must have visible character pixels');
@@ -129,10 +163,45 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
       await js("document.getElementById('pet-overlay-video').dispatchEvent(new Event('ended'))"); await decoded('idle');
     }
 
+    await step('native pointer drives genuine eye-only frame changes');
+    await until('production gaze is active while idle', () => js("document.getElementById('pet-overlay-gaze')?.dataset.gaze==='tracking'&&!document.getElementById('pet-overlay-gaze').hidden"));
+    // Use a second instance of the production renderer with a fixed decoded
+    // frame so moving idle-video pixels and the host's real 50 ms screen-cursor
+    // broadcast cannot mask whether the eye warp itself preserves the body.
+    await js(`(async()=>{
+      const source=document.getElementById('pet-overlay-video'),video=document.createElement('video'),canvas=document.createElement('canvas');
+      video.muted=true;video.preload='auto';video.src=source.currentSrc||source.src;
+      await new Promise((resolve,reject)=>{video.addEventListener('loadedmetadata',resolve,{once:true});video.addEventListener('error',reject,{once:true});video.load()});
+      video.currentTime=.5;await new Promise(resolve=>{if(!video.seeking)resolve();else video.addEventListener('seeked',resolve,{once:true})});video.pause();
+      const controller=window.ForgePetGaze.create({document,video,canvas,bounds:()=>document.getElementById('pet-overlay').getBoundingClientRect()});
+      const fixture=window.nativePetGaze={video,canvas,controller,moves:0,left:null};
+      fixture.pointer=event=>{fixture.moves++;controller.point({x:event.clientX,y:event.clientY})};document.addEventListener('pointermove',fixture.pointer);
+      controller.setActive(true);return true;
+    })()`);
+    const mouseMove = async x => { child.focus(); child.webContents.focus(); child.webContents.sendInputEvent({ type: 'mouseMove', x, y: 300 }); };
+    await mouseMove(10);
+    await until('real left mouse motion moves irises left', () => js("window.nativePetGaze.moves>0&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)<-2"));
+    await js("window.nativePetGaze.left=new Uint8ClampedArray(window.nativePetGaze.canvas.getContext('2d').getImageData(0,0,640,360).data);window.nativePetGaze.leftPNG=window.nativePetGaze.canvas.toDataURL('image/png');true");
+    await mouseMove(1270);
+    await until('real right mouse motion moves irises right', () => js("window.nativePetGaze.moves>1&&window.nativePetGaze.canvas.dataset.gaze==='tracking'&&Number(window.nativePetGaze.canvas.dataset.gazeX)>2"));
+    const gazeEvidence = await js(`(()=>{
+      const f=window.nativePetGaze,right=f.canvas.getContext('2d').getImageData(0,0,640,360).data;
+      let changed=0,outsideEyeROI=0,alphaChanged=0;for(let i=0;i<right.length;i+=4){
+        if(f.left[i]===right[i]&&f.left[i+1]===right[i+1]&&f.left[i+2]===right[i+2]&&f.left[i+3]===right[i+3])continue;
+        changed++;const pixel=i/4,x=pixel%640,y=Math.floor(pixel/640);if(x<256||x>=372||y<180||y>=208)outsideEyeROI++;
+        if(f.left[i+3]!==right[i+3])alphaChanged++;
+      }
+      return {changed,outsideEyeROI,alphaChanged,nativePointerMoves:f.moves,leftPNG:f.leftPNG,rightPNG:f.canvas.toDataURL('image/png')};
+    })()`);
+    assert.ok(gazeEvidence.changed > 30); assert.equal(gazeEvidence.outsideEyeROI, 0); assert.equal(gazeEvidence.alphaChanged, 0); assert.ok(gazeEvidence.nativePointerMoves >= 2);
+    for (const [key, filename] of [['leftPNG', 'pet-eyes-left.png'], ['rightPNG', 'pet-eyes-right.png']]) { await fs.writeFile(path.join(output, filename), Buffer.from(gazeEvidence[key].split(',')[1], 'base64')); screenshots.push(filename); delete gazeEvidence[key]; }
+    await js("(()=>{const f=window.nativePetGaze;document.removeEventListener('pointermove',f.pointer);f.controller.destroy();f.video.removeAttribute('src');f.video.load();delete window.nativePetGaze;return true})()");
+
     await step('native work-status animation mapping and parallel tools');
     const event = async input => { await js(`window.synoraPetOverlay.handleEvent(${JSON.stringify(input)});true`); };
     const expectAnimation = async animation => { const value = await decoded(animation); statusAnimations.push({ animation, width: value.width, height: value.height }); };
     await event({ type: 'run-start' }); await expectAnimation('thinking');
+    assert.equal(await js("document.getElementById('pet-overlay-gaze').hidden&&document.getElementById('pet-overlay-gaze').dataset.gaze==='off'"), true, 'Task animation disables eye warping immediately');
     await event({ type: 'tool-start', toolCallId: 'native-tool-1' }); await expectAnimation('working');
     await event({ type: 'tool-start', toolCallId: 'native-tool-2' });
     await event({ type: 'tool-result', toolCallId: 'native-tool-1' }); await expectAnimation('working');
@@ -144,18 +213,26 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await event({ type: 'run-start' }); await event({ type: 'run-end', status: 'failed' }); await expectAnimation('error');
     await event({ type: 'run-end', status: 'stopped' }); await decoded('idle');
 
-    await step('pet settings and extensions dialog across all appearance styles');
+    await step('independent pet and plugin settings across all appearance styles');
     for (const style of ['glass', 'black', 'white', 'industrial']) {
       await call('setAppearance', { uiStyle: style, selectionColor: '#63b77b' }); await js('window.synoraAppearance.settled()');
-      await js("window.synoraExtensions.open({section:'pet'})"); await visibleDialog();
-      const layout = await js(`(()=>{const d=document.getElementById('extensions-dialog'),r=d.getBoundingClientRect(),c=document.getElementById('extensions-pet-enabled');return {style:document.documentElement.dataset.uiStyle,open:d.open,left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,checked:c.checked,accent:getComputedStyle(c).accentColor,error:document.getElementById('extensions-error').textContent}})()`);
+      await openSettings('plugins');
+      const pluginLayout = await js("(()=>{const d=document.getElementById('extensions-dialog'),r=d.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,error:document.getElementById('extensions-error').textContent}})()");
+      assert.ok(pluginLayout.left >= 0 && pluginLayout.right <= pluginLayout.width + 1 && pluginLayout.top >= 0 && pluginLayout.bottom <= pluginLayout.height + 1); assert.equal(pluginLayout.error, '');
+      await capture('extensions-settings-' + style + '.png'); await click('#extensions-close');
+      await openSettings('pet');
+      const layout = await js(`(()=>{const d=document.getElementById('pet-settings-dialog'),r=d.getBoundingClientRect(),c=document.getElementById('pet-settings-enabled'),f=document.getElementById('pet-settings-follow');return {style:document.documentElement.dataset.uiStyle,open:d.open,left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:innerWidth,height:innerHeight,checked:c.checked,followChecked:f.checked,followDisabled:f.disabled,accent:getComputedStyle(c).accentColor,error:document.getElementById('pet-settings-error').textContent}})()`);
       assert.equal(layout.style, style); assert.equal(layout.checked, true); assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.top >= 0 && layout.bottom <= layout.height + 1); assert.equal(layout.error, '');
-      themes.push(layout); await capture('extensions-settings-' + style + '.png');
+      assert.equal(layout.followChecked, true); assert.equal(layout.followDisabled, false);
+      themes.push({ ...layout, plugin: pluginLayout }); await capture('pet-settings-' + style + '.png');
       if (style === 'industrial') {
-        await click('#extensions-pet-enabled'); await until('pet disabled via settings', async () => !(await call('petState')).enabled && (await inspectPet()).hidden);
-        await click('#extensions-pet-enabled'); await decoded('idle');
+        await click('#pet-settings-enabled'); await until('pet disabled via independent settings', async () => !(await call('petState')).enabled && (await inspectPet()).hidden);
+        await click('#pet-settings-enabled'); await decoded('idle');
+        await click('#pet-settings-follow'); await until('follow setting persisted independently', async () => (await call('petState')).followCursor === false && dshPet.snapshot().followCursor === false);
+        const restoredFollow = await new DshPetStore({ dataDir }).init(); assert.equal(restoredFollow.snapshot().followCursor, false);
       }
-      await click('#extensions-close');
+      await click('#pet-settings-close');
+      await verifyOperationColors(style);
     }
     await step('large pet preserves composer, stop and approval hit targets after resizing');
     await updatePet({ size: 600, x: 1, y: 1 });
@@ -170,8 +247,13 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await event({ type: 'run-start' }); await decoded('idle'); await event({ type: 'run-end', status: 'stopped' });
     await updatePet({ workStatus: true });
     const reloaded = new Promise(resolve => child.webContents.once('did-finish-load', resolve));
-    child.webContents.reloadIgnoringCache(); await bounded(reloaded, 'renderer reload'); await ready(); await js('Promise.all([window.synoraPetOverlay.ready,window.synoraExtensions.ready])');
+    child.webContents.reloadIgnoringCache(); await bounded(reloaded, 'renderer reload'); await ready(); await js('Promise.all([window.synoraPetOverlay.ready,window.synoraExtensions.ready,window.synoraPetSettings.ready])');
     pet = await decoded('idle'); assert.equal(pet.state.size, 280); assert.equal(pet.state.x, dragged.x); assert.equal(pet.state.y, dragged.y);
+    assert.equal(pet.state.followCursor, false);
+    await openSettings('pet'); assert.equal(await js("document.getElementById('pet-settings-follow').checked"), false); await click('#pet-settings-close');
+    await pointer(await point('#pet-overlay-video'), 'right'); await click('#pet-overlay-settings'); await visibleDialog('pet-settings-dialog');
+    assert.equal(await js("document.getElementById('extensions-dialog').open"), false, 'The pet context menu opens only independent pet settings');
+    await click('#pet-settings-close');
 
     await step('genuine DSH pack import via native picker bridge');
     const sourcePet = path.join(fixtureRoot, 'source-pet');
@@ -189,9 +271,10 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
       await fs.writeFile(path.join(sourcePet, ...pieces), await fs.readFile(path.join(builtinPet, ...pieces)));
     }
     nextPick = path.join(sourcePet, 'config.json');
-    await js('window.synoraExtensions.open()'); await visibleDialog(); await click('#extensions-pet-import');
+    await openSettings('pet'); await click('#pet-settings-import');
     const importedPet = await until('DSH pack copied and selected', async () => { const value = await call('petState'); return value.packs.length === 2 && value.packId.startsWith('local-') && value; });
-    await click('#extensions-close'); await decoded('idle');
+    await until('custom packs leave follow control disabled', () => js("document.getElementById('pet-settings-follow').disabled&&document.getElementById('pet-settings-follow').title==='此宠物包未提供眼睛定位'"));
+    await click('#pet-settings-close'); await decoded('idle');
     assert.ok(importedPet.packs.at(-1).animations.idle[0].url.includes('pet-packs'));
     await fs.rm(sourcePet, { recursive: true, force: true });
     const reloadedPet = await new DshPetStore({ dataDir }).init(); assert.deepEqual(reloadedPet.snapshot(), importedPet);
@@ -208,7 +291,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     manifest.commands = [{ id: 'inspect', title: '查看原生测试项目' }];
     await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2));
     nextPick = example.path;
-    await js('window.synoraExtensions.open()'); await visibleDialog(); await click('#extensions-install');
+    await openSettings('plugins'); await click('#extensions-install');
     await until('new plugin defaults disabled', async () => { const plugins = (await call('getExtensions')).plugins; return plugins.some(value => value.id === manifest.id && !value.enabled); });
     const row = pluginRow(manifest.id);
     assert.equal(await js(`document.querySelector(${JSON.stringify(row + ' [data-action="open"]')}).disabled`), true);
@@ -257,7 +340,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     assert.equal(await fs.readFile(path.join(project, 'sample.txt'), 'utf8'), writeInput.content);
     const stalePanel = panel;
     await step('open settings in new project');
-    await js('window.synoraExtensions.open()'); await visibleDialog();
+    await openSettings('plugins');
     await step('click reopen plugin in new project');
     await click(row + ' [data-action="open"]'); await windowForPlugin(manifest.id);
     await step('verify new project plugin instance');
@@ -283,6 +366,9 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     const evidence = { status: 'completed', isolatedRegisteredChild: true, network: false, modelRequests: 0,
       actualUpstreamVideo: true, transparency, nativeDragPersists: true, restartRestoresPetSettings: true, fourThemes: themes,
       composerControlsUnobstructed: true, composerLayouts,
+      separatePluginAndPetMenus: true, separatePluginAndPetDialogs: true, petContextOpensPetOnly: true,
+      mouseFollowDefaultsEnabled: true, mouseFollowChoicePersists: true, unsupportedPackFollowDisabled: true,
+      genuineEyeWarp: gazeEvidence, productionGazeDisabledDuringTasks: true, operationSummaryColors: operationColors,
       statusAnimations, localDshPackCopiedAndReopened: true, createdDeveloperTemplate: true, installedDisabled: true,
       enablementPersists: true, actualSandboxedPluginWindow: true, privatePreloadOnly: true, projectReadBoundaries: true,
       nativeWriteCancelAndAllow: true, staleWriteRejected: true, declaredCommandDispatch: true,
@@ -294,7 +380,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     if (child && !child.isDestroyed()) await capture('extensions-failure.png').catch(() => {});
     const diagnostic = { stage, message: error.message, decisions, pickerRequests,
       pet: child && !child.isDestroyed() ? await inspectPet().catch(() => null) : null,
-      ui: child && !child.isDestroyed() ? await js("({error:document.getElementById('extensions-error')?.textContent,status:document.getElementById('extensions-status')?.textContent,notice:document.getElementById('notice')?.textContent})").catch(() => null) : null };
+      ui: child && !child.isDestroyed() ? await js("({error:document.getElementById('extensions-error')?.textContent,status:document.getElementById('extensions-status')?.textContent,petError:document.getElementById('pet-settings-error')?.textContent,petStatus:document.getElementById('pet-settings-status')?.textContent,notice:document.getElementById('notice')?.textContent})").catch(() => null) : null };
     await fs.writeFile(path.join(output, 'extensions-failure.json'), JSON.stringify(diagnostic, null, 2));
     console.error('EXTENSIONS_SMOKE_DIAGNOSTIC', JSON.stringify(diagnostic));
     throw error;
@@ -302,6 +388,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     dialog.showOpenDialog = originalOpenDialog; dialog.showMessageBox = originalMessageBox;
     if (panel && !panel.isDestroyed()) panel.destroy();
     if (child && !child.isDestroyed()) {
+      await js("(()=>{const f=window.nativePetGaze;if(!f)return;document.removeEventListener('pointermove',f.pointer);f.controller.destroy();f.video.removeAttribute('src');f.video.load();delete window.nativePetGaze})()").catch(() => {});
       if (originalAppearance) await call('setAppearance', { uiStyle: originalAppearance.uiStyle, selectionColor: originalAppearance.selectionColor }).catch(() => {});
       child.destroy();
     }

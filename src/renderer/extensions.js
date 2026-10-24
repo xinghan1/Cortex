@@ -2,7 +2,7 @@
 (function (root) {
   const permissionNames = { 'project.read': '读取项目文件', 'project.write': '修改项目文件', notifications: '显示通知' };
   const clean = (value, limit = 600) => typeof value === 'string' ? value.slice(0, limit) : '';
-  function create({ document = root.document, bridge, pet, notice = () => {} }) {
+  function create({ document = root.document, bridge, notice = () => {} }) {
     const el = (tag, id, className, value) => {
       const node = document.createElement(tag);
       if (id) node.id = id;
@@ -17,8 +17,8 @@
     const dialog = el('dialog', 'extensions-dialog', 'settings-dialog extensions-dialog');
     dialog.setAttribute('aria-labelledby', 'extensions-title');
     const header = el('div', '', 'dialog-header');
-    header.append(el('h2', 'extensions-title', '', '插件与宠物'), button('extensions-close', '×', () => dialog.close(), 'icon-button'));
-    header.children[1].setAttribute('aria-label', '关闭插件与宠物设置');
+    header.append(el('h2', 'extensions-title', '', '插件'), button('extensions-close', '×', () => dialog.close(), 'icon-button'));
+    header.children[1].setAttribute('aria-label', '关闭插件设置');
     const error = el('p', 'extensions-error', 'form-error'); error.hidden = true; error.setAttribute('role', 'alert');
     const status = el('p', 'extensions-status', 'extensions-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const pluginSection = el('section', 'extensions-plugin-section', 'extensions-section');
@@ -32,50 +32,11 @@
     pluginActions.append(install, refresh, example, guide); pluginHeading.append(el('h3', 'extensions-plugin-title', '', '插件'), pluginActions);
     const list = el('div', 'extensions-list', 'extensions-list');
     pluginSection.append(pluginHeading, list);
-    const petSection = el('section', 'extensions-pet-section', 'extensions-section');
-    petSection.setAttribute('aria-labelledby', 'extensions-pet-title');
-    const petHeading = el('div', '', 'extensions-section-heading');
-    const importPet = button('extensions-pet-import', '导入 DSH 宠物…', () => perform('petImport'));
-    petHeading.append(el('h3', 'extensions-pet-title', '', '宠物'), importPet);
-    const petEnabled = el('input', 'extensions-pet-enabled'); petEnabled.type = 'checkbox';
-    const petEnabledLabel = el('label', '', 'extensions-check'); petEnabledLabel.append(petEnabled, el('span', '', '', '显示宠物'));
-    const petWork = el('input', 'extensions-pet-work'); petWork.type = 'checkbox';
-    const petWorkLabel = el('label', '', 'extensions-check'); petWorkLabel.append(petWork, el('span', '', '', '跟随任务状态切换动作'));
-    const petPackLabel = el('label', '', 'extensions-field-label', '宠物'); petPackLabel.htmlFor = 'extensions-pet-pack';
-    const petPack = el('select', 'extensions-pet-pack', 'extensions-select');
-    const petSizeLabel = el('label', '', 'extensions-field-label', '大小'); petSizeLabel.htmlFor = 'extensions-pet-size';
-    const petSizeRow = el('div', '', 'extensions-pet-size-row');
-    const petSize = el('input', 'extensions-pet-size'); petSize.type = 'range'; petSize.min = '80'; petSize.max = '600'; petSize.step = '10';
-    const petSizeValue = el('output', 'extensions-pet-size-value'); petSizeValue.htmlFor = 'extensions-pet-size';
-    petSizeRow.append(petSize, petSizeValue);
-    const petCredit = el('p', 'extensions-pet-credit', 'extensions-description');
-    const petReset = button('extensions-pet-reset', '重置位置', () => changePet({ x: 1, y: 1 }));
-    petSection.append(petHeading, petEnabledLabel, petWorkLabel, petPackLabel, petPack, petSizeLabel, petSizeRow, petReset, petCredit);
-    dialog.append(header, status, error, pluginSection, petSection); document.body.append(dialog);
-    let snapshot = { plugins: [], pet: null }, pending = false, disposed = false, revision = 0, petRevision = 0, confirming = null;
+    dialog.append(header, status, error, pluginSection); document.body.append(dialog);
+    let snapshot = { plugins: [] }, pending = false, disposed = false, revision = 0, confirming = null;
     let storageError = '', actionError = '';
     let loading = false, announcement = '';
-    const fields = [install, refresh, example, guide, importPet, petEnabled, petWork, petPack, petSize, petReset];
-    function updatePet(value) {
-      if (!value || !Array.isArray(value.packs)) return;
-      snapshot.pet = value; renderPet();
-    }
-    function renderPet() {
-      const value = snapshot.pet;
-      petSection.hidden = !value;
-      if (!value) return;
-      petEnabled.checked = value.enabled === true; petWork.checked = value.workStatus !== false;
-      petPack.replaceChildren();
-      for (const pack of value.packs) {
-        const option = el('option', '', '', clean(pack.name, 120) || clean(pack.id, 120)); option.value = pack.id; petPack.append(option);
-      }
-      petPack.value = value.packId || value.packs[0]?.id || '';
-      petSize.value = String(value.size || 220); petSizeValue.textContent = `${value.size || 220} px`;
-      const pack = value.packs.find(item => item.id === petPack.value);
-      petCredit.textContent = pack ? `${clean(pack.name, 120)}${pack.license ? ' · ' + clean(pack.license, 120) : ''}` : '';
-      petPack.disabled = pending || loading || !value.packs.length;
-      petReset.disabled = pending || loading || !value.packs.length;
-    }
+    const fields = [install, refresh, example, guide];
     function render() {
       if (disposed) return;
       renderError();
@@ -118,13 +79,11 @@
         }
         list.append(row);
       }
-      renderPet();
     }
-    function update(value, applyPet = true) {
+    function update(value) {
       if (disposed || !value || !Array.isArray(value.plugins)) return;
       storageError = clean(value.pluginError);
-      snapshot = { plugins: value.plugins, pet: applyPet && value.pet || snapshot.pet };
-      if (applyPet && value.pet) pet?.update(value.pet);
+      snapshot = { plugins: value.plugins };
       render();
     }
     function renderError() {
@@ -137,27 +96,22 @@
     }
     async function refreshState() {
       if (disposed || pending || loading) return;
-      loading = true; actionError = ''; render(); const start = revision, petStart = petRevision;
-      try { const next = await bridge.getExtensions(); if (!disposed && revision === start) update(next, petRevision === petStart); }
+      loading = true; actionError = ''; render(); const start = revision;
+      try { const next = await bridge.getExtensions(); if (!disposed && revision === start) update(next); }
       catch (failure) { if (!disposed) report(failure); }
       finally { loading = false; if (!disposed) render(); }
     }
     async function perform(method, input) {
       if (disposed || pending || loading) return;
-      pending = true; actionError = ''; announcement = ''; render(); const start = revision, petStart = petRevision;
+      pending = true; actionError = ''; announcement = ''; render(); const start = revision;
       try {
         if (typeof bridge[method] !== 'function') throw new Error('当前版本暂不支持此操作。');
         const next = input === undefined ? await bridge[method]() : await bridge[method](input);
         if (disposed) return;
-        if (revision === start) {
-          if (Array.isArray(next?.plugins)) update(next, petRevision === petStart);
-          else if (Array.isArray(next?.packs) && petRevision === petStart) { updatePet(next); pet?.update(next); }
-          else if (next?.pet && petRevision === petStart) { updatePet(next.pet); pet?.update(next.pet); }
-        }
+        if (revision === start && Array.isArray(next?.plugins)) update(next);
         if (method === 'removeExtension') { confirming = null; announcement = '插件已移除。'; }
         else if (method === 'setExtensionEnabled') announcement = input.enabled ? '插件已启用。' : '插件已停用。';
         else if (method === 'installExtension' && next) announcement = '插件已安装，可启用后使用。';
-        else if (method === 'petImport' && next) announcement = '宠物已导入。';
         else if (method === 'createExtensionExample' && next?.path) {
           announcement = `示例插件已创建：${clean(next.path, 500)}`;
           notice(announcement);
@@ -165,33 +119,16 @@
       } catch (failure) { if (!disposed) report(failure); }
       finally { pending = false; if (!disposed) render(); }
     }
-    async function changePet(patch) {
-      if (disposed || pending || loading) return;
-      pending = true; actionError = ''; render(); const start = petRevision;
-      try {
-        const next = pet ? await pet.set(patch) : await bridge.setPet(patch);
-        if (!disposed && start === petRevision) updatePet(next?.pet || next);
-      } catch (failure) { if (!disposed) report(failure); }
-      finally { pending = false; if (!disposed) render(); }
-    }
-    petEnabled.addEventListener('change', () => changePet({ enabled: petEnabled.checked }));
-    petWork.addEventListener('change', () => changePet({ workStatus: petWork.checked }));
-    petPack.addEventListener('change', () => changePet({ packId: petPack.value }));
-    petSize.addEventListener('input', () => { petSizeValue.textContent = `${petSize.value} px`; });
-    petSize.addEventListener('change', () => changePet({ size: Number(petSize.value) }));
-    const unlistenPet = pet?.subscribe(value => { ++petRevision; updatePet(value); });
     const unsubscribe = bridge.onEvent?.(event => {
       if (event?.type === 'extensions' && event.extensions) { ++revision; update(event.extensions); }
-      else if (event?.type === 'pet-state') { ++petRevision; updatePet(event.pet); }
     });
     const ready = refreshState();
     return Object.freeze({ ready, update, refresh: refreshState,
-      open({ section } = {}) {
+      open() {
         if (disposed) return;
         actionError = ''; render(); if (!dialog.open) dialog.showModal();
-        if (section === 'pet') petSection.scrollIntoView?.({ block: 'nearest' });
       },
-      destroy() { if (disposed) return; disposed = true; unsubscribe?.(); unlistenPet?.(); dialog.close(); dialog.remove(); },
+      destroy() { if (disposed) return; disposed = true; unsubscribe?.(); dialog.close(); dialog.remove(); },
     });
   }
   root.ForgeExtensions = Object.freeze({ create });

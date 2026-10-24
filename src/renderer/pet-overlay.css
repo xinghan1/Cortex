@@ -7,6 +7,9 @@
   contain: layout;
 }
 .pet-overlay-video { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: auto; cursor: grab; touch-action: none; }
+.pet-overlay-gaze { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.pet-overlay.gaze-active .pet-overlay-video { opacity: 0; }
+.pet-overlay.gaze-active:has(.pet-overlay-video:focus-visible) { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: -6px; border-radius: var(--radius-control, 12px); }
 .pet-overlay.dragging .pet-overlay-video { cursor: grabbing; }
 .pet-overlay-video:focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: -6px; border-radius: var(--radius-control, 12px); }
 .pet-overlay-fallback { position: absolute; inset: 25%; border: 1px solid var(--line); border-radius: 50%; background: var(--panel); color: var(--ui-accent, var(--accent)); font-size: 36px; pointer-events: auto; }

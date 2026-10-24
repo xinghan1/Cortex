@@ -43,7 +43,7 @@ class Element extends Target {
 const categories = ['idle', 'clicks', 'drag', 'turn', 'actions', 'thinking', 'working', 'result', 'waiting', 'success', 'error'];
 const state = overrides => ({ enabled: true, size: 220, x: 1, y: 1, workStatus: true, packId: 'dsh-pet',
   packs: [{ id: 'dsh-pet', name: '帝师猴', animations: Object.fromEntries(categories.map(kind => [kind, [{ name: kind, url: `file:///D:/app/pet/${kind}.webm` }]])) }], ...overrides });
-function fixture({ initial = state(), methods = {}, reduced = false, composerTop } = {}) {
+function fixture({ initial = state(), methods = {}, reduced = false, composerTop, gazeEnabled = false } = {}) {
   const document = new Target(); document.elements = new Map(); document.hidden = false;
   document.createElement = tag => new Element(tag, document); document.body = new Element('body', document);
   document.getElementById = id => document.elements.get(id);
@@ -66,7 +66,12 @@ function fixture({ initial = state(), methods = {}, reduced = false, composerTop
     }
   }
   view.matchMedia = () => motion; document.defaultView = view;
-  const context = vm.createContext({ document }); vm.runInContext(source, context);
+  const gaze = { active: false, points: [], destroyed: false };
+  const ForgePetGaze = gazeEnabled ? { create: options => {
+    gaze.options = options;
+    return { setActive(value) { gaze.active = value; }, point(value) { gaze.points.push(value && plain(value)); }, destroy() { gaze.destroyed = true; } };
+  } } : undefined;
+  const context = vm.createContext({ document, ForgePetGaze }); vm.runInContext(source, context);
   const calls = [], notices = [], configured = []; let current = initial; const events = new Set();
   const bridge = {
     petState(...args) { calls.push(['petState', plain(args)]); return methods.petState ? methods.petState() : current; },
@@ -74,7 +79,7 @@ function fixture({ initial = state(), methods = {}, reduced = false, composerTop
     onEvent(listener) { events.add(listener); return () => events.delete(listener); },
   };
   const ui = context.ForgePetOverlay.create({ document, bridge, notice: (...args) => notices.push(args), onConfigure: () => configured.push(true) });
-  return { ui, document, view, motion, observers, frames, calls, notices, configured, events, node: id => document.elements.get(id),
+  return { ui, document, view, motion, observers, frames, calls, notices, configured, events, gaze, node: id => document.elements.get(id),
     flushFrames() { const batch = [...frames.values()]; frames.clear(); for (const callback of batch) callback(); },
     emit(event) { for (const listener of events) listener(event); },
     pointer(name, x, y, extra = {}) { document.elements.get('pet-overlay-video').emit(name, { button: 0, pointerId: 8, clientX: x, clientY: y, ...extra }); },
@@ -226,4 +231,45 @@ test('untrusted URL schemes are not loaded and teardown releases media, events a
   assert.equal(late.events.size, 0); assert.equal(late.node('pet-overlay').removed, true); assert.equal(late.node('pet-overlay-menu').removed, true);
   assert.equal(late.node('pet-overlay-video').src, '');
   assert.equal(late.document.listeners.get('keydown').size, 0); assert.equal(late.view.listeners.get('resize').size, 0);
+});
+
+test('idle eye following receives in-window and desktop cursor positions and pauses for every action or task', async () => {
+  const f = fixture({ gazeEnabled: true }); await f.ui.ready;
+  assert.equal(f.ui.snapshot().followCursor, true); assert.equal(f.gaze.active, true);
+  assert.equal(f.gaze.options.canvas, f.node('pet-overlay-gaze'));
+  f.document.emit('pointermove', { clientX: 10, clientY: 20, pointerType: 'mouse' });
+  assert.deepEqual(f.gaze.points.at(-1), { x: 10, y: 20 });
+  f.document.emit('pointermove', { clientX: 30, clientY: 40, pointerType: 'touch' });
+  assert.equal(f.gaze.points.length, 1);
+  f.emit({ type: 'pet-pointer', x: -300, y: 1200 });
+  assert.equal(f.gaze.points.at(-1).x, -300); assert.equal(f.gaze.points.at(-1).y, 1200);
+  f.pointer('pointerdown', 800, 600); assert.equal(f.gaze.active, false);
+  f.pointer('pointercancel', 800, 600); assert.equal(f.gaze.active, true);
+  f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600); assert.equal(f.gaze.active, false);
+  f.node('pet-overlay-video').emit('ended'); assert.equal(f.gaze.active, true);
+  f.emit({ type: 'run-start' }); assert.equal(f.gaze.active, false);
+  f.emit({ type: 'pet-state', pet: state({ workStatus: false }) }); assert.equal(f.gaze.active, false, 'Disabling task animations does not pretend a running task is idle');
+  f.emit({ type: 'run-end', status: 'stopped' }); assert.equal(f.gaze.active, true);
+  f.emit({ type: 'tool-start', toolCallId: 'a' }); assert.equal(f.gaze.active, false);
+  f.emit({ type: 'tool-result', toolCallId: 'a' }); assert.equal(f.gaze.active, true);
+  f.emit({ type: 'approval-request', id: 'a' }); assert.equal(f.gaze.active, false);
+  f.emit({ type: 'approval-resolved', id: 'a' }); assert.equal(f.gaze.active, true);
+  f.view.emit('blur'); assert.equal(f.gaze.active, false); f.view.emit('focus'); assert.equal(f.gaze.active, true);
+  f.document.hidden = true; f.document.emit('visibilitychange'); assert.equal(f.gaze.active, false);
+  f.document.hidden = false; f.document.emit('visibilitychange'); assert.equal(f.gaze.active, true);
+  f.motion.matches = true; f.motion.emit('change'); assert.equal(f.gaze.active, false);
+  f.motion.matches = false; f.motion.emit('change'); assert.equal(f.gaze.active, true);
+  f.emit({ type: 'pet-state', pet: state({ followCursor: false }) }); assert.equal(f.gaze.active, false);
+  f.emit({ type: 'pet-state', pet: state() }); assert.equal(f.gaze.active, true);
+  f.node('pet-overlay-video').emit('error'); assert.equal(f.gaze.active, false);
+  f.ui.destroy(); assert.equal(f.gaze.destroyed, true);
+  assert.equal(f.document.listeners.get('pointermove').size, 0); assert.equal(f.document.listeners.get('mouseleave').size, 0);
+  assert.equal(f.view.listeners.get('blur').size, 0); assert.equal(f.view.listeners.get('focus').size, 0);
+});
+
+test('imported pets never use the bundled character eye geometry and a hidden pet does no gaze work', async () => {
+  const imported = state(); imported.packId = imported.packs[0].id = 'local-123456789012345678901234';
+  const f = fixture({ initial: imported, gazeEnabled: true }); await f.ui.ready; assert.equal(f.gaze.active, false);
+  f.emit({ type: 'pet-state', pet: state() }); assert.equal(f.gaze.active, true);
+  f.emit({ type: 'pet-state', pet: state({ enabled: false }) }); assert.equal(f.gaze.active, false);
 });

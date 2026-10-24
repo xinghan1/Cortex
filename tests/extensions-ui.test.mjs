@@ -26,20 +26,18 @@ class Element {
   get text() { return this.textContent + this.children.map(node => node.text).join(' '); }
 }
 function deferred() { let resolve, reject; const promise = new Promise((pass, fail) => { resolve = pass; reject = fail; }); return { promise, resolve, reject }; }
-const petState = overrides => ({ enabled: true, size: 220, x: 1, y: 1, workStatus: true, packId: 'dsh-pet',
-  packs: [{ id: 'dsh-pet', name: '帝师猴', license: 'GPL-3.0', animations: {} }], ...overrides });
 const plugin = overrides => ({ id: 'hello-plugin', name: '示例 <script>', version: '1.0.0', description: '<img src=x onerror=alert(1)>',
   enabled: false, permissions: ['project.read', 'notifications'], commands: [{ id: 'hello', title: '检查项目' }], ...overrides });
-const state = overrides => ({ plugins: [plugin()], pet: petState(), ...overrides });
-function fixture(methods = {}, initial = state(), pet) {
+const state = overrides => ({ plugins: [plugin()], ...overrides });
+function fixture(methods = {}, initial = state()) {
   const document = { elements: new Map(), createElement(tag) { return new Element(tag, document); } }; document.body = new Element('body', document);
   const context = vm.createContext({ document }); vm.runInContext(source, context);
   const calls = [], notices = []; const subscribers = new Set();
   const bridge = { onEvent(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } };
-  for (const name of ['getExtensions', 'installExtension', 'setExtensionEnabled', 'removeExtension', 'openExtension', 'runExtensionCommand', 'createExtensionExample', 'openExtensionGuide', 'petImport', 'setPet']) {
+  for (const name of ['getExtensions', 'installExtension', 'setExtensionEnabled', 'removeExtension', 'openExtension', 'runExtensionCommand', 'createExtensionExample', 'openExtensionGuide']) {
     bridge[name] = (...args) => { calls.push([name, plain(args)]); return methods[name] ? methods[name](...args) : initial; };
   }
-  const ui = context.ForgeExtensions.create({ document, bridge, pet, notice: (...args) => notices.push(args) });
+  const ui = context.ForgeExtensions.create({ document, bridge, notice: (...args) => notices.push(args) });
   const find = (root, predicate) => predicate(root) ? root : root.children.map(child => find(child, predicate)).find(Boolean);
   return { ui, calls, notices, subscribers, node: id => document.elements.get(id),
     action: (name, id = 'hello-plugin') => find(document.elements.get('extensions-list'), item => item.dataset.action === name && find(document.elements.get('extensions-list'), row => row.dataset.extensionId === id)?.children.some(child => find(child, value => value === item))),
@@ -54,6 +52,8 @@ test('local plugin manager reads state without enabling code and treats plugin l
   assert.deepEqual(f.calls, [['getExtensions', []]]);
   assert.equal(f.node('extensions-dialog').open, false);
   f.ui.open(); assert.equal(f.node('extensions-dialog').open, true);
+  assert.equal(f.node('extensions-title').textContent, '插件');
+  assert.equal(f.node('extensions-pet-enabled'), undefined); assert.equal(f.node('pet-settings-dialog'), undefined);
   assert.match(f.text(), /示例 <script>/u); assert.match(f.text(), /<img src=x onerror=alert\(1\)>/u);
   assert.match(f.text(), /读取项目文件、显示通知/u); assert.match(f.text(), /未启用/u);
   assert.equal(f.action('open').disabled, true); assert.equal(f.command('hello').disabled, true);
@@ -90,14 +90,15 @@ test('removing a plugin needs its own explicit confirmation and retains the orig
   assert.match(f.node('extensions-empty').textContent, /尚未安装/u);
 });
 
-test('new global plugin events supersede old reads and pet-only events do not discard the plugin list', async () => {
+test('new global plugin events supersede old reads and independent pet events never affect plugin state', async () => {
   const read = deferred(), f = fixture({ getExtensions: () => read.promise });
   f.emit({ type: 'extensions', extensions: state({ plugins: [plugin({ enabled: true })] }) });
   read.resolve(state()); await f.ui.ready; assert.equal(f.command('hello').disabled, false);
   const otherRead = deferred(), other = fixture({ getExtensions: () => otherRead.promise });
-  other.emit({ type: 'pet-state', pet: petState({ size: 400 }) });
+  other.emit({ type: 'pet-state', pet: { enabled: false, size: 400, packs: [] } });
   otherRead.resolve(state()); await other.ui.ready;
-  assert.match(other.text(), /示例/u); assert.equal(other.node('extensions-pet-size').value, '400');
+  assert.match(other.text(), /示例/u); assert.equal(other.node('extensions-pet-size'), undefined);
+  assert.deepEqual(other.calls, [['getExtensions', []]]);
 });
 
 test('developer example and guide use native actions and never implicitly install or enable a plugin', async () => {
@@ -106,19 +107,6 @@ test('developer example and guide use native actions and never implicitly instal
   assert.deepEqual(f.calls.slice(1), [['createExtensionExample', []], ['openExtensionGuide', []]]);
   assert.match(f.notices[0][0], /D:\\开发\\hello-plugin/u);
   assert.equal(f.calls.some(([name]) => name === 'installExtension'), false);
-});
-
-test('pet settings persist explicit changes, commit range only on change and import with a native picker', async () => {
-  const changes = [], f = fixture({ setPet: patch => { changes.push(plain(patch)); return petState(patch); }, petImport: () => petState({ packId: 'imported', packs: [{ id: 'imported', name: '新宠物' }] }) }); await f.ui.ready;
-  f.ui.open({ section: 'pet' }); assert.equal(f.node('extensions-pet-section').scrolled, true);
-  f.node('extensions-pet-enabled').checked = false; await f.node('extensions-pet-enabled').emit('change');
-  f.node('extensions-pet-work').checked = false; await f.node('extensions-pet-work').emit('change');
-  f.node('extensions-pet-size').value = '300'; await f.node('extensions-pet-size').emit('input');
-  assert.equal(changes.length, 2); assert.equal(f.node('extensions-pet-size-value').textContent, '300 px');
-  await f.node('extensions-pet-size').emit('change');
-  assert.deepEqual(changes, [{ enabled: false }, { workStatus: false }, { size: 300 }]);
-  await f.node('extensions-pet-import').click(); assert.deepEqual(f.calls.at(-1), ['petImport', []]);
-  assert.equal(f.node('extensions-pet-pack').value, 'imported');
 });
 
 test('failed mutations leave the plugin state usable and disposing ignores in-flight results and unsubscribes', async () => {
@@ -133,18 +121,16 @@ test('failed mutations leave the plugin state usable and disposing ignores in-fl
   assert.match(late.text(), /示例/u);
 });
 
-test('a damaged plugin registry remains visibly read-only across reopening and pet changes until a valid snapshot clears it', async () => {
+test('a damaged plugin registry remains visibly read-only across reopening until a valid snapshot clears it', async () => {
   const message = '插件列表文件已损坏，已保留原文件。插件管理暂为只读，请修复后重启。';
-  const f = fixture({ setPet: patch => petState(patch) }, state({ plugins: [], pluginError: message })); await f.ui.ready;
+  const f = fixture({}, state({ plugins: [], pluginError: message })); await f.ui.ready;
   assert.equal(f.node('extensions-error').hidden, false);
   assert.equal(f.node('extensions-error').textContent, message);
-  assert.equal(f.node('extensions-pet-section').hidden, false);
-  assert.equal(f.node('extensions-pet-enabled').disabled, false, 'Broken plugin storage does not block pet settings');
-  f.ui.open(); await f.node('extensions-close').click(); f.ui.open({ section: 'pet' });
+  f.ui.open(); await f.node('extensions-close').click(); f.ui.open();
   assert.equal(f.node('extensions-error').textContent, message);
-  f.node('extensions-pet-enabled').checked = false; await f.node('extensions-pet-enabled').emit('change');
+  f.emit({ type: 'pet-state', pet: { packs: [], enabled: false } });
   assert.equal(f.node('extensions-error').textContent, message);
   assert.equal(f.node('extensions-error').hidden, false);
-  f.ui.update({ plugins: [], pet: petState(), pluginError: null });
+  f.ui.update({ plugins: [], pluginError: null });
   assert.equal(f.node('extensions-error').hidden, true); assert.equal(f.node('extensions-error').textContent, '');
 });

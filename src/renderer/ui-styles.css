@@ -403,8 +403,8 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .code-diff-remove :is(.code-diff-sign, .code-diff-line-number) { color: var(--ui-bad); }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-add .code-diff-line-number) { box-shadow: inset 3px 0 0 var(--ui-good); }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.code-diff-remove .code-diff-line-number) { box-shadow: inset 3px 0 0 var(--ui-bad); }
-html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) .tool-operation-group:is([data-status='failed'], [data-status='denied'], [data-status='unknown']) > summary .tool-operation-group-status { color: var(--ui-bad) !important; }
-html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.tool-card.running .tool-badge, .run-status.running, .tool-operation-group[data-status='running'] > summary .tool-operation-group-status) { color: var(--ui-accent) !important; }
+html[data-ui-style='white'] .tool-operation-status-count[data-status='running'] { color: #1766ba; }
+html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.tool-card.running .tool-badge, .run-status.running) { color: var(--ui-accent) !important; }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.project-run-badge, .temporary-indicator) { color: var(--ui-accent); background: var(--ui-selected); border-color: var(--ui-border); }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.project-run-badge[data-status='approval'], .deepseek-account-availability[data-available='false']) { color: var(--ui-warning); background: var(--ui-warning-bg); }
 html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='industrial']) :is(.permission-danger-icon, .permission-danger-emphasis, .model-option-warning) { color: var(--ui-warning); }

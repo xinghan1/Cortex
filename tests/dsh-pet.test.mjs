@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const { DshPetStore, PET_LIMITS, parseJsonc } = require('../src/core/dsh-pet.cjs');
 const root = path.resolve('tests', '.tmp');
 const sample = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('test-webm-header'), Buffer.alloc(64)]);
-const initial = { enabled: true, size: 220, x: 1, y: 1, workStatus: true, packId: 'dsh-pet' };
+const initial = { enabled: true, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: 'dsh-pet' };
 const config = () => ({ pets: [{ name: '测试鲸鱼' }], animations: { idle: ['呼吸'], clicks: ['开心'], events: { workStatus: ['思考', ['工作', '敲键盘'], '归档', '等待', '成功', '出错'] } } });
 
 async function fixture(t) {
@@ -41,6 +41,7 @@ test('built-in pet is visible by default, local, cloned and requires no writable
   await store.init();
   const { packs, ...settings } = store.snapshot();
   assert.deepEqual(settings, initial);
+  assert.equal(store.cursorTrackingEnabled(), true);
   assert.equal(packs.length, 1);
   assert.equal(packs[0].id, 'dsh-pet');
   assert.equal(packs[0].license, 'MIT');
@@ -94,11 +95,30 @@ test('settings persist atomically, merge concurrent patches and leave model acco
 
 test('strict pet patches reject unknown fields, nonfinite positions, malformed types and unavailable packs', async t => {
   const { dataDir, store } = await fixture(t);
+  for (const followCursor of ['true', 1, null]) await assert.rejects(store.set({ followCursor }), hasCode('PET_INVALID_SETTINGS'));
   for (const patch of [null, [], {}, { command: 'start executable' }, { enabled: 1 }, { workStatus: 'true' }, { size: 79 }, { size: 601 }, { size: 220.1 }, { x: -1 }, { x: NaN }, { y: Infinity }, { y: 1.1 }, { packId: '../escape' }, { packId: 'local-012345678901234567890123' }]) await assert.rejects(store.set(patch), hasCode('PET_INVALID_SETTINGS'));
   const { packs, ...state } = store.snapshot();
   assert.deepEqual(state, initial);
   await assert.rejects(fs.stat(dataDir), { code: 'ENOENT' });
   assert.equal((await store.set({ size: 80, x: 0, y: 1 })).size, 80);
+});
+
+test('legacy pet preferences retain position and switches while idle eye tracking defaults on and persists independently', async t => {
+  const { dataDir, store } = await fixture(t);
+  await fs.mkdir(dataDir);
+  const legacy = { version: 1, enabled: false, size: 310, x: .2, y: .7, workStatus: false, packId: 'dsh-pet' };
+  const filename = path.join(dataDir, 'pet-settings.json');
+  const contents = JSON.stringify(legacy);
+  await fs.writeFile(filename, contents);
+  await store.init();
+  const { packs, ...settings } = store.snapshot();
+  const { version, ...legacySettings } = legacy;
+  assert.deepEqual(settings, { ...legacySettings, followCursor: true });
+  assert.equal(await fs.readFile(filename, 'utf8'), contents, 'Reading an old preference file does not rewrite it');
+  await store.set({ followCursor: false });
+  assert.equal(store.cursorTrackingEnabled(), false);
+  const { packs: reopenedPacks, ...reopened } = (await new DshPetStore({ dataDir }).init()).snapshot();
+  assert.deepEqual(reopened, { ...legacySettings, followCursor: false });
 });
 
 test('corrupt preferences fall back safely without overwriting the original file', async t => {

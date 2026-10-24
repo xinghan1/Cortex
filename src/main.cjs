@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, nativeImage, nativeTheme, session: electronSession } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, net, nativeImage, nativeTheme, screen, session: electronSession } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID, createHash } = require('node:crypto');
@@ -70,7 +70,7 @@ const rendererErrors = [];
 let sharedQueue = Promise.resolve(), sharedMutations = 0, quitting = false;
 let appUpdater, updateEnabled = false, updateInstalling = false, updateInstallPromise = null;
 let pluginManager, pluginRuntime, dshPet, pluginProjectAccess;
-let updateTimer, updateInterval;
+let updateTimer, updateInterval, petPointerTimer;
 let launchInstaller = launchUpdateInstaller;
 let quitForUpdate = () => { quitting = true; app.quit(); };
 function appUpdateSnapshot() {
@@ -135,7 +135,7 @@ function startUpdateChecks() {
   updateTimer = setTimeout(check, 5000); updateTimer.unref();
   updateInterval = setInterval(check, 4 * 60 * 60 * 1000); updateInterval.unref();
 }
-function extensionsSnapshot() { return { plugins: pluginManager?.list() || [], pluginError: pluginManager?.storageError || null, pet: dshPet?.snapshot() || null }; }
+function extensionsSnapshot() { return { plugins: pluginManager?.list() || [], pluginError: pluginManager?.storageError || null }; }
 function publishExtensions() {
   const extensions = extensionsSnapshot();
   for (const host of windows.values()) if (!host.win.isDestroyed()) host.win.webContents.send('forge:event', { type: 'extensions', extensions });
@@ -144,6 +144,25 @@ function publishPet() {
   const pet = dshPet.snapshot();
   for (const host of windows.values()) if (!host.win.isDestroyed()) host.win.webContents.send('forge:event', { type: 'pet-state', pet });
   return pet;
+}
+function startPetPointerTracking() {
+  const previous = new WeakMap();
+  petPointerTimer = setInterval(() => {
+    if (quitting) return;
+    if (!dshPet.cursorTrackingEnabled()) return;
+    for (const { win: target } of windows.values()) {
+      if (target.isDestroyed() || !target.isVisible() || target.isMinimized() || !target.isFocused() || target.webContents.isDestroyed()) continue;
+      const cursor = screen.getCursorScreenPoint(), bounds = target.getContentBounds(), zoom = target.webContents.getZoomFactor();
+      const dipX = cursor.x - bounds.x, dipY = cursor.y - bounds.y;
+      const x = dipX / zoom, y = dipY / zoom, last = previous.get(target);
+      const sentAt = Date.now();
+      if (last?.x === x && last?.y === y && sentAt - last.sentAt < 250) continue;
+      previous.set(target, { x, y, sentAt });
+      target.webContents.send('forge:event', { type: 'pet-pointer', x, y,
+        inside: dipX >= 0 && dipY >= 0 && dipX < bounds.width && dipY < bounds.height });
+    }
+  }, 50);
+  petPointerTimer.unref();
 }
 function pluginOwnerContext({ ownerWindow }) {
   const host = ownerWindow && !ownerWindow.isDestroyed() && windows.get(ownerWindow.webContents.id);
@@ -1233,9 +1252,11 @@ function buildHandlers() {
           message: `安装“${manifest.name}” ${manifest.version}？`,
           detail: `申请权限：\n${manifest.permissions.map(value => '• ' + labels[value]).join('\n') || '无需项目权限'}\n\n安装后可在插件列表中启用和打开。`,
           buttons: ['取消', '安装'], defaultId: 0, cancelId: 0, noLink: true });
-        if (decision.response === 1 && !quitting && !win.isDestroyed()) await pluginManager.install(selected.filePaths[0]);
+        if (decision.response !== 1 || quitting || win.isDestroyed()) return null;
+        await pluginManager.install(selected.filePaths[0]);
+        return extensionsSnapshot();
       }
-      return extensionsSnapshot();
+      return null;
     },
     setExtensionEnabled: async arg => {
       if (!arg || Object.keys(arg).some(key => !['id', 'enabled'].includes(key))) throw new Error('插件参数无效。');
@@ -1269,7 +1290,8 @@ function buildHandlers() {
     petImport: async () => {
       const selected = await dialog.showOpenDialog(win, { title: '导入 dsh-pet 宠物配置',
         properties: ['openFile'], filters: [{ name: 'dsh-pet 配置', extensions: ['json', 'jsonc'] }] });
-      if (!selected.canceled && selected.filePaths[0]) await dshPet.importFile(selected.filePaths[0]);
+      if (selected.canceled || !selected.filePaths[0]) return null;
+      await dshPet.importFile(selected.filePaths[0]);
       return publishPet();
     },
     getState: state,
@@ -2062,6 +2084,7 @@ async function boot() {
   win = primaryContext.win;
   ({ setWorkspace, createSession, broadcastState } = primaryContext);
   startUpdateChecks();
+  startPetPointerTracking();
   if (smoke) await smokeTest();
 }
 
@@ -2446,6 +2469,7 @@ else {
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => {
   clearTimeout(updateTimer); clearInterval(updateInterval);
+  clearInterval(petPointerTimer);
   pluginRuntime?.dispose();
   void appUpdater?.dispose();
 });

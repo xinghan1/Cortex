@@ -73,8 +73,8 @@ dialog.app-update-dialog {
 
 .app-update-dialog .dialog-header { gap: 18px; }
 .app-update-dialog .dialog-header h2 { margin: 0; font-size: 20px; }
-.app-update-dialog-status { min-height: 3em; margin: 20px 0 14px; line-height: 1.65; }
-.app-update-dialog-percent { display: block; margin-bottom: 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.app-update-dialog-status { margin: 20px 0 14px; line-height: 1.65; }
+.app-update-dialog-percent { display: block; margin: 20px 0 8px; text-align: right; font-variant-numeric: tabular-nums; }
 .app-update-dialog-progress {
   display: block;
   width: 100%;

@@ -5,7 +5,7 @@
   function create({ bridge, button, label, progress, notice = () => {}, isBusy = () => false }) {
     const ring = button.querySelector?.('.app-update-ring-value');
     let snapshot = { enabled: false, status: 'idle', currentVersion: '', version: '', progress: 0, error: '' };
-    let pending = null, disposed = false, eventRevision = 0, actionError = '';
+    let pending = null, disposed = false, eventRevision = 0, actionError = '', dismissActionNotice = null;
     const cleanText = (value, limit = 500) => typeof value === 'string' ? value.slice(0, limit) : '';
     const errorReason = value => cleanText(typeof value === 'string' ? value : value?.message)
       .replace(/^Error invoking remote method ['"]forge:(?:getAppUpdate|checkAppUpdate|downloadAppUpdate|installAppUpdate)['"]:\s*(?:Error:\s*)?/u, '').trim();
@@ -34,7 +34,6 @@
       };
       dialog = el('dialog', 'app-update-dialog', 'settings-dialog app-update-dialog');
       dialog.setAttribute('aria-labelledby', 'app-update-dialog-title');
-      dialog.setAttribute('aria-describedby', 'app-update-dialog-status');
       const header = el('div', '', 'dialog-header');
       dialogTitle = el('h2', 'app-update-dialog-title');
       const close = el('button', 'app-update-dialog-close', 'icon-button', '×');
@@ -43,7 +42,7 @@
       dialogStatus = el('p', 'app-update-dialog-status', 'app-update-dialog-status');
       dialogStatus.setAttribute('role', 'status'); dialogStatus.setAttribute('aria-live', 'polite');
       dialogPercent = el('span', 'app-update-dialog-percent', 'app-update-dialog-percent');
-      dialogPercent.setAttribute('aria-hidden', 'true');
+      dialogPercent.setAttribute('role', 'status'); dialogPercent.setAttribute('aria-live', 'polite');
       dialogProgress = el('progress', 'app-update-dialog-progress', 'app-update-dialog-progress');
       dialogProgress.max = 100; dialogProgress.setAttribute('aria-label', '更新下载进度');
       dialogProgress.setAttribute('role', 'progressbar');
@@ -78,7 +77,7 @@
     }
     function renderDialog() {
       if (!dialog) return;
-      const { status, version, totalBytes, downloadedBytes } = snapshot;
+      const { status, totalBytes, downloadedBytes } = snapshot;
       const failure = !pending && (actionError || snapshot.error);
       const downloading = pending === 'download' || status === 'downloading';
       const installing = pending === 'install' || status === 'installing';
@@ -88,10 +87,10 @@
       dialog.dataset.status = failure && !complete ? 'error' : installing ? 'installing' : downloading ? 'downloading' : status;
       dialogTitle.textContent = installing ? '正在重启更新' : complete ? '更新已准备就绪'
         : failure ? '下载更新失败' : downloading ? '正在下载更新' : '下载更新';
-      dialogStatus.textContent = installing ? '正在启动更新安装程序，请稍候。'
-        : complete ? isBusy() ? '请等待当前任务或文件操作结束，再重启更新。' : '校验完成。点击“重启更新”安装新版。'
-        : failure ? '下载未完成，可以重试或稍后继续。'
-        : `${version ? '新版 v' + version + ' · ' : ''}${percent === null ? '正在准备下载…' : '正在下载 ' + percent + '%'}，可收起窗口在后台继续。`;
+      dialogStatus.textContent = complete && isBusy() ? '请等待当前任务或文件操作结束，再重启更新。' : '';
+      dialogStatus.hidden = !dialogStatus.textContent;
+      if (dialogStatus.hidden) dialog.removeAttribute('aria-describedby');
+      else dialog.setAttribute('aria-describedby', 'app-update-dialog-status');
       dialogPercent.textContent = complete ? '100%' : percent === null ? '等待下载进度…' : `${percent}%`;
       dialogPercent.hidden = !!failure || installing;
       dialogProgress.hidden = !!failure || installing;
@@ -149,14 +148,17 @@
         : status === 'current' ? `当前已是最新版本${currentVersion ? ' v' + currentVersion : ''}。`
         : '暂未发现可用更新。');
     }
+    function reportActionError(message) {
+      const dismiss = notice(message, true);
+      dismissActionNotice = typeof dismiss === 'function' ? dismiss : null;
+    }
     async function invoke(action, manual = false) {
       if (disposed || pending) return;
+      dismissActionNotice?.(); dismissActionNotice = null;
       if (action === 'install' && isBusy()) { notice('请等待当前任务或文件操作结束，再重启更新。'); render(); return; }
       const method = { check: 'checkAppUpdate', download: 'downloadAppUpdate', install: 'installAppUpdate' }[action];
       const revision = eventRevision;
-      const retryingDownload = action === 'download' && snapshot.status === 'error';
       actionError = ''; pending = action; render();
-      if (retryingDownload) notice('正在重新下载更新…');
       try {
         if (typeof bridge?.[method] !== 'function') throw new Error('当前版本暂不支持应用内更新。');
         const value = await bridge[method]();
@@ -165,12 +167,11 @@
         // read must not rewind a download that has already advanced.
         if (eventRevision === revision) update(value);
         if (manual) reportCheck();
-        else if (snapshot.error) notice(`${action === 'install' ? '重启更新失败' : '下载更新失败'}：${snapshot.error}`, true);
-        else if (action === 'download' && snapshot.status === 'downloaded') notice('更新已下载，点击“帮助”右侧的下载图标重启更新。');
+        else if (snapshot.error) reportActionError(`${action === 'install' ? '重启更新失败' : '下载更新失败'}：${snapshot.error}`);
       } catch (error) {
         if (!disposed) {
           actionError = errorReason(error) || '请稍后重试。';
-          notice(`${action === 'install' ? '重启更新失败' : action === 'download' ? '下载更新失败' : '检查更新失败'}：${actionError}`, true);
+          reportActionError(`${action === 'install' ? '重启更新失败' : action === 'download' ? '下载更新失败' : '检查更新失败'}：${actionError}`);
         }
       } finally {
         pending = null;

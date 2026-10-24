@@ -15,10 +15,10 @@
 .tool-operation-group-count { color: #9baec9; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tool-operation-group-status { color: #9baec9; font-size: 10px; font-variant-numeric: tabular-nums; }
 .tool-operation-group-status[hidden] { display: none; }
-.tool-operation-group[data-status='running'] > .tool-operation-group-summary .tool-operation-group-status { color: #b7d2ff; }
-.tool-operation-group[data-status='failed'] > .tool-operation-group-summary .tool-operation-group-status,
-.tool-operation-group[data-status='denied'] > .tool-operation-group-summary .tool-operation-group-status,
-.tool-operation-group[data-status='unknown'] > .tool-operation-group-summary .tool-operation-group-status { color: #e8b9c6; }
+.tool-operation-status-count[data-status='running'] { color: var(--ui-info, #8abaff); }
+.tool-operation-status-count[data-status='completed'] { color: var(--ui-good, #79d99b); }
+.tool-operation-status-count[data-status='failed'] { color: var(--ui-bad, #ff9197); }
+.tool-operation-status-count:is([data-status='denied'], [data-status='stopped'], [data-status='unknown']) { color: var(--ui-muted, #a6adba); }
 .tool-operation-group-chevron { flex: 0 0 auto; width: 5px; height: 5px; margin: 0 5px 0 3px; border-top: 1px solid currentColor; border-right: 1px solid currentColor; transform: rotate(45deg); opacity: .65; transition: transform 230ms ease; }
 .tool-operation-group[open] > .tool-operation-group-summary .tool-operation-group-chevron { transform: rotate(135deg) translate(-1px, -1px); }
 .tool-operation-group::details-content { block-size: 0; overflow: clip; opacity: 0; interpolate-size: allow-keywords; transition: block-size 230ms ease, content-visibility 230ms allow-discrete, opacity 180ms ease; }

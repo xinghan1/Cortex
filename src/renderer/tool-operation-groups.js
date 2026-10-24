@@ -47,8 +47,13 @@
     state.count.textContent = `${members.length} ${description.readOnly ? '次' : '项操作'}`;
     const summaries = [['running', '进行中'], ['completed', '已完成'], ['failed', '未完成'],
       ['denied', '未执行'], ['stopped', '已停止'], ['unknown', '未返回']];
-    state.status.textContent = summaries.filter(([key]) => counts[key])
-      .map(([key, label]) => `${counts[key]} ${label}`).join(' · ');
+    state.status.textContent = '';
+    for (const [key, label] of summaries.filter(([key]) => counts[key])) {
+      if (state.status.children.length) state.status.append(node('span', 'tool-operation-status-separator', ' · '));
+      const item = node('span', 'tool-operation-status-count', `${counts[key]} ${label}`);
+      item.dataset.status = key;
+      state.status.append(item);
+    }
     state.status.hidden = counts.completed === members.length;
     group.dataset.status = status;
     group.dataset.count = String(members.length);

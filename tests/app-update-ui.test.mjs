@@ -33,17 +33,21 @@ function fixture(methods = {}, initialValue = initial) {
   const context = vm.createContext({ document }); vm.runInContext(source, context);
   const button = new Element('button', document), label = new Element(), progress = new Element(), ring = new Element(), notices = [], calls = [];
   button.querySelector = selector => selector === '.app-update-ring-value' ? ring : null;
-  let callback, busy = false, unsubscribed = false;
+  let callback, busy = false, unsubscribed = false, currentNotice = null;
+  const showNotice = (...args) => {
+    notices.push(args); currentNotice = args;
+    return () => { if (currentNotice === args) currentNotice = null; };
+  };
   const bridge = { onEvent: listener => { callback = listener; return () => { unsubscribed = true; }; } };
   for (const method of ['getAppUpdate', 'checkAppUpdate', 'downloadAppUpdate', 'installAppUpdate']) {
     bridge[method] = (...args) => { calls.push({ method, args }); return methods[method]?.(...args) ?? initialValue; };
   }
-  const ui = context.ForgeAppUpdate.create({ bridge, button, label, progress, notice: (...args) => notices.push(args), isBusy: () => busy });
+  const ui = context.ForgeAppUpdate.create({ bridge, button, label, progress, notice: showNotice, isBusy: () => busy });
   return { ui, button, label, progress, ring, notices, calls, node: id => document.elements.get(id),
     emit: update => callback({ type: 'app-update', update, workspaceId: 'another-project' }),
     emitOther: event => callback(event),
     setBusy(value) { busy = value; ui.sync(); },
-    get unsubscribed() { return unsubscribed; },
+    noticeOther: showNotice, get currentNotice() { return currentNotice; }, get unsubscribed() { return unsubscribed; },
   };
 }
 
@@ -155,7 +159,7 @@ test('preload update methods discard caller-supplied paths and URLs at the IPC b
   }
 });
 
-test('download errors show the readable reason and retry progress replaces the old error before success feedback', async () => {
+test('download errors stay readable while retry and completion use dialog progress without duplicate notices', async () => {
   const retry = deferred(); let attempts = 0;
   const f = fixture({ downloadAppUpdate: () => {
     if (++attempts === 1) throw new Error("Error invoking remote method 'forge:downloadAppUpdate': Error: 下载中断，请重试。");
@@ -164,11 +168,15 @@ test('download errors show the readable reason and retry progress replaces the o
   await f.ui.ready; f.emit({ ...initial, status: 'available', version: '0.18.3' });
   await f.button.click();
   assert.equal(f.notices.at(-1)[0], '下载更新失败：下载中断，请重试。'); assert.equal(f.notices.at(-1)[1], true);
+  assert.ok(f.currentNotice);
   f.emit({ ...initial, status: 'error', version: '0.18.3', error: '下载中断，请重试。' });
+  const noticeCount = f.notices.length;
   const downloading = f.button.click();
-  assert.equal(f.notices.at(-1)[0], '正在重新下载更新…'); assert.equal(f.notices.at(-1)[1], undefined);
+  assert.equal(f.notices.length, noticeCount);
+  assert.equal(f.currentNotice, null, 'Retry dismisses only its own stale update error');
+  assert.equal(f.node('app-update-dialog-error').hidden, true);
   retry.resolve({ ...initial, status: 'downloaded', version: '0.18.3', progress: 100 }); await downloading;
-  assert.equal(f.notices.at(-1)[0], '更新已下载，点击“帮助”右侧的下载图标重启更新。');
+  assert.equal(f.notices.length, noticeCount);
   assert.equal(f.label.textContent, '重启更新');
 });
 
@@ -184,10 +192,12 @@ test('clicking download opens a modal whose progress stays live while hidden and
   assert.equal(f.node('app-update-dialog-primary').disabled, true);
   f.emit({ ...initial, status: 'downloading', version: '0.19.3', progress: 25, downloadedBytes: 2 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
   assert.equal(f.node('app-update-dialog-title').textContent, '正在下载更新');
-  assert.match(f.node('app-update-dialog-status').textContent, /25%/u);
+  assert.equal(f.node('app-update-dialog-status').hidden, true);
+  assert.equal(f.node('app-update-dialog-status').textContent, '');
+  assert.equal(f.node('app-update-dialog-percent').textContent, '25%');
   assert.equal(f.node('app-update-dialog-progress').attributes['aria-valuenow'], '25');
   assert.equal(f.node('app-update-dialog-progress').attributes.role, 'progressbar');
-  assert.equal(f.node('app-update-dialog-status').attributes['aria-live'], 'polite');
+  assert.equal(f.node('app-update-dialog-percent').attributes['aria-live'], 'polite');
   assert.equal(f.node('app-update-dialog-bytes').textContent, '已下载 2 MB / 总大小 8 MB');
   await f.node('app-update-dialog-background').click();
   assert.equal(dialog.open, false);
@@ -203,7 +213,8 @@ test('clicking download opens a modal whose progress stays live while hidden and
   download.resolve({ ...initial, status: 'available', version: '0.19.3' }); await downloading;
   assert.equal(dialog.open, false, 'Finishing a background download does not reopen it');
   assert.equal(f.node('app-update-dialog-title').textContent, '更新已准备就绪');
-  assert.match(f.node('app-update-dialog-status').textContent, /校验完成/u);
+  assert.equal(f.node('app-update-dialog-status').hidden, true);
+  assert.equal(f.node('app-update-dialog-status').textContent, '');
   assert.equal(f.node('app-update-dialog-primary').textContent, '重启更新');
   assert.equal(f.calls.filter(call => call.method === 'installAppUpdate').length, 0);
 });
@@ -215,7 +226,12 @@ test('the dialog restart action respects busy protection, prevents duplicate ins
   await f.ui.ready; f.emit({ ...initial, status: 'available', version: '0.19.3' }); await f.button.click();
   const primary = f.node('app-update-dialog-primary');
   f.setBusy(true); assert.equal(primary.disabled, true); await primary.click(); assert.equal(attempts, 0);
+  assert.equal(f.node('app-update-dialog-status').hidden, false);
+  assert.match(f.node('app-update-dialog-status').textContent, /请等待当前任务/u);
+  assert.equal(f.node('app-update-dialog').attributes['aria-describedby'], 'app-update-dialog-status');
   f.setBusy(false); await primary.click();
+  assert.equal(f.node('app-update-dialog-status').hidden, true);
+  assert.equal(f.node('app-update-dialog').attributes['aria-describedby'], undefined);
   assert.equal(attempts, 1); assert.equal(primary.disabled, false); assert.equal(primary.textContent, '重启更新');
   assert.equal(f.node('app-update-dialog-error').textContent, '安装程序暂不可用');
   const installing = primary.click(); await primary.click();
@@ -235,8 +251,11 @@ test('dialog download errors stay readable and retry through the same guarded do
   assert.equal(f.node('app-update-dialog-error').textContent, '网络连接中断');
   const primary = f.node('app-update-dialog-primary');
   assert.equal(primary.textContent, '重试下载'); assert.equal(primary.disabled, false);
+  f.noticeOther('下载更新失败：网络连接中断', true);
+  const otherNotice = f.currentNotice;
   const retrying = primary.click(); await primary.click();
   assert.equal(attempts, 2); assert.equal(f.node('app-update-dialog-error').hidden, true);
+  assert.equal(f.currentNotice, otherNotice, 'Retry cannot dismiss a later notification, even one with identical text');
   retry.resolve({ ...initial, status: 'downloaded', version: '0.19.3', progress: 100 }); await retrying;
   assert.equal(primary.textContent, '重启更新');
   const dialog = f.node('app-update-dialog'); f.ui.destroy();

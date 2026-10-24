@@ -1,5 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const call = (name, arg) => ipcRenderer.invoke(`forge:${name}`, arg);
+const eventSubscribers = new Set();
+const dispatchEvent = (_event, value) => {
+  for (const subscriber of [...eventSubscribers]) {
+    try { subscriber(value); } catch (error) { console.error('界面事件处理失败', error); }
+  }
+};
 contextBridge.exposeInMainWorld('forge', Object.freeze({
   getState: () => call('getState'),
   getUsageAnalytics: () => call('getUsageAnalytics'),
@@ -109,8 +115,13 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   undoLastChange: () => call('undoLastChange'),
   openPath: (arg) => call('openPath', arg),
   onEvent: (callback) => {
-    const handler = (_event, value) => callback(value);
-    ipcRenderer.on('forge:event', handler);
-    return () => ipcRenderer.removeListener('forge:event', handler);
+    if (typeof callback !== 'function') throw new TypeError('事件订阅需要回调函数。');
+    const subscriber = value => callback(value);
+    if (!eventSubscribers.size) ipcRenderer.on('forge:event', dispatchEvent);
+    eventSubscribers.add(subscriber);
+    return () => {
+      eventSubscribers.delete(subscriber);
+      if (!eventSubscribers.size) ipcRenderer.removeListener('forge:event', dispatchEvent);
+    };
   }
 }));
