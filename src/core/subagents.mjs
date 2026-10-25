@@ -10,7 +10,7 @@ export const SUBAGENT_TOOL_DEFINITIONS = [
       write_paths: { type: 'array', maxItems: 24, items: { type: 'string', description: '项目内相对路径或项目外完整绝对路径；目录必须以 / 结尾。不可包含 .. 或授予无关目录。' } } }, ['name', 'task']) },
   { name: 'wait_agents', description: '等待指定子智能体结束并返回摘要、错误和用量。省略 ids 时等待目前所有子智能体；不会创建额外模型请求。',
     parameters: schema({ ids: { type: 'array', maxItems: 8, items: { type: 'string' } } }) },
-  { name: 'send_agent_message', description: '向运行中的子智能体发送任务补充；已结束的子任务不会重启。',
+  { name: 'send_agent_message', description: '向运行中的子智能体补充实质新信息或新约束，相关补充应合并发送；不要用来催问进度或重复原要求，没有独立工作时用 wait_agents 等待。已结束的子任务不会重启。',
     parameters: schema({ id: { type: 'string' }, message: { type: 'string', maxLength: 4000 } }, ['id', 'message']) },
   { name: 'stop_agent', description: '取消指定子智能体并等待它停止；已经提交的文件更改会保留。',
     parameters: schema({ id: { type: 'string' } }, ['id']) },

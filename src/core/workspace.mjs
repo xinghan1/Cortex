@@ -9,6 +9,9 @@ import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.
 import { runPowerShellCommand, waitForCommandRead, validateCommandDirectory } from './command-runner.mjs';
 
 const MAX_FILE_BYTES = 512 * 1024;
+const DEFAULT_READ_LINES = 200;
+const MAX_READ_LINES = 500;
+const MAX_READ_CHARS = 24000;
 const DEFAULT_COMMAND_TIMEOUT = 600_000;
 const MAX_COMMAND_TIMEOUT = 600_000;
 const MAX_LIST_ENTRIES = 500;
@@ -32,8 +35,12 @@ export const TOOL_DEFINITIONS = [
     parameters: objectSchema({ path: relativePath }),
   },
   {
-    name: 'read_file', description: '读取指定本机路径的 UTF-8 文本文件，最大 512 KB。凭据与密钥文件不可读取。',
-    parameters: objectSchema({ path: relativePath }, ['path']),
+    name: 'read_file', description: '按行读取本机 UTF-8 文本文件，最大 512 KB。默认读取前 200 行，每页最多 500 行、24000 字符，不拆分单行；按 nextStartLine 继续，或提供 start_line/end_line（含首尾）。返回的节选不是完整文件，定向修改请用 replace_in_file；完整重写前应读取所有页或显式 full_file:true 读取整文件。超长单行也可用 full_file:true。凭据与密钥文件不可读取。',
+    parameters: objectSchema({ path: relativePath,
+      start_line: { type: 'integer', minimum: 1, description: '起始行，从 1 开始；省略时从第 1 行读取。' },
+      end_line: { type: 'integer', minimum: 1, description: '结束行，包含该行；省略时读取最多 200 行。每页最多 500 行。' },
+      full_file: { type: 'boolean', description: '确需完整文件时设为 true，不能与行范围同时使用。' },
+    }, ['path']),
   },
   {
     name: 'search_files', description: '在指定本机目录的文本文件中搜索字面文本，默认当前项目，最多 100 处命中，跳过隐藏目录和构建产物。',
@@ -93,6 +100,43 @@ function decodeText(buffer) {
   if (buffer.includes(0)) throw new Error('不支持二进制文件。');
   try { return decoder.decode(buffer); }
   catch { throw new Error('只支持有效的 UTF-8 文本文件。'); }
+}
+
+function fileReadPage(snapshot, args) {
+  for (const key of ['start_line', 'end_line']) {
+    if (args[key] !== undefined && (!Number.isSafeInteger(args[key]) || args[key] < 1)) throw new Error('读取行号必须为从 1 开始的整数。');
+  }
+  if (args.full_file !== undefined && typeof args.full_file !== 'boolean') throw new Error('full_file 必须为布尔值。');
+  if (args.full_file === true && (args.start_line !== undefined || args.end_line !== undefined)) throw new Error('整文件读取不能同时指定行范围。');
+  const startLine = args.start_line ?? 1;
+  const requestedEnd = args.end_line ?? startLine + DEFAULT_READ_LINES - 1;
+  if (requestedEnd < startLine || !Number.isSafeInteger(requestedEnd)) throw new Error('结束行不能早于起始行，且必须是有效整数。');
+  if (!args.full_file && requestedEnd - startLine + 1 > MAX_READ_LINES) throw new Error(`每次最多读取 ${MAX_READ_LINES} 行，请缩小范围或显式读取整文件。`);
+  const { content } = snapshot;
+  const offsets = content.length ? [0] : [];
+  // Retain exact line terminators. A final newline does not add a phantom line.
+  for (const match of content.matchAll(/\r\n|\r|\n/gu)) {
+    const next = match.index + match[0].length;
+    if (next < content.length) offsets.push(next);
+  }
+  const totalLines = offsets.length;
+  if (args.full_file) return { ...snapshot, startLine: totalLines ? 1 : 0, endLine: totalLines, totalLines, truncated: false, nextStartLine: null };
+  if (startLine > Math.max(1, totalLines)) throw new Error(`起始行超出文件范围（共 ${totalLines} 行）。`);
+  const end = Math.min(requestedEnd, totalLines);
+  const startOffset = offsets[startLine - 1] ?? 0;
+  let endLine = startLine - 1, endOffset = startOffset;
+  for (let line = startLine; line <= end; line++) {
+    const next = offsets[line] ?? content.length;
+    if (next - startOffset > MAX_READ_CHARS) break;
+    endLine = line;
+    endOffset = next;
+  }
+  const requiresFullFile = totalLines > 0 && endLine < startLine;
+  return { path: snapshot.path, content: content.slice(startOffset, endOffset),
+    startLine: totalLines ? startLine : 0, endLine: totalLines ? endLine : 0, totalLines,
+    truncated: startLine > 1 || endLine < totalLines,
+    nextStartLine: endLine < totalLines ? endLine + 1 : null,
+    ...(requiresFullFile ? { requiresFullFile: true, notice: `第 ${startLine} 行超过 ${MAX_READ_CHARS} 字符，本次未截断该行；确需读取请使用 full_file:true。` } : {}) };
 }
 
 export class WorkspaceTools {
@@ -293,7 +337,7 @@ export class WorkspaceTools {
         const entries = await fsp.readdir(target.absolute, { withFileTypes: true });
         entries.sort((a, b) => a.name.localeCompare(b.name));
         for (const entry of entries) {
-          if (!safeName(entry.name) || entry.name.startsWith('.') || ['build', 'dist'].includes(entry.name.toLowerCase()) || entry.isSymbolicLink()) continue;
+          if (!safeName(entry.name) || entry.name.startsWith('.') || ['build', 'dist', 'target'].includes(entry.name.toLowerCase()) || entry.isSymbolicLink()) continue;
           await visit(path.posix.join(relative, entry.name), depth + 1);
           if (matches.length >= limit || visited >= 5000) { truncated = true; break; }
         }
@@ -565,7 +609,7 @@ export class WorkspaceTools {
       let result;
       switch (name) {
         case 'list_files': result = await this.listFiles(args); break;
-        case 'read_file': result = await this.readFile(args); break;
+        case 'read_file': result = fileReadPage(await this.readFile(args), args); break;
         case 'search_files': result = await this.#search(args, signal); break;
         case 'write_file': result = await this.#write(args.path, args.content, signal, undefined, { onFileChange }); break;
         case 'replace_in_file': result = await this.#replace(args, signal, onFileChange); break;
