@@ -158,12 +158,18 @@ export class ExternalAcpClient {
   }
 }
 
+function modelConfigOption(session) {
+  if (!Array.isArray(session?.configOptions)) return null;
+  // ACP categories are optional semantic hints. Antigravity also uses the
+  // canonical id without a category; an empty legacy list must not hide it.
+  return session.configOptions.find(option => option?.type === 'select' && option.category === 'model')
+    || session.configOptions.find(option => option?.type === 'select' && option.id === 'model') || null;
+}
 function catalog(session) {
-  let rows = session?.models?.availableModels;
-  if (!Array.isArray(rows)) {
-    const setting = session?.configOptions?.find?.(option => option.category === 'model' && option.type === 'select');
-    rows = setting?.options?.flatMap(option => Array.isArray(option.options) ? option.options : [option])?.map(option => ({ modelId: option.value, name: option.name }));
-  }
+  const setting = modelConfigOption(session);
+  const configured = Array.isArray(setting?.options) ? setting.options.flatMap(option => Array.isArray(option?.options) ? option.options : [option])
+    .map(option => ({ modelId: option?.value, name: option?.name })) : null;
+  const rows = configured?.length ? configured : session?.models?.availableModels;
   if (!Array.isArray(rows) || rows.length > 256) return [];
   const seen = new Set(), models = [];
   for (const row of rows) {
@@ -197,7 +203,7 @@ export class AntigravityAgent {
   #dir; #home; #work; #runtime; #spawn; #kill; #proxy; #onChange; #onEvent; #permission; #version;
   #client = null; #starting = null; #startup = null; #capabilities = {}; #authMethods = []; #profile = null;
   #models = []; #modes = []; #sessions = new Map(); #active = null; #attempt = null; #epoch = 0; #closed = false;
-  #state = 'idle'; #error = null; #timeout; #startTimeout; #stopGrace; #closing = new Set();
+  #state = 'idle'; #error = null; #timeout; #startTimeout; #stopGrace; #closing = new Set(); #catalogCollectors = new Set();
   constructor({ dataDir, runtime, spawnImpl = spawn, killTreeImpl, getProxyEnv = () => ({}), onChange = () => {}, onEvent = () => {}, onPermission = async () => null,
     version = '0.0.0', platform = process.platform, requestTimeoutMs = 3600000, startTimeoutMs = 60000, stopGraceMs = 1500 } = {}) {
     if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir) || !runtime?.ensure || !runtime?.publicState || typeof spawnImpl !== 'function'
@@ -281,9 +287,33 @@ export class AntigravityAgent {
   async cancelSignIn() { const attempt = this.#attempt; attempt?.controller.abort(); this.#startup?.abort(); if (attempt) await attempt.done.catch(() => {}); if (!this.#profile) await this.#shutdown(); return this.publicState(); }
   #usable() { if (this.#closed) throw fail('AGY_CLOSED', '官方代理已关闭。'); if (!this.#profile || this.#error?.code === 'AGY_AUTH_REQUIRED') throw fail('AGY_AUTH_REQUIRED', '请先连接官方 Antigravity 账号。'); if (this.#attempt) throw fail('AGY_BUSY', '请等待官方代理登录完成。'); return this.#profile; }
   async #newSession(client, cwd, signal) {
-    const response = await client.request('session/new', { cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout });
-    if (!identifier(response?.sessionId)) throw invalid();
-    return { id: response.sessionId, cwd, profile: this.#profile, models: catalog(response), modes: modes(response), configOptions: response.configOptions || [] };
+    const updates = new Map(); let sessionId, wake;
+    const collect = params => {
+      if (!identifier(params?.sessionId) || params.update?.sessionUpdate !== 'config_option_update') return;
+      if (sessionId && params.sessionId !== sessionId) return;
+      const config = params.update.configOptions;
+      if (!Array.isArray(config) || config.length > 256 || JSON.stringify(config).length > 1024 * 1024) throw invalid();
+      if (!updates.has(params.sessionId) && updates.size >= 8) return;
+      updates.set(params.sessionId, structuredClone(config)); wake?.();
+    };
+    this.#catalogCollectors.add(collect);
+    try {
+      const response = await client.request('session/new', { cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout });
+      if (!identifier(response?.sessionId)) throw invalid(); sessionId = response.sessionId;
+      for (const key of updates.keys()) if (key !== sessionId) updates.delete(key);
+      const snapshot = () => ({ ...response, ...(updates.has(sessionId) ? { configOptions: updates.get(sessionId) } : {}) });
+      let current = snapshot(), models = catalog(current);
+      const deadline = Date.now() + Math.min(this.#startTimeout, 2000);
+      while (!models.length && Date.now() < deadline) {
+        let timer;
+        try { await waitFor(() => new Promise(resolve => { wake = resolve; timer = setTimeout(resolve, Math.max(1, deadline - Date.now())); }), signal); }
+        finally { clearTimeout(timer); wake = null; }
+        current = snapshot(); models = catalog(current);
+      }
+      check(signal);
+      if (!models.length) throw fail('AGY_CATALOG_EMPTY', 'Antigravity 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。');
+      return { id: sessionId, cwd, profile: this.#profile, models, modes: modes(current), configOptions: current.configOptions || [] };
+    } finally { this.#catalogCollectors.delete(collect); wake?.(); }
   }
   async listModels({ cwd = this.#work, signal } = {}) {
     this.#usable(); if (this.#active) return structuredClone(this.#models);
@@ -293,6 +323,7 @@ export class AntigravityAgent {
     catch (error) { if (error.name !== 'AbortError') this.#setError(error, 'model-list'); throw error; }
   }
   #update(params) {
+    for (const collect of this.#catalogCollectors) collect(params);
     const active = this.#active;
     if (!active || active.controller.signal.aborted || active.profile !== this.#profile || params?.sessionId !== active.session?.id || !object(params.update)) return;
     const update = params.update;
@@ -343,7 +374,7 @@ export class AntigravityAgent {
         check(controller.signal); active.session = session;
         if (modelId) {
           if (!session.models.some(model => model.id === modelId)) throw fail('AGY_MODEL_UNAVAILABLE', '官方账号未提供所选模型，请刷新目录。');
-          const option = session.configOptions?.find?.(row => row.category === 'model' && row.type === 'select');
+          const option = modelConfigOption(session);
           if (option?.id) await client.request('session/set_config_option', { sessionId: session.id, configId: option.id, value: modelId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
           else await client.request('session/set_model', { sessionId: session.id, modelId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
         }

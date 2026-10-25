@@ -127,6 +127,8 @@ if(kind==='kimi'&&args.includes('--login')){const selected=args[args.indexOf('--
 if(kind==='glm'&&args.includes('login')){const selected=args[args.indexOf('login')+1];if(!args.includes('--no-browser'))throw new Error('The controlled browser bridge must use the official no-browser mode');const url=JSON.parse(fs.readFileSync(path.join(__dirname,'glm-login-urls.json'),'utf8'))[selected];process.stderr.write('Open this URL to sign in:\n'+url+'\n');fs.writeFileSync(regionFile,selected);process.stdout.write(JSON.stringify({status:'ready',provider:selected,user:{user_id:'native-fixture-user'},model:selected+'/glm-official-fixture'})+'\n');setTimeout(()=>process.exit(0),25);return;}
 let sessionNumber=0,pending=null,sequence=0;const sessions=new Map();
 const model=()=>kind==='gemini'?'gemini-official-fixture':kind==='kimi'?'kimi-'+region()+'-fixture':'glm-official-fixture';
+const modelConfig=()=>[{id:'model',name:'Model',type:'select',currentValue:model(),options:[{group:'official',name:'Official',options:[{value:model(),name:kind+' native fixture'}]}]}];
+const emptyCatalog=()=>fs.existsSync(path.join(__dirname,'empty-catalog-'+kind+'.flag'));
 const update=(sessionId,value)=>send({method:'session/update',params:{sessionId,update:value}});
 const zEvent=(sessionId,type,payload)=>send({method:'session/event',params:{sessionId,turnId:'turn-'+sessionNumber,seq:++sequence,eventId:'event-'+sequence,type,payload}});
 function finish(allowed){const request=pending;if(!request)return;pending=null;const sessionId=request.params.sessionId;
@@ -136,10 +138,11 @@ else{for(let i=0;i<2;i++)update(sessionId,{sessionUpdate:'tool_call_update',tool
 readline.createInterface({input:process.stdin}).on('line',line=>{let request;try{request=JSON.parse(line)}catch{return}const {id,method,params={}}=request;log({method,id,...(request.result?{response:request.result}:{}),...(request.error?{error:request.error.code}:{})});
 if(!method){if(pending){if(kind==='glm'&&id===99){if(request.result?.action!=='accept'||request.result?.content?.answers?.['官方代理选择本次测试方式']!=='keep-files')throw new Error('Native question did not preserve the selected value');finish(true);return;}if(kind==='kimi'&&id===99){if(request.result?.outcome?.optionId!=='q0_opt_1')throw new Error('Native fixed choice must come from the user');finish(true);return;}const allowed=kind==='glm'?request.result?.decision==='allow':request.result?.outcome?.optionId==='allow-once-native';if(kind==='glm'&&allowed){send({id:99,method:'interaction/requestUserInput',params:{requestId:'native-question',sessionId:pending.params.sessionId,turnId:'turn-'+sessionNumber,questions:[{question:'官方代理选择本次测试方式',options:[{label:'仅检查',value:'inspect-only'},{label:'保留文件',value:'keep-files'}]}]}});return;}finish(allowed)}return;}
 if(method==='initialize'){reply(request,{protocolVersion:1,agentInfo:{name:kind==='kimi'?'Kimi Code CLI':'antigravity-acp',version:kind==='kimi'?'2.3.1':'1.4.3'},authMethods:[{id:kind==='kimi'?'login':'oauth-personal',type:kind==='kimi'?'terminal':'agent'}],agentCapabilities:{loadSession:true,promptCapabilities:{image:true,audio:true}}});return;}
+if(kind==='gemini'&&method==='session/set_config_option'){if(params.configId!=='model'||params.value!==model())throw new Error('Native model selection must use its returned model config ID and value');log({event:'config-selection',configId:params.configId,value:params.value});reply(request,{});return;}
 if(method==='authenticate'||method==='logout'||method.startsWith('session/set_')){reply(request,{});return;}
 if(method==='runtime/capabilities'){reply(request,{independentPlanState:true,historyFirst:true});return;}
-if(method==='session/new'||method==='session/resume'||method==='session/load'){const sessionId=params.sessionId||'session-'+kind+'-'+ ++sessionNumber;sessions.set(sessionId,{});reply(request,{sessionId,models:{availableModels:[{modelId:model(),name:kind+' native fixture'}],currentModelId:model()},configOptions:[{id:'model',category:'model',type:'select',currentValue:model(),options:[{value:model(),name:kind+' native fixture'}]}],modes:{availableModes:[{id:'agent',name:'Agent'},{id:'default',name:'Default'},{id:'guarded',name:'Guarded'}],currentModeId:'agent'}});return;}
-if(method==='session/create'||method==='create'){const sessionId='session-glm-'+ ++sessionNumber;sessions.set(sessionId,{});reply(request,{protocol:{name:'ZCode Protocol',version:1},session:{sessionId,workspace:params.workspace,mode:'guarded'},settings:{model:{available:[{ref:{providerId:region(),modelId:model()},label:'ZCode native fixture',properties:{inputFormat:['text'],outputFormat:['text']}}]}}});return;}
+if(method==='session/new'||method==='session/resume'||method==='session/load'){const sessionId=params.sessionId||'session-'+kind+'-'+ ++sessionNumber;sessions.set(sessionId,{});const empty=kind==='gemini'&&emptyCatalog(),late=kind==='gemini'&&sessionNumber===1&&!empty;reply(request,{sessionId,models:{availableModels:kind==='gemini'?[]:[{modelId:model(),name:kind+' native fixture'}],currentModelId:model()},configOptions:kind==='gemini'?(empty||late?[]:modelConfig()):[{id:'model',category:'model',type:'select',currentValue:model(),options:[{value:model(),name:kind+' native fixture'}]}],modes:{availableModes:[{id:'agent',name:'Agent'},{id:'default',name:'Default'},{id:'guarded',name:'Guarded'}],currentModeId:'agent'}});if(late)setTimeout(()=>{log({event:'late-model-config',sessionId});update(sessionId,{sessionUpdate:'config_option_update',configOptions:modelConfig()});},30);return;}
+if(method==='session/create'||method==='create'){const sessionId='session-glm-'+ ++sessionNumber;sessions.set(sessionId,{});reply(request,{protocol:{name:'ZCode Protocol',version:1},session:{sessionId,workspace:params.workspace,mode:'guarded'},settings:{model:{available:emptyCatalog()?[]:[{ref:{providerId:region(),modelId:model()},label:'ZCode native fixture',properties:{inputFormat:['text'],outputFormat:['text']}}]}}});return;}
 if(method==='session/subscribe'||method==='subscribe'){reply(request,{sessionId:params.sessionId,eventSeq:0,events:[]});return;}
 if(method==='session/prompt'||method==='session/send'||method==='send'){const subscriptionFile=path.join(__dirname,'kimi-subscription-error.once');if(kind==='kimi'&&fs.existsSync(subscriptionFile)){fs.unlinkSync(subscriptionFile);log({marker:'SUBSCRIPTION_DENIED'});send({id,error:{code:-32000,message:'Authentication required: 403 Your current subscription does not have access to Kimi Code right now. Upgrade your plan to keep coding with Kimi Code: https://example.invalid/?secret=PRIVATE_TOKEN',data:null}});return;}pending=request;const sessionId=params.sessionId,body=JSON.stringify(params),marker=body.includes('OFFICIAL_NATIVE_STOP_')?'STOP':body.includes('OFFICIAL_NATIVE_QUESTION_')?'QUESTION':body.includes('OFFICIAL_NATIVE_DENY_')?'DENY':'ALLOW';log({marker});
 if(kind==='glm'){reply(request,{accepted:true,sessionId,stateRevision:1});zEvent(sessionId,'turn.started',{inputId:params.inputId,turnNumber:1,input:params.content});zEvent(sessionId,'tool.updated',{toolCallId:'tool-native',toolName:'Bash',input:{command:'mock-only-no-execution'},kind:'scheduled'});for(const stdoutTail of ['line 1\n','line 1\nline 2\n'])zEvent(sessionId,'tool.updated',{toolCallId:'tool-native',toolName:'Bash',stdoutTail,kind:'progress'});}
@@ -185,6 +188,23 @@ if(id!==undefined)reply(request,{});
       assert.equal(await js(`$('messages').textContent.includes('WRONG_SESSION_SHOULD_NOT_APPEAR')`),false);
       const rpc=await log(); assert.ok(rpc.some(record=>record.kind===descriptor.provider&&record.response&&(descriptor.provider==='glm'?record.response.decision==='allow':record.response.outcome?.optionId==='allow-once-native')));
       if(descriptor.provider==='glm')assert.ok(rpc.some(record=>record.id===99&&record.response?.action==='accept'&&record.response.content?.answers?.['官方代理选择本次测试方式']==='keep-files'));
+      if(descriptor.provider==='gemini'||descriptor.provider==='glm'){
+        stage='empty official directory keeps '+descriptor.provider+' connected';await selectMode(descriptor);
+        const emptyFlag=path.join(fixtureDir,'empty-catalog-'+descriptor.provider+'.flag'),code=descriptor.provider==='gemini'?'AGY_CATALOG_EMPTY':'ZCODE_CATALOG_EMPTY';
+        const expected=(descriptor.provider==='gemini'?'Antigravity':'ZCode')+' 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。';
+        await fs.writeFile(emptyFlag,'simulate an empty upstream account directory');
+        try{
+          await click('#settings-model-refresh');
+          await until('typed empty directory '+descriptor.provider,async()=>(await state())[descriptor.key].error?.code===code&&await js(`!settingsCatalogLoading&&Boolean(settingsCatalogError)`));
+          const connected=(await state())[descriptor.key].session;assert.equal(connected.status,'connected');assert.equal(connected.sharing,true);assert.equal(connected.profileId,profile);
+          assert.equal(await js(`settingsCatalog===null&&settingsCatalogDraft===null&&selectedSettingsModel()===undefined&&$('save-settings').disabled`),true);
+          assert.equal(await js(`$(${JSON.stringify(descriptor.prefix+'-login-message')}).textContent`),expected);
+          assert.equal(await js(`$('settings-model-catalog-message').textContent`),expected,'Directory errors must not expose IPC wrappers or error class names');
+          assert.equal(await js(`$(${JSON.stringify(descriptor.prefix+'-sign-in')}).hidden&&!$(${JSON.stringify(descriptor.prefix+'-models')}).disabled`),true);
+          await capture('official-agent-'+descriptor.provider+'-empty-catalog.png');
+        }finally{await fs.rm(emptyFlag,{force:true});}
+        await selectCatalog(descriptor);assert.equal((await state())[descriptor.key].session.profileId,profile);
+      }
       if(descriptor.provider==='kimi'){
         stage='Kimi subscription denial keeps its connected account';const loginCount=(await log()).filter(record=>record.kind==='kimi'&&record.event==='spawn'&&record.args.includes('--login')).length;
         await fs.writeFile(path.join(fixtureDir,'kimi-subscription-error.once'),'one simulated denial');
@@ -221,6 +241,8 @@ if(id!==undefined)reply(request,{});
     for (const uiStyle of ['glass','black','white','industrial','deepseek','codex']) { await call('setAppearance',{uiStyle}); await until('material '+uiStyle,()=>js(`document.documentElement.dataset.uiStyle===${JSON.stringify(uiStyle)}`)); await capture('official-agent-'+uiStyle+'.png'); }
     await click('#close-settings');
     assert.deepEqual(browserCalls,[glmLoginUrls.bigmodel,glmLoginUrls.zai]);
+    assert.ok((await log()).some(record=>record.kind==='gemini'&&record.event==='late-model-config'));
+    assert.ok((await log()).some(record=>record.kind==='gemini'&&record.event==='config-selection'&&record.configId==='model'&&record.value==='gemini-official-fixture'));
     assert.ok((await log()).filter(record=>record.kind==='glm'&&record.event==='spawn'&&record.args.includes('login')).every(record=>record.args.includes('--no-browser')));
     assert.doesNotMatch(JSON.stringify((await state()).glmAgent),/zcode-native|native-state|redirect=/);
     events.push(...await js('window.__officialSmoke.events')); assert.equal(events.some(event=>event.type==='tool-start'&&event.name==='run_command'),true);
@@ -229,6 +251,7 @@ if(id!==undefined)reply(request,{});
       allThreeNativeModes:true,installIsNotLogin:true,scopeAndRegionIsolation:true,apiKeysPreserved:true,rolesCannotBorrowAgentOrKey:true,
       nativePermissionAllowOnceId:true,nativeUserInputValue:true,nativeChoiceOnlyFullWaitsForUser:true,nativeDeny:true,nativeStop:true,foreignSessionRejected:true,sixThemes:true,
       glmFullAuthorizationQueryPreserved:true,glmNoBrowserMode:true,realBrowserOpened:false,glmBrowserCallbackCount:browserCalls.length,kimiSubscriptionKeepsConnectedAccount:true,
+      agyGroupedModelConfigWithoutCategory:true,agyLateConfigDiscovery:true,agyNativeConfigSelection:true,emptyOfficialCatalogKeepsProfiles:true,emptyOfficialCatalogCannotSave:true,
       records,screenshots,methods:[...new Set((await log()).map(record=>record.method).filter(Boolean))],usage:store?.usage?.records?.filter(record=>records.some(value=>value.runId===record.runId)).map(({provider,status,reported,inputTokens,outputTokens})=>({provider,status,reported,inputTokens,outputTokens}))||[]};
     await fs.writeFile(path.join(output,'official-agents-smoke-result.json'),JSON.stringify(result,null,2)+'\n'); return result;
   } catch(error) {

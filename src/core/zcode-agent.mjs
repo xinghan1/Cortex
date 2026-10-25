@@ -79,6 +79,21 @@ function adaptProcess(child) {
     get exitCode() { return child.exitCode; } };
 }
 function selectionId(ref) { return `${ref.providerId}/${ref.modelId}${ref.options?.reasoningLevel ? '$' + ref.options.reasoningLevel : ''}`; }
+function executableModelRef(row, current) {
+  const ref = structuredClone(row.ref), explicit = ref.options?.reasoningLevel;
+  if (ref.options !== undefined && (!object(ref.options) || Object.keys(ref.options).some(key => key !== 'reasoningLevel'))
+      || explicit !== undefined && !id(explicit)) return null;
+  if (row.reasoning === undefined) return ref; // Legacy protocol metadata: do not invent an option.
+  const reasoning = row.reasoning;
+  if (!object(reasoning) || !Array.isArray(reasoning.levels) || !reasoning.levels.length || reasoning.levels.length > 128) return null;
+  const levels = reasoning.levels.map(level => level?.value);
+  if (levels.some(value => !id(value)) || new Set(levels).size !== levels.length) return null;
+  if (explicit !== undefined) return levels.includes(explicit) ? ref : null;
+  let selected = reasoning.defaultLevel;
+  if (selected === undefined && current?.providerId === ref.providerId && current?.modelId === ref.modelId) selected = current.options?.reasoningLevel;
+  if (!id(selected) || !levels.includes(selected)) return null;
+  return { ...ref, options: { reasoningLevel: selected } };
+}
 function readCatalog(snapshot, providerId) {
   const rows = snapshot?.settings?.model?.available;
   if (!Array.isArray(rows) || rows.length > 512) return new Map();
@@ -86,8 +101,9 @@ function readCatalog(snapshot, providerId) {
   for (const row of rows) {
     const ref = row?.ref;
     if (!object(ref) || !id(ref.providerId) || !id(ref.modelId) || ref.providerId !== providerId || row.disabledReason) continue;
+    const executionRef = executableModelRef(row, snapshot.settings.model.current); if (!executionRef) continue;
     const key = selectionId(ref); if (!id(key) || result.has(key)) throw invalid();
-    result.set(key, { ref: structuredClone(ref), model: { id: key, displayName: id(row.label) ? row.label : key,
+    result.set(key, { ref: executionRef, model: { id: key, displayName: id(row.label) ? row.label : key,
       compatible: true, textCompatible: true, supportsTools: true,
       // This first app-server bridge accepts text content only. Do not advertise
       // the native model's image ability before attachment transport is wired.
@@ -130,6 +146,14 @@ export class ZCodeAgent {
         if (value.profileId) { const home = await fs.lstat(this.#home(value.profileId)); if (!home.isDirectory() || home.isSymbolicLink()) throw invalid(); }
         this.#profile = value.profileId; this.#region = value.region; this.#providerId = value.providerId || null;
       } catch (error) { if (error.code !== 'ENOENT') { this.#storageError = true; this.#publishError(fail('ZCODE_STORAGE_ERROR', 'ZCode 连接信息无法读取，原文件已保留。'), 'storage'); } }
+      if (this.#profile && !this.#storageError) {
+        // Upgrades replace the bundled component digest. Restore that local
+        // component before the UI checks readiness of an existing account.
+        // This only copies verified bundled files; it never starts the agent.
+        const signal = AbortSignal.timeout(30000);
+        try { await waitFor(() => this.#runtime.ensure({ signal }), signal); }
+        catch { this.#publishError(fail('ZCODE_RUNTIME_MISSING', 'ZCode 本机组件未准备完成，请点击“准备组件”后重试。'), 'runtime'); }
+      }
       return this;
     })();
   }
@@ -161,7 +185,7 @@ export class ZCodeAgent {
     if (selectedProxy) env.ZCODE_HTTP_PROXY = selectedProxy;
     const noProxy = env.NO_PROXY || env.no_proxy; if (noProxy) env.ZCODE_NO_PROXY = noProxy;
     Object.assign(env, { HOME: home, USERPROFILE: home, ZCODE_HOME: path.join(home, '.zcode'), ZCODE_DATA_BASE_DIR: home,
-      ZCODE_STORAGE_DIR: path.join(home, '.zcode'), ZCODE_RUNTIME_ENV: 'production' });
+      ZCODE_STORAGE_DIR: path.join(home, '.zcode'), ZCODE_RUNTIME_ENV: 'production', SYNORA_ZCODE_STANDALONE_ACCOUNT: '1' });
     if (object(runtime.env)) for (const key of ['ELECTRON_RUN_AS_NODE', 'GEMINI_CLI_NO_RELAUNCH']) if (runtime.env[key] === '1') env[key] = '1';
     if (typeof runtime.env?.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE === 'string' && path.isAbsolute(runtime.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE)) {
       env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = runtime.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
@@ -274,6 +298,7 @@ export class ZCodeAgent {
     if (snapshot?.protocol?.name !== 'ZCode Protocol' || snapshot.protocol.version !== 1 || !id(snapshot.session?.sessionId)) throw invalid();
     const providerId = this.#providerId || snapshot.settings?.model?.current?.providerId;
     const session = { id: snapshot.session.sessionId, cwd, profile: this.#profile, models: readCatalog(snapshot, providerId), mode: 'guarded', seq: 0 };
+    if (!session.models.size) { this.#models.clear(); throw fail('ZCODE_CATALOG_EMPTY', 'ZCode 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。'); }
     const subscribed = await client.request('session/subscribe', { sessionId: session.id, deliveryKind: 'desktop-continuous', includeSnapshot: false }, { signal, timeoutMs: this.#startTimeout });
     if (subscribed?.sessionId !== session.id || !Array.isArray(subscribed.events) || !Number.isSafeInteger(subscribed.eventSeq)) throw invalid();
     session.seq = subscribed.eventSeq; return session;

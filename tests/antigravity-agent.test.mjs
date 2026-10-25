@@ -55,6 +55,61 @@ const permission = sessionId => ({ sessionId, toolCall: { toolCallId: 'operation
   { optionId: 'approve-once', kind: 'allow_once', name: '允许一次' }, { optionId: 'reject-once', kind: 'reject_once', name: '拒绝' },
 ] });
 
+const modelOptions = ids => [{ id: 'model', name: 'Model', type: 'select', currentValue: ids[0],
+  options: [{ group: 'official', name: 'Official', options: ids.map(value => ({ value, name: value })) }] }];
+test('ACP model config without optional category overrides an empty or stale legacy model list', async t => {
+  for (const legacy of [[], [{ modelId: 'stale-model', name: 'Stale' }]]) {
+    const f = await fixture(t, { handler: ({ child, rpc }) => {
+      if (rpc.method !== 'session/new') return false;
+      child.reply(rpc, { sessionId: 'config-native', models: { availableModels: legacy }, configOptions: modelOptions(['native-a', 'native-b']) }); return true;
+    } });
+    await f.agent.signIn(); assert.deepEqual((await f.agent.listModels()).map(row => row.id), ['native-a', 'native-b']);
+    await f.agent.runTask(task(f, { modelId: 'native-b' }));
+    const selection = f.fake.calls.find(({ rpc }) => rpc.method === 'session/set_config_option').rpc;
+    assert.equal(selection.params.configId, 'model'); assert.equal(selection.params.value, 'native-b');
+    assert.equal(f.fake.calls.some(({ rpc }) => rpc.method === 'session/set_model'), false);
+  }
+});
+test('native config notifications arriving before session/new reply are bound to the returned session only', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/new') return false;
+    child.update('other-native-session', { sessionUpdate: 'config_option_update', configOptions: modelOptions(['other-account-model']) });
+    child.update('discovery-native', { sessionUpdate: 'config_option_update', configOptions: modelOptions(['advertised-model']) });
+    child.reply(rpc, { sessionId: 'discovery-native', models: { availableModels: [] } }); return true;
+  } });
+  await f.agent.signIn(); assert.deepEqual((await f.agent.listModels()).map(row => row.id), ['advertised-model']);
+  assert.equal(JSON.stringify(await f.agent.publicState()).includes('other-account-model'), false);
+});
+test('late config_option_update completes discovery without starting inference', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/new') return false;
+    child.reply(rpc, { sessionId: 'late-native', models: { availableModels: [] } });
+    setTimeout(() => child.update('late-native', { sessionUpdate: 'config_option_update', configOptions: modelOptions(['late-model']) }), 5); return true;
+  } });
+  await f.agent.signIn(); assert.deepEqual((await f.agent.listModels()).map(row => row.id), ['late-model']);
+  assert.equal(f.fake.calls.some(({ rpc }) => rpc.method === 'session/prompt'), false);
+});
+test('truly empty official directories keep login connected and report an actionable agent error', async t => {
+  const f = await fixture(t, { startTimeoutMs: 25, handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/new') return false;
+    child.reply(rpc, { sessionId: 'empty-native', models: { availableModels: [] }, configOptions: [] }); return true;
+  } });
+  await f.agent.signIn(); const profile = (await f.agent.publicState()).session.profileId;
+  await assert.rejects(f.agent.listModels(), { code: 'AGY_CATALOG_EMPTY' });
+  const state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.profileId, profile);
+  assert.deepEqual(state.models, []);
+});
+test('stopping directory discovery cancels the wait and ignores subsequent stale updates', async t => {
+  const controller = new AbortController(); let native;
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/new') return false;
+    native = child; child.reply(rpc, { sessionId: 'cancel-native', models: { availableModels: [] } }); setImmediate(() => controller.abort()); return true;
+  } });
+  await f.agent.signIn(); await assert.rejects(f.agent.listModels({ signal: controller.signal }), { name: 'AbortError' });
+  native.update('cancel-native', { sessionUpdate: 'config_option_update', configOptions: modelOptions(['stale-after-cancel']) }); await tick();
+  assert.deepEqual((await f.agent.publicState()).models, []);
+});
+
 test('initialization uses original ACP identity and a dedicated GEMINI_HOME without assuming keyring isolation', async t => {
   const f = await fixture(t); await f.agent.init(); assert.equal(f.fake.children.length, 0);
   const state = await f.agent.publicState(); assert.equal(state.session.status, 'disconnected'); assert.equal(state.storage.credentialScope, 'official-shared'); assert.equal(state.storage.identityVerified, false);

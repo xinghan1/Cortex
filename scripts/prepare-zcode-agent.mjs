@@ -4,9 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
+import { applyZCodeStandalonePatch, ZCODE_STANDALONE_PATCH } from './patches/zcode-standalone-account.mjs';
 
-// Build the complete official CLI from this immutable upstream revision. Never
-// replace its SEA collectors, remove plugins, or introduce a model/API wrapper.
+// Build the complete CLI from this immutable upstream revision, plus the
+// disclosed, digest-pinned standalone-account initialization compatibility patch.
+// Never replace SEA collectors, remove plugins, or introduce a model/API wrapper.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceCommit = '3c5b227649371507ddc4eb46ac5133afe6db1cab';
 const repository = 'https://github.com/zai-org/ZCode.git';
@@ -21,8 +23,13 @@ const source = path.join(root, 'artifacts', 'zcode-source-v0170');
 const tools = path.join(root, 'artifacts', 'zcode-build-tools');
 const destination = path.join(root, 'src', 'vendor', 'zcode-agent');
 const binaryName = 'zcode-windows-x64.exe';
-const retained = [binaryName, 'LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md', 'NODE-LICENSE.txt'];
+const retained = [binaryName, 'LICENSE', 'NOTICE.md', 'THIRD-PARTY-NOTICES.md', 'NODE-LICENSE.txt', 'SYNORA-PATCHES.md', 'synora-standalone-account.mjs'];
 const sha = (bytes, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(bytes).digest(encoding);
+const patchSha256 = '7eab746b97fc6d4b9de13f6c225b71b21ac24ed1287d79f0814a58194b96edd9';
+const patchBytes = Buffer.from((await fs.readFile(path.join(root, 'scripts', 'patches', 'zcode-standalone-account.mjs'), 'utf8')).replace(/\r\n/gu, '\n'));
+if (sha(patchBytes) !== patchSha256) throw new Error('ZCode 兼容补丁文件校验失败。');
+const patchDescriptor = { ...ZCODE_STANDALONE_PATCH, patchSha256 };
+const patchNotice = `# Synora ZCode compatibility modifications\n\nModified on 2026-10-25 by Synora.\n\nBase: https://github.com/zai-org/ZCode/tree/${sourceCommit}\n\nThe included Apache-2.0 ZCode CLI ${version} is source-built with one disclosed compatibility patch (${patchDescriptor.id}). Its original upstream source is not unmodified. The exact patch implementation is retained in synora-standalone-account.mjs; provenance.json records its SHA-256 and the baseline/result source digests (UTF-8, LF).\n\nWhen SYNORA_ZCODE_STANDALONE_ACCOUNT=1 is passed only to this component, app-server initializes the upstream standalone AccountProviderService and uses the upstream standalone providerRuntimeHeadersPort. Credentials remain inside the component's isolated official store and its existing OAuth/request code. No account token is exported to Synora. Without that switch, the original desktop-worker initialization remains in effect.\n\nThis patch does not change OAuth client identity, service endpoints, account entitlement rules, provider/model definitions, tool execution or permission handling. All original SEA asset collectors and license/notices are retained.\n`;
 const args = process.argv.slice(2);
 if (args.some(value => value !== '--rebuild')) throw new Error('用法：node scripts/prepare-zcode-agent.mjs [--rebuild]');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('官方 ZCode SEA 构建目前固定 Windows x64。');
@@ -31,7 +38,8 @@ if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('官
 async function prepared() {
   try {
     const metadata = JSON.parse(await fs.readFile(path.join(destination, 'provenance.json'), 'utf8'));
-    if (metadata.formatVersion !== 1 || metadata.sourceCommit !== sourceCommit || metadata.version !== version || metadata.environment !== 'production'
+    if (metadata.formatVersion !== 2 || metadata.sourceCommit !== sourceCommit || metadata.version !== version || metadata.environment !== 'production'
+        || metadata.officialSourceUnmodified !== false || JSON.stringify(metadata.patches) !== JSON.stringify([patchDescriptor])
         || metadata.node?.sha256 !== nodeSha256 || metadata.pnpm?.integrity !== `sha512-${pnpmIntegrity}`
         || metadata.license !== 'Apache-2.0' || JSON.stringify(Object.keys(metadata.files || {}).sort()) !== JSON.stringify([...retained].sort())) return false;
     for (const name of retained) {
@@ -42,7 +50,7 @@ async function prepared() {
   } catch { return false; }
 }
 await directory(destination);
-if (!args.includes('--rebuild') && await prepared()) { console.log(`官方 ZCode ${version} 原版 SEA 已准备好。`); process.exit(0); }
+if (!args.includes('--rebuild') && await prepared()) { console.log(`基于官方 ZCode ${version} 的兼容组件已准备好。`); process.exit(0); }
 
 async function directory(target) {
   const relative = path.relative(root, target);
@@ -124,8 +132,15 @@ if (!await fs.stat(source).catch(() => null)) {
 }
 await directory(source);
 if (command('git', ['rev-parse', 'HEAD'], { stdio: 'pipe' }) !== sourceCommit
-    || !['https://github.com/zai-org/ZCode.git', 'https://github.com/zai-org/ZCode'].includes(command('git', ['remote', 'get-url', 'origin'], { stdio: 'pipe' }))
-    || command('git', ['diff', 'HEAD', '--name-only'], { stdio: 'pipe' })) throw new Error('ZCode 源码必须是干净的官方固定提交。');
+    || !['https://github.com/zai-org/ZCode.git', 'https://github.com/zai-org/ZCode'].includes(command('git', ['remote', 'get-url', 'origin'], { stdio: 'pipe' }))) throw new Error('ZCode 源码必须来自官方固定提交。');
+function verifySourceChanges() {
+  const changed = command('git', ['diff', 'HEAD', '--name-only'], { stdio: 'pipe' }).split(/\r?\n/u).filter(Boolean);
+  if (changed.some(file => file !== ZCODE_STANDALONE_PATCH.sourcePath)) throw new Error('ZCode 存在未声明的源码更改。');
+}
+verifySourceChanges();
+const patchTarget = path.join(source, ZCODE_STANDALONE_PATCH.sourcePath);
+const patchedSource = applyZCodeStandalonePatch(await fs.readFile(patchTarget, 'utf8'));
+await fs.writeFile(patchTarget, patchedSource);
 if (JSON.parse(await fs.readFile(path.join(source, 'apps', 'zcode-cli', 'package.json'), 'utf8')).version !== version) throw new Error('ZCode CLI 版本不匹配。');
 const filters = ['@zcode/cli...', '@zcode/node-repl-host...', '@zcode/android-emulator-plugin...', '@zcode/ios-simulator-plugin...',
   '@zcode/browser-use-plugin...', '@zcode/documents-plugin...', '@zcode/pdf-plugin...', '@zcode/presentations-plugin...', '@zcode/spreadsheets-plugin...'];
@@ -136,11 +151,13 @@ command(node, [pnpm, '-r', ...filters.flatMap(filter => ['--filter', filter]), '
 command(node, ['node_modules/typescript/bin/tsc', '-b', 'packages/shared/tsconfig.json']);
 const cli = path.join(source, 'apps', 'zcode-cli', 'packages', 'cli');
 command(node, ['scripts/build-sea.mjs', '--target', 'win-x64', '--node-binary', `win-x64=${node}`], { cwd: cli });
-if (command('git', ['diff', 'HEAD', '--name-only'], { stdio: 'pipe' })) throw new Error('官方构建修改了跟踪源码，停止生成 vendor。');
+verifySourceChanges();
+if (sha((await fs.readFile(patchTarget, 'utf8')).replace(/\r\n/gu, '\n')) !== ZCODE_STANDALONE_PATCH.resultSha256) throw new Error('构建后的 ZCode 补丁源码校验失败。');
 await directory(destination); const files = {};
 for (const name of retained) {
-  const bytes = await fs.readFile(name === binaryName ? path.join(cli, 'dist', name)
-    : name === 'NODE-LICENSE.txt' ? path.join(source, 'third-party', 'runtime', `node-${nodeVersion}-LICENSE.txt`) : path.join(source, name));
+  const bytes = name === 'SYNORA-PATCHES.md' ? Buffer.from(patchNotice) : name === 'synora-standalone-account.mjs' ? patchBytes
+    : await fs.readFile(name === binaryName ? path.join(cli, 'dist', name)
+      : name === 'NODE-LICENSE.txt' ? path.join(source, 'third-party', 'runtime', `node-${nodeVersion}-LICENSE.txt`) : path.join(source, name));
   if (name === 'NODE-LICENSE.txt' && sha(bytes) !== '4573185d56580da2b890ba34a85a409257640f1c5632eade4300137266194d18') throw new Error('Node 许可证校验失败。');
   const target = path.join(destination, name), stat = await fs.lstat(target).catch(() => null);
   if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw new Error('生成组件目标无效。');
@@ -150,10 +167,10 @@ const seaConfig = JSON.parse(await fs.readFile(path.join(cli, 'dist', 'sea-confi
 const assets = Object.keys(seaConfig.assets || {});
 if (!['zcode-provider/zcode-builtin.json', 'zcode-official-plugins/manifest.json', 'zcode-tui-runtime/manifest.json',
   'zcode-playwright-runtime/manifest.json', 'zcode-runtime-tools/manifest.json'].every(name => assets.includes(name))) throw new Error('官方 SEA 缺少必需运行资源。');
-await fs.writeFile(path.join(destination, 'provenance.json'), JSON.stringify({ formatVersion: 1, name: 'ZCode CLI', version,
+await fs.writeFile(path.join(destination, 'provenance.json'), JSON.stringify({ formatVersion: 2, name: 'ZCode CLI', version,
   repository, sourceCommit, license: 'Apache-2.0', environment: 'production', target: 'win32-x64',
-  sourceBuilt: true, officialSourceUnmodified: true, assetCount: assets.length,
+  sourceBuilt: true, officialSourceUnmodified: false, patches: [patchDescriptor], assetCount: assets.length,
   node: { version: nodeVersion, source: nodeSource, sha256: nodeSha256 },
   pnpm: { version: pnpmVersion, source: pnpmSource, integrity: `sha512-${pnpmIntegrity}` },
   lockfileSha256: sha(await fs.readFile(path.join(source, 'pnpm-lock.yaml'))), files }, null, 2) + '\n');
-console.log(`已从官方固定源码构建 ZCode ${version}：${assets.length} 项原版 SEA 资源，保留许可证及第三方声明。`);
+console.log(`已从官方固定源码构建 ZCode ${version} 兼容组件：${assets.length} 项 SEA 资源，保留补丁说明、许可证及第三方声明。`);

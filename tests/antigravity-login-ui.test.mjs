@@ -89,6 +89,25 @@ test('ZCode authorization URL and browser failures display only the matching fix
   }
 });
 
+test('GLM component preparation failures preserve signed-in account controls and show a safe recovery action',()=>{
+  const f=fixture({descriptor:glm,initial:{...empty(),region:'bigmodel',runtime:{status:'missing'},session:{status:'connected',sharing:true,profileId:'retained-profile'},
+    error:{code:'ZCODE_RUNTIME_MISSING',message:'PRIVATE_LOCAL_PATH'}}});f.open();
+  assert.equal(f.node('glm-agent-login-status').textContent,'ZCode 官方代理已连接');
+  assert.equal(f.node('glm-agent-sign-in').hidden,true);assert.equal(f.node('glm-agent-install').hidden,false);
+  assert.match(f.node('glm-agent-login-message').textContent,/准备组件/);assert.doesNotMatch(f.node('glm-agent-login-message').textContent,/PRIVATE_LOCAL_PATH/);
+});
+
+test('empty official catalogs explain the upstream account directory while keeping their connections',()=>{
+  for(const [descriptor,code,prefix,name]of [[undefined,'AGY_CATALOG_EMPTY','antigravity','Antigravity'],[glm,'ZCODE_CATALOG_EMPTY','glm-agent','ZCode']]){
+    const expected=`${name} 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。`;
+    const f=fixture({descriptor,initial:{...empty(),region:'bigmodel',runtime:{status:'ready'},session:{status:'connected',sharing:true,profileId:'connected-profile'},
+      error:{code,message:'PRIVATE_MODELS_URL https://remote.invalid/?token=SECRET'}}});f.open();
+    assert.equal(f.node(prefix+'-login-message').textContent,expected);assert.equal(f.node(prefix+'-login-status').textContent,name+' 官方代理已连接');
+    assert.equal(f.node(prefix+'-models').disabled,false);assert.equal(f.node(prefix+'-sign-in').hidden,true);
+    assert.equal(f.api.errorMessage(new Error(`[${code}] PRIVATE_MODELS_URL`)),expected);assert.equal(f.calls.length,0);
+  }
+});
+
 test('only the Kimi public device flow can show a verified HTTPS URL and code; ZCode nonce URLs and unknown fields remain hidden',()=>{
   const attempt={phase:'waiting-browser',verificationUrl:'https://www.kimi.com/code',userCode:'ABCD-1234',accessToken:'PRIVATE_TOKEN'};
   const f=fixture({descriptor:kimi,initial:{...empty(),region:'mainland-cn',session:{status:'connecting'},attempt}});f.open();

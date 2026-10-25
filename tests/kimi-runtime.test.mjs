@@ -30,6 +30,38 @@ test('only the official same-version CDN redirect can be downloaded', async t =>
   let calls = 0; const f = await fixture(t, { fetchImpl: async () => ++calls === 1 ? new Response(null, { status: 302, headers: { location: release.url.replace('code.kimi.com', 'cdn.kimi.com') } }) : new Response(payload) });
   await f.runtime.ensure(); assert.equal(calls, 2);
 });
+
+test('the fixed CDN works when Chromium rejects manual redirects at the public origin', async t => {
+  const calls = [];
+  const cdn = release.url.replace('https://code.kimi.com/', 'https://cdn.kimi.com/');
+  const f = await fixture(t, { fetchImpl: async (url, config) => {
+    calls.push({ url, config });
+    // Electron session.fetch rejects here rather than returning Node's 302.
+    if (url === release.url) throw new Error('Redirect was cancelled');
+    assert.equal(url, cdn);
+    return new Response(payload, { headers: { 'content-length': String(payload.length) } });
+  } });
+  const installed = await f.runtime.ensure();
+  assert.deepEqual(await fs.readFile(installed.entry), payload);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, cdn);
+  assert.equal(calls[0].config.redirect, 'manual');
+});
+
+test('opaque or failed CDN responses cannot fall back to unchecked automatic redirects', async t => {
+  for (const respond of [
+    () => ({ status: 0, type: 'opaqueredirect', ok: false, body: null, headers: new Headers() }),
+    () => { throw new Error('Redirect was cancelled'); },
+  ]) {
+    let calls = 0;
+    const f = await fixture(t, { fetchImpl: async (_url, config) => {
+      calls++; assert.equal(config.redirect, 'manual'); return respond();
+    } });
+    await assert.rejects(f.runtime.ensure(), { code: 'KIMI_DOWNLOAD_FAILED' });
+    assert.equal(calls, 1);
+    assert.deepEqual(await fs.readdir(path.join(f.dir, 'kimi-runtime')), []);
+  }
+});
 test('bad digest, non-PE payload and incomplete downloads never become runnable', async t => {
   for (const response of [() => new Response(Buffer.from('MZ-wrong')), () => new Response(Buffer.from('no-pe')), () => new Response(payload, { headers: { 'content-length': String(payload.length + 1) } })]) {
     const f = await fixture(t, { fetchImpl: async () => response() }); await assert.rejects(f.runtime.ensure(), error => ['KIMI_DOWNLOAD_FAILED', 'KIMI_INTEGRITY_FAILED'].includes(error.code));

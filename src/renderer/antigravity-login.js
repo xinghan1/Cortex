@@ -1,9 +1,11 @@
 'use strict';
 (function (root) {
   const messages = Object.freeze({
+    ZCODE_RUNTIME_MISSING: 'GLM 组件准备失败，请点击“准备组件”重试，或重新安装新版；账号连接已保留。',
     KIMI_SUBSCRIPTION_REQUIRED: '账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。',
     ZCODE_AUTH_URL_INVALID: '官方代理返回的授权地址无效，请重试登录。',
     ZCODE_BROWSER_OPEN_FAILED: '无法打开官方授权页面，请检查默认浏览器后重试。',
+    ZCODE_CATALOG_EMPTY: 'ZCode 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。',
     AGY_RUNTIME_UNSUPPORTED: '当前系统暂不支持 Antigravity 官方代理。',
     AGY_DOWNLOAD_FAILED: '官方代理下载失败，请检查网络后重试。',
     AGY_INTEGRITY_FAILED: '官方代理校验失败，请重新下载。',
@@ -19,6 +21,7 @@
     AGY_BUSY: '另一项官方代理操作正在进行，请稍后重试。',
     AGY_SESSION_CHANGED: '官方代理连接已变化，请重新选择模型。',
     AGY_MODEL_UNAVAILABLE: '此账号暂未提供所选模型，请刷新模型目录。',
+    AGY_CATALOG_EMPTY: 'Antigravity 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。',
     AGY_MODE_UNAVAILABLE: '官方代理仅用于主会话，请为其他功能单独配置 API 模型。',
     AGY_INVALID_INPUT: '任务内容格式无效，请检查后重试。',
     AGY_IMAGES_UNSUPPORTED: '当前官方代理模式暂不支持图片，请改用 Gemini API Key。',

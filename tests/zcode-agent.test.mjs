@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { ZCodeAgent } from '../src/core/zcode-agent.mjs';
+import { nativeModelOption, resolveNativeModel } from './fixtures/zcode-native-model-contract.mjs';
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 function officialFake(handler = () => false) {
@@ -74,6 +75,7 @@ test('official login is its own process with isolated documented data root and n
   const login = f.fake.children[0]; assert.deepEqual(login.args, ['login', 'bigmodel', '--json']); assert.equal(login.options.shell, false); assert.equal(login.options.windowsHide, true);
   assert.equal(login.options.env.ZCODE_DATA_BASE_DIR, login.options.env.HOME); assert.equal(login.options.env.USERPROFILE, login.options.env.HOME);
   assert.equal(login.options.env.ZCODE_RUNTIME_ENV, 'production'); assert.equal(await fs.readFile(path.join(login.options.cwd, '.env'), 'utf8'), '');
+  assert.equal(login.options.env.SYNORA_ZCODE_STANDALONE_ACCOUNT, '1');
   assert.equal(login.options.env.GEMINI_API_KEY, undefined); assert.equal(login.options.env.ZCODE_CREDENTIAL_SECRET, undefined);
   assert.doesNotMatch(JSON.stringify(state), /PRIVATE_EMAIL|PRIVATE_PATH|fixture-user/);
   const own = JSON.parse(await fs.readFile(path.join(f.dir, 'zcode-agent', 'connection.json'), 'utf8')); assert.deepEqual(Object.keys(own), ['version', 'profileId', 'region', 'providerId']);
@@ -323,4 +325,96 @@ test('a failed or cancelled safe browser opener preserves the previous isolated 
 test('a successful CLI exit without the official no-browser authorization banner cannot bind a profile', async t => {
   const f = await fixture(t, { openExternal: () => { throw Error('must not run'); } });
   await assert.rejects(f.agent.signIn(), { code: 'ZCODE_AUTH_URL_INVALID' }); assert.equal((await f.agent.publicState()).session.sharing, false);
+});
+
+test('an empty official catalog remains an explicit connected-account error and never becomes a fabricated model selection', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc?.method !== 'session/create') return false;
+    child.reply(rpc, { protocol: { name: 'ZCode Protocol', version: 1 }, session: { sessionId: 'actual-empty-native' },
+      settings: { model: { available: [] }, mode: { current: 'guarded' }, permission: { mode: 'guarded' }, thoughtLevel: { enabled: false, available: [] } } }); return true;
+  } });
+  const connected = await f.agent.signIn();
+  await assert.rejects(f.agent.listModels(), { code: 'ZCODE_CATALOG_EMPTY' });
+  let state = await f.agent.publicState(); assert.equal(state.session.profileId, connected.session.profileId); assert.equal(state.session.status, 'connected'); assert.deepEqual(state.models, []);
+  await assert.rejects(f.agent.runTask(task(f)), { code: 'ZCODE_CATALOG_EMPTY' }); state = await f.agent.publicState();
+  assert.equal(state.session.profileId, connected.session.profileId); assert.equal(state.session.sharing, true);
+  assert.equal(f.fake.calls.some(call => call.rpc.method === 'session/send'), false);
+});
+
+test('native advertised reasoning defaults complete only private execution refs, preserving public IDs and rejecting unsupported or missing choices', async t => {
+  const provider = { providerId: 'bigmodel', providerName: 'Official fixture' }, models = new Map();
+  const row = (modelId, levels) => {
+    const model = { modelId, config: { properties: { inputFormat: ['text'], outputFormat: ['text'], contextWindow: 100000 },
+      optionSpecs: { reasoningLevel: { values: levels }, maxOutputTokens: { max: 8192 } } } };
+    models.set(modelId, model); return nativeModelOption(provider, model);
+  };
+  const advertised = row('glm-advertised', ['low', 'high', 'medium']);
+  const current = row('glm-current', ['off', 'low']); delete current.reasoning.defaultLevel;
+  const explicit = row('glm-explicit', ['low', 'high']); explicit.ref.options = { reasoningLevel: 'low' };
+  const unknown = row('glm-unknown', ['low', 'high']); unknown.ref.options = { reasoningLevel: 'unknown' };
+  const missing = row('glm-missing', ['low', 'high']); delete missing.reasoning.defaultLevel;
+  const badDefault = row('glm-bad-default', ['low', 'high']); badDefault.reasoning.defaultLevel = 'unknown';
+  const rows = [advertised, current, explicit, unknown, missing, badDefault]; let created = 0;
+  // This is the actual pinned upstream validator/resolver, not our adapter's rule.
+  assert.equal(advertised.ref.options, undefined);
+  assert.throws(() => resolveNativeModel(provider, models.get('glm-advertised'), advertised.ref), { code: 'reasoning-level-missing' });
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc?.method === 'session/create') {
+      const sessionId = 'native-reasoning-' + ++created; f.fake.sessions.set(sessionId, { seq: 0 });
+      child.reply(rpc, { protocol: { name: 'ZCode Protocol', version: 1 }, session: { sessionId }, settings: { model: {
+        available: rows, current: { providerId: 'bigmodel', modelId: 'glm-current', options: { reasoningLevel: 'off' } },
+      } } }); return true;
+    }
+    if (rpc?.method === 'session/send') {
+      const requested = rpc.params.modelSelection;
+      const resolved = resolveNativeModel(provider, models.get(requested.modelId), requested);
+      assert.equal(resolved.selection.options.reasoningLevel, requested.options.reasoningLevel);
+    }
+    return false;
+  } });
+  await f.agent.signIn(); const catalog = await f.agent.listModels();
+  assert.deepEqual(catalog.map(model => model.id), ['bigmodel/glm-advertised', 'bigmodel/glm-current', 'bigmodel/glm-explicit$low']);
+  for (const model of catalog) await f.agent.runTask(task(f, { modelId: model.id }));
+  const sent = f.fake.calls.filter(call => call.rpc.method === 'session/send').map(call => call.rpc.params.modelSelection);
+  assert.deepEqual(sent.map(ref => ref.options.reasoningLevel), ['medium', 'off', 'low']);
+  assert.equal(catalog[0].id, 'bigmodel/glm-advertised', 'inferred execution depth must not change a previously saved public model ID');
+  for (const modelId of ['bigmodel/glm-unknown$unknown', 'bigmodel/glm-missing', 'bigmodel/glm-bad-default'])
+    await assert.rejects(f.agent.runTask(task(f, { modelId })), { code: 'ZCODE_MODEL_UNAVAILABLE' });
+  assert.equal(f.fake.calls.filter(call => call.rpc.method === 'session/send').length, 3);
+});
+
+test('startup automatically restores the updated bundled component for an existing account without starting a process or changing its binding', async t => {
+  const f = await fixture(t), existing = await f.agent.signIn();
+  const file = path.join(f.dir, 'zcode-agent', 'connection.json'), before = await fs.readFile(file, 'utf8');
+  const launches = f.fake.children.length; let status = 'missing', ensures = 0;
+  const runtime = { init: async () => {}, publicState: async () => ({ status, version: '0.17.0' }), ensure: async ({ signal }) => {
+    ensures++; assert.equal(signal.aborted, false); status = 'ready'; return { entry: path.join(f.dir, 'new-bundled.exe'), version: '0.17.0' };
+  } };
+  const restored = new ZCodeAgent({ ...f.config, runtime }); t.after(() => restored.dispose());
+  await restored.init(); const state = await restored.publicState();
+  assert.equal(ensures, 1); assert.equal(state.runtime.status, 'ready'); assert.equal(state.session.profileId, existing.session.profileId);
+  assert.equal(state.session.sharing, true); assert.equal(state.storageRecovery, false);
+  assert.equal(f.fake.children.length, launches); assert.equal(await fs.readFile(file, 'utf8'), before);
+});
+
+test('API-only startup without a saved GLM profile never prepares or starts the bundled agent', async t => {
+  let ensures = 0;
+  const f = await fixture(t, { runtime: { init: async () => {}, publicState: async () => ({ status: 'missing', version: '0.17.0' }), ensure: async () => { ensures++; throw Error('must not run'); } } });
+  await f.agent.init(); const state = await f.agent.publicState();
+  assert.equal(ensures, 0); assert.equal(state.session.sharing, false); assert.equal(state.runtime.status, 'missing'); assert.equal(f.fake.children.length, 0);
+});
+
+test('component or disk preparation failures preserve a readable account and do not turn API startup into credential recovery', async t => {
+  for (const code of ['ZCODE_RUNTIME_MISSING', 'EACCES']) {
+    const f = await fixture(t), existing = await f.agent.signIn(); const file = path.join(f.dir, 'zcode-agent', 'connection.json');
+    const before = await fs.readFile(file, 'utf8'), launches = f.fake.children.length;
+    const runtime = { init: async () => {}, publicState: async () => ({ status: 'missing', version: '0.17.0' }),
+      ensure: async () => { throw Object.assign(Error('PRIVATE_PATH_OR_SECRET'), { code }); } };
+    const restored = new ZCodeAgent({ ...f.config, runtime }); t.after(() => restored.dispose());
+    await assert.doesNotReject(restored.init()); const state = await restored.publicState();
+    assert.equal(state.session.profileId, existing.session.profileId); assert.equal(state.session.status, 'connected');
+    assert.equal(state.session.sharing, true); assert.equal(state.storageRecovery, false); assert.equal(state.error.code, 'ZCODE_RUNTIME_MISSING');
+    assert.equal(state.error.phase, 'runtime'); assert.match(state.error.message, /准备组件/u); assert.doesNotMatch(JSON.stringify(state), /PRIVATE/u);
+    assert.equal(f.fake.children.length, launches); assert.equal(await fs.readFile(file, 'utf8'), before);
+  }
 });

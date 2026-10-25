@@ -68,6 +68,8 @@ npm.cmd run build:installer   # 安装包及 SHA-256 文件，输出到 installe
 
 两种构建可分别执行；便携版需保留整个输出目录，重新构建前请改名留存同名旧目录。首次安装依赖或构建需要联网下载 Electron，构建不会自动发布 GitHub Release。
 
-`prepare:zcode` 从固定提交 `3c5b227649371507ddc4eb46ac5133afe6db1cab` 构建官方 ZCode CLI 0.17.0。脚本自动准备隔离的 Node.js 24.14.0 和 pnpm 10.33.2，校验工具链、安装上游锁定依赖并生成完整 Windows x64 SEA 程序；无需修改全局 Node.js 或 pnpm。此步骤需联网，首次构建比安装普通依赖耗时更长。产物、来源与 SHA-256、许可证和第三方声明位于 `src/vendor/zcode-agent/`，构建分发包前需要完成该步骤。
+`prepare:zcode` 基于固定提交 `3c5b227649371507ddc4eb46ac5133afe6db1cab` 构建 ZCode CLI 0.17.0 兼容组件，并应用 [独立账号初始化补丁](scripts/patches/zcode-standalone-account.mjs)。该补丁让 `app-server` 使用上游已有的独立账号服务及请求鉴权端口，账号凭据仍由组件内部管理；不改变 OAuth 客户端身份、账号权限、模型定义或工具审批。补丁文件与修改前后源码均校验 SHA-256，产物来源文件明确记录这项修改。
+
+脚本自动准备隔离的 Node.js 24.14.0 和 pnpm 10.33.2，校验工具链、安装上游锁定依赖并生成保留全部上游资源收集器的 Windows x64 SEA 程序；无需修改全局 Node.js 或 pnpm。此步骤需联网，首次构建比安装普通依赖耗时更长。产物、来源与 SHA-256、补丁说明、许可证和第三方声明位于 `src/vendor/zcode-agent/`，构建分发包前需要完成该步骤。
 
 ChatGPT 登录组件采用随附的非商业许可，其他组件及素材遵循各自许可，详见 [第三方组件说明](THIRD_PARTY_NOTICES.md)。

@@ -3,7 +3,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const assert = require('node:assert/strict');
 
-// Installs from the actual ASAR and starts the complete original program with
+// Installs from the actual ASAR and starts the disclosed compatibility program with
 // an empty home. No login, session creation, account files or inference.
 module.exports = async function smokeOfficialRuntime({ runtime, dataDir }) {
   const { killAntigravityProcessTree } = await import('./antigravity-agent.mjs');
@@ -11,7 +11,7 @@ module.exports = async function smokeOfficialRuntime({ runtime, dataDir }) {
   await fs.mkdir(work, { recursive: true }); await fs.writeFile(path.join(work, '.env'), '');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(?:path|pathext|systemroot|windir|comspec|temp|tmp|lang|lc_all)$/iu.test(key)));
   Object.assign(env, { HOME: home, USERPROFILE: home, ZCODE_HOME: path.join(home, '.zcode'),
-    ZCODE_DATA_BASE_DIR: home, ZCODE_STORAGE_DIR: path.join(home, '.zcode'), ZCODE_RUNTIME_ENV: 'production' });
+    ZCODE_DATA_BASE_DIR: home, ZCODE_STORAGE_DIR: path.join(home, '.zcode'), ZCODE_RUNTIME_ENV: 'production', SYNORA_ZCODE_STANDALONE_ACCOUNT: '1' });
   let child, timer;
   try {
     const capabilities = await new Promise((resolve, reject) => {
@@ -34,7 +34,7 @@ module.exports = async function smokeOfficialRuntime({ runtime, dataDir }) {
     });
     assert.equal(capabilities.independentPlanState, true); assert.equal(capabilities.historyFirst, true);
     assert.equal((await runtime.publicState()).status, 'ready');
-    return { status: 'completed', sourceBuiltVersion: installed.version, originalProcessInitialized: true,
+    return { status: 'completed', sourceBuiltVersion: installed.version, compatibilityComponentInitialized: true, standaloneAccountEnabled: true,
       asarRuntimeCopyVerified: true, capabilities, authenticateRequested: false, sessionCreated: false, inferenceRequests: 0 };
   } finally { clearTimeout(timer); await killAntigravityProcessTree(child); }
 };

@@ -8,6 +8,14 @@ import { pipeline } from 'node:stream/promises';
 
 const filename = 'zcode-windows-x64.exe';
 const sourceCommit = '3c5b227649371507ddc4eb46ac5133afe6db1cab';
+const compatibility = Object.freeze({
+  id: 'synora-zcode-standalone-account-v1',
+  sourcePath: 'apps/zcode-cli/packages/bootstrap/src/zcode-protocol-entrypoint.ts',
+  baselineSha256: 'e45d5cdc4f9f90640ef93d89e4b87aa0e40c2a459946b954daa772b7d5594d9d',
+  resultSha256: 'b992107fcde46f9df89bcd4ce33af742ed6c7823978f4f60fdaec56169d34d95',
+  changedAt: '2026-10-25',
+  patchSha256: '7eab746b97fc6d4b9de13f6c225b71b21ac24ed1287d79f0814a58194b96edd9',
+});
 const MAX_BYTES = 768 * 1024 * 1024, MAX_METADATA = 128 * 1024;
 const failure = (code, message) => Object.assign(new Error(`[${code}] ${message}`), { code, name: 'ZCodeRuntimeError' });
 const cancelled = () => Object.assign(failure('ZCODE_CANCELLED', 'ZCode 组件准备已取消。'), { name: 'AbortError' });
@@ -28,8 +36,8 @@ const sha256 = async (file, signal) => {
   finally { stream.destroy(); }
 };
 
-// The complete, unchanged upstream SEA build includes the official runtime
-// resources. It is copied out of ASAR before execution; no account material is
+// The full SEA build retains upstream resources plus the disclosed, pinned
+// standalone-account initialization patch. It is copied out of ASAR before execution; no account material is
 // ever read while installing this Apache-2.0 source-built component.
 export class ZCodeRuntime {
   #root; #dir; #source; #onChange; #state; #manifest; #initializing; #pending; #controller;
@@ -60,7 +68,13 @@ export class ZCodeRuntime {
     if (Buffer.byteLength(raw) > MAX_METADATA) throw failure('ZCODE_RUNTIME_MISSING', 'ZCode 组件信息无效，请重新安装软件。');
     const value = JSON.parse(raw);
     if (value.sourceCommit !== sourceCommit || value.version !== '0.17.0' || value.license !== 'Apache-2.0'
+        || value.formatVersion !== 2 || value.officialSourceUnmodified !== false || !Array.isArray(value.patches) || value.patches.length !== 1
+        || Object.keys(compatibility).some(key => value.patches[0]?.[key] !== compatibility[key])
+        || value.files?.['synora-standalone-account.mjs'] !== compatibility.patchSha256
         || !/^[a-f\d]{64}$/u.test(value.files?.[filename] || '')) throw failure('ZCODE_RUNTIME_MISSING', 'ZCode 组件来源无法验证，请重新安装软件。');
+    const patchFile = path.join(this.#source, 'synora-standalone-account.mjs'), patchStat = await fs.lstat(patchFile);
+    if (!patchStat.isFile() || patchStat.isSymbolicLink() || patchStat.size > MAX_METADATA
+        || await sha256(patchFile, signal) !== compatibility.patchSha256) throw failure('ZCODE_RUNTIME_MISSING', 'ZCode 兼容组件校验失败，请重新安装软件。');
     return value;
   }
   async #installed(signal) {

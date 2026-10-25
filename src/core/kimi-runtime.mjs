@@ -74,7 +74,11 @@ export class KimiRuntime {
         file = await fs.open(path.join(staging, 'kimi.exe'), 'wx', 0o600);
         const progress = (receivedBytes, totalBytes) => { this.#change({ status: 'downloading', error: null, download: { receivedBytes, totalBytes } }); try { onProgress?.({ receivedBytes, totalBytes }); } catch {} };
         phase = 'download'; progress(0, null); timer = setTimeout(() => { timedOut = true; controller.abort(); }, 300000);
-        let response, url = this.#release.url;
+        // The public origin redirects to this exact, pinned CDN path. Chromium's
+        // session.fetch rejects redirect:'manual' instead of exposing its 302,
+        // unlike Node fetch. Start at the already allowed official CDN directly;
+        // do not enable automatic redirects or relax the version/hash checks.
+        let response, url = this.#release.url.replace('https://code.kimi.com/', 'https://cdn.kimi.com/');
         for (let redirect = 0; redirect <= 3; redirect++) {
           response = await wait(async () => {
             const result = await this.#fetch(url, { signal: controller.signal, redirect: 'manual' });

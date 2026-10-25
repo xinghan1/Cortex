@@ -1155,6 +1155,13 @@ async function fetchCurrentCatalog(force = false) {
   finally { if (request === catalogRequest) { catalogLoading = false; renderModelList(); refreshControlLocks(); } }
 }
 
+function settingsCatalogErrorText(error) {
+  const message = errorText(error), codes = ['AGY_CATALOG_EMPTY', 'ZCODE_CATALOG_EMPTY'];
+  const code = codes.includes(error?.code) ? error.code : message.slice(0, 8192).match(/\[(AGY_CATALOG_EMPTY|ZCODE_CATALOG_EMPTY)\]/u)?.[1];
+  return codes.includes(code) && typeof window.ForgeAntigravityLogin?.errorMessage === 'function'
+    ? window.ForgeAntigravityLogin.errorMessage({ code }) : message;
+}
+
 async function fetchSettingsCatalog(force = true) {
   if (contextBusy() || settingsSaving || isChatGPTBusy()) return;
   const provider = $('provider-select').value;
@@ -1182,13 +1189,19 @@ async function fetchSettingsCatalog(force = true) {
     if (provider === 'ollama' && (!Number.isInteger(draft.contextWindowTokens) || draft.contextWindowTokens < 4096 || draft.contextWindowTokens > 2097152)) throw new Error('模型上下文必须为 4096 至 2097152 之间的整数 Token。');
     const result = await modelSettingsAction('preview', draft);
     const current = modelSettingsDraftSnapshot();
-    if (request !== settingsCatalogRequest || Object.keys(snapshot).some(key => snapshot[key] !== current[key]) || !$('settings-dialog').open) return;
+    if (request !== settingsCatalogRequest || Object.keys(snapshot).length !== Object.keys(current).length
+        || Object.keys(snapshot).some(key => snapshot[key] !== current[key]) || !$('settings-dialog').open) return;
     if (typeof result?.selectionToken !== 'string' || !result.selectionToken) throw new Error('模型目录验证失败，请重新获取。');
     settingsCatalog = normalizeCatalog({ ...result, provider: result.provider || provider, authMode: result.authMode || authMode }, provider, authMode);
     settingsCatalogDraft = snapshot;
     renderSettingsCatalog();
     if (settingsCatalog.models.some(model => model.id === selected && settingsModelSelectable(model))) $('chatgpt-model-select').value = selected;
-  } catch (error) { if (request === settingsCatalogRequest) settingsCatalogError = errorText(error); }
+  } catch (error) {
+    if (request === settingsCatalogRequest && $('settings-dialog').open) {
+      const current = modelSettingsDraftSnapshot();
+      if (Object.keys(snapshot).length === Object.keys(current).length && Object.keys(snapshot).every(key => snapshot[key] === current[key])) settingsCatalogError = settingsCatalogErrorText(error);
+    }
+  }
   finally { if (request === settingsCatalogRequest) { settingsCatalogLoading = false; renderSettingsCatalog(); refreshControlLocks(); } }
 }
 

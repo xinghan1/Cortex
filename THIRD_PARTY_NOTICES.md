@@ -44,14 +44,19 @@ Antigravity 是 Google 的专有软件，适用 [Google Antigravity 服务条款
 
 来源：[zai-org / ZCode](https://github.com/zai-org/ZCode/tree/3c5b227649371507ddc4eb46ac5133afe6db1cab)，固定提交 `3c5b227649371507ddc4eb46ac5133afe6db1cab`，CLI 版本 0.17.0，上游采用 Apache License 2.0，Copyright 2026 Z.AI Co., Ltd。
 
-`npm run prepare:zcode` 从该提交构建完整 Windows x64 SEA 程序，保留上游运行资源与官方 `app-server` 协议，不修改上游受版本控制的源代码。Synora 通过原生协议转交会话、权限与用户问题，由 ZCode 自行处理智谱 / Z.AI 登录及工具执行，不读取其私有凭据。随包文件位于 `src/vendor/zcode-agent/`：
+`npm run prepare:zcode` 从该提交构建完整 Windows x64 SEA 兼容组件，保留上游运行资源收集器与 `app-server` 协议。Synora 于 2026-10-25 对 `zcode-protocol-entrypoint.ts` 应用了一项明确披露的兼容修改：在本软件单独传入 `SYNORA_ZCODE_STANDALONE_ACCOUNT=1` 时，连接上游已有的独立账号服务与请求鉴权端口。未设置该开关时保留原先的桌面工作进程行为。
+
+此组件不是未经修改的上游原版二进制。补丁不改变 OAuth 客户端身份、服务地址、账号权限、模型定义、工具执行或权限审批；账号认证材料始终由组件内部的上游代码管理，不导出给 Synora。Synora 通过原生协议转交会话、权限与用户问题。随包文件位于 `src/vendor/zcode-agent/`：
 
 - `zcode-windows-x64.exe`：完整代理程序，包含上游构建收集的运行资源。
 - `provenance.json`：上游提交、版本、工具链校验值与产物 SHA-256。
 - `LICENSE`、`NOTICE.md`、`THIRD-PARTY-NOTICES.md`：原版许可、来源和完整依赖声明。
+- `SYNORA-PATCHES.md`、`synora-standalone-account.mjs`：修改说明和精确补丁；`provenance.json` 记录补丁及修改前后源码 SHA-256。
 - `NODE-LICENSE.txt`：SEA 内嵌的 Node.js 24.14.0 运行时完整许可。
 
 各内嵌依赖保持原许可。该源码许可不授予 Z.AI 品牌、账号、订阅或服务访问权。
+
+用于精确初始化和模型选择回归测试的未修改上游源码位于 `tests/fixtures/` 中的三个 `zcode-*-v0170.ts` 文件；同目录的 `zcode-v0170-LICENSE` 与 `NOTICE.md` 保留其 Apache 2.0 许可、固定来源和测试用途说明。
 
 ### Google Gemini CLI
 

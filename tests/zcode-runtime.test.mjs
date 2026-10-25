@@ -4,14 +4,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { ZCodeRuntime } from '../src/core/zcode-runtime.mjs';
+import { ZCODE_STANDALONE_PATCH } from '../scripts/patches/zcode-standalone-account.mjs';
 const filename = 'zcode-windows-x64.exe', commit = '3c5b227649371507ddc4eb46ac5133afe6db1cab';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const patchBytes = Buffer.from((await fs.readFile(new URL('../scripts/patches/zcode-standalone-account.mjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n'));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const payload = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(256 * 1024, 0x51)]);
 async function fixture(t, options = {}) {
   const root = path.resolve('artifacts', 'test-zcode-runtime'); await fs.mkdir(root, { recursive: true }); const directory = await fs.mkdtemp(path.join(root, 'case-'));
   const dataDir = path.join(directory, 'data'), sourceDirectory = path.join(directory, 'source'); await fs.mkdir(sourceDirectory);
-  await fs.writeFile(path.join(sourceDirectory, filename), payload); await fs.writeFile(path.join(sourceDirectory, 'provenance.json'), JSON.stringify({ sourceCommit: commit, version: '0.17.0', license: 'Apache-2.0', files: { [filename]: hash(payload) } }));
+  await fs.writeFile(path.join(sourceDirectory, filename), payload); await fs.writeFile(path.join(sourceDirectory, 'synora-standalone-account.mjs'), patchBytes);
+  await fs.writeFile(path.join(sourceDirectory, 'provenance.json'), JSON.stringify({ formatVersion: 2, officialSourceUnmodified: false,
+    patches: [{ ...ZCODE_STANDALONE_PATCH, patchSha256: hash(patchBytes) }], sourceCommit: commit, version: '0.17.0', license: 'Apache-2.0',
+    files: { [filename]: hash(payload), 'synora-standalone-account.mjs': hash(patchBytes) } }));
   const runtime = new ZCodeRuntime({ dataDir, sourceDirectory, platform: 'win32', arch: 'x64', ...options });
   t.after(async () => { await runtime.dispose(); assert.equal(path.dirname(directory), root); await fs.rm(directory, { recursive: true, force: true }); });
   return { runtime, directory, dataDir, sourceDirectory, entry: path.join(dataDir, 'zcode-runtime', '0.17.0', filename) };
@@ -43,6 +48,18 @@ test('missing or unprepared source does not block API-only application startup a
     else if (broken === 'invalid-json') await fs.writeFile(file, '{broken');
     else { const value = JSON.parse(await fs.readFile(file, 'utf8')); if (broken === 'wrong-commit') value.sourceCommit = '0'.repeat(40); else value.license = 'private'; await fs.writeFile(file, JSON.stringify(value)); }
     await f.runtime.init(); assert.equal((await f.runtime.publicState()).status, 'missing'); await assert.rejects(f.runtime.ensure(), { code: 'ZCODE_RUNTIME_MISSING' }); await assert.rejects(fs.stat(f.entry), { code: 'ENOENT' });
+  }
+});
+
+test('old worker-only builds, unknown patches and modified patch sources cannot be installed as the account runtime', async t => {
+  for (const change of ['legacy-worker', 'unknown-patch', 'tampered-source']) {
+    const f = await fixture(t), file = path.join(f.sourceDirectory, 'provenance.json'), manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (change === 'legacy-worker') { manifest.formatVersion = 1; manifest.officialSourceUnmodified = true; delete manifest.patches; }
+    if (change === 'unknown-patch') manifest.patches[0].resultSha256 = '0'.repeat(64);
+    if (change === 'tampered-source') await fs.appendFile(path.join(f.sourceDirectory, 'synora-standalone-account.mjs'), '\n// modified');
+    await fs.writeFile(file, JSON.stringify(manifest));
+    await assert.rejects(f.runtime.ensure(), { code: 'ZCODE_RUNTIME_MISSING' });
+    await assert.rejects(fs.stat(f.entry), { code: 'ENOENT' });
   }
 });
 
