@@ -328,14 +328,21 @@ test('bottom-edge chat stays below the pet in a compact floating bubble without 
 
 test('blocking question bubbles expand without widening casual chat or overflowing a narrow viewport', async t => {
   const h=await fixture(t,asking());
-  assert.equal(Number.parseFloat(h.node('pet-dialog').style.width),440);
+  const petBounds={...h.pet.rect},petStyle={...h.pet.style};
+  assert.equal(Number.parseFloat(h.node('pet-dialog').style.width),600);
   assert.equal(Number.parseFloat(h.node('pet-dialog-input-bubble').style.width),316);
-  h.view.innerWidth=360;h.view.fire('resize');h.flush();
-  const box=h.node('pet-dialog').getBoundingClientRect();
-  assert.equal(box.width,344);assert.ok(box.left>=8);assert.ok(box.right<=352);
+  for(const viewport of [616,500,360]){
+    h.view.innerWidth=viewport;h.view.fire('resize');h.flush();
+    const box=h.node('pet-dialog').getBoundingClientRect();
+    assert.equal(box.width,Math.min(600,viewport-16));assert.ok(box.left>=8);assert.ok(box.right<=viewport-8);
+    assert.equal(h.node('pet-dialog-cancel').hidden,false);assert.equal(h.node('pet-dialog-stop').hidden,false);
+    assert.equal(h.node('pet-dialog-options').children.length,2);assert.ok(h.node('pet-dialog-options').children.every(node=>!node.disabled));
+    assert.deepEqual(h.pet.rect,petBounds);assert.deepEqual(h.pet.style,petStyle);
+  }
   h.view.innerWidth=1200;h.view.fire('resize');h.flush();
   h.emit(empty(2));h.emit({...asking('casual',false),revision:3});
   assert.equal(Number.parseFloat(h.node('pet-dialog').style.width),316);
+  assert.deepEqual(h.pet.rect,petBounds);assert.deepEqual(h.pet.style,petStyle);
 });
 
 test('consecutive chat accepts clear only the submitted draft when launch events arrive before the IPC response', async t => {

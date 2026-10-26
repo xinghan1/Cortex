@@ -86,3 +86,31 @@ test('a temporary-file write failure never tries replacement and retains the pre
   assert.equal(await fs.readFile(destination, 'utf8'), original);
   assert.deepEqual(await fs.readdir(directory), ['session.json']);
 });
+
+
+test('queued session saves capture their original IDs and messages, and flush waits for every write', async t => {
+  const { store } = await fixture(t), writes = [];
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  store.write = async (relative, snapshot) => { writes.push({ relative, snapshot: structuredClone(snapshot) }); if (writes.length === 1) await gate; };
+  const session = store.createSession('C:/snapshot-fixture'), originalId = session.id;
+  session.messages.push({ role: 'user', content: 'first captured message' });
+  const first = store.saveSession(session);
+  session.messages[0].content = 'second captured message';
+  const second = store.saveSession(session);
+  session.id = store.createSession().id; session.messages[0].content = 'must not leak into either queued write';
+  let settled = false; const flushing = store.flushSessions().then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false); assert.equal(writes.length, 1);
+  release(); await Promise.all([first, second, flushing]);
+  assert.equal(settled, true); assert.equal(writes.length, 2);
+  assert.ok(writes.every(value => value.relative === path.join('sessions', originalId + '.json') && value.snapshot.id === originalId));
+  assert.deepEqual(writes.map(value => value.snapshot.messages[0].content), ['first captured message', 'second captured message']);
+});
+
+test('Store itself never persists a temporary conversation even when called directly', async t => {
+  const { directory, store } = await fixture(t);
+  const before = await fs.readdir(directory), session = store.createSession('C:/temporary-fixture');
+  session.temporary = true; session.messages.push({ role: 'user', content: 'temporary private content' });
+  await store.saveSession(session); await store.flushSessions();
+  assert.deepEqual(await fs.readdir(directory), before);
+});

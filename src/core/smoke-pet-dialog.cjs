@@ -48,6 +48,8 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
       textColor:panel&&getComputedStyle(panel).color,background:panel&&getComputedStyle(panel).backgroundColor,
       geometry:r&&{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},
       viewport:{width:innerWidth,height:innerHeight},overflow:document.documentElement.scrollWidth>innerWidth+1,
+      questionAnswers:[...document.querySelectorAll('.question-answer-card')].map(card=>({runId:card.dataset.runId,questionId:card.dataset.questionId,
+        question:card.querySelector('.question-answer-question')?.textContent,answer:card.querySelector('.question-answer-text')?.textContent})),
       nativeInputs:window.__petDialogInputs||[],sessionId:appState?.sessionId};
   })()`);
   const click = async (selector, button = 'left') => {
@@ -201,7 +203,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await until('pet bubble placement',async()=>(await inspect()).mode==='bubble'&&(await inspect()).inputPhase==='visible');let value=await inspect();assertLayout(value);assert.equal(value.replaced,false);
     assert.deepEqual(value.petGeometry,restingPet,'Opening a question and answer bubble preserves the pet position and size');
     geometryChecks.push({sample:'question-open',before:restingPet,after:value.petGeometry,input:value.inputGeometry});
-    assert.equal(value.geometry.width,440,'Blocking questions use the enlarged question window');
+    assert.equal(value.geometry.width,600,'Blocking questions use the enlarged question window');
     assert.equal(value.historyExists,false);assert.equal(value.titleExists,false);assert.equal(value.launcherExists,false);assert.equal(value.closeExists,false);assert.equal(value.sendInsideInput,true);assert.equal(value.anchor,'character');
     assert.ok(Math.abs(value.inputGeometry.top-value.characterGeometry.bottom-8)<=1,'Chat input bubble stays just below the character feet');
     assert.ok(Math.abs(value.geometry.bottom-value.characterGeometry.top+10)<=1,'Speech bubble stays close to the character head');
@@ -209,6 +211,8 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await click('.pet-dialog-choice[data-choice-index="1"]');await idle();
     assert.equal(answers.choice.answer,'使用独立配置');assert.equal(answers.choice.choiceIndex,1);assert.equal(answers.choice.source,'user');
     assert.equal((await inspect()).mainDraft,draft);
+    assert.deepEqual((await inspect()).questionAnswers.map(item=>[item.question,item.answer]),[[questions.choice,'使用独立配置']]);
+    assert.equal((await call('getCurrentSession')).messages.filter(item=>item.role==='user').length,1,'Answering a choice must not add a main user turn');
 
     stage='hidden pet fallback preserves draft and custom answer';await call('setPet',{enabled:false});
     await js(`$('task-input').focus();$('task-input').setSelectionRange(2,8)`);await ask('custom');
@@ -220,11 +224,13 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     assert.equal(answers.custom.answer,customAnswer);assert.equal(answers.custom.choiceIndex,undefined);assert.equal((await inspect()).mainDraft,draft);
     assert.deepEqual((await inspect()).selection,[2,8]);assert.equal((await inspect()).replaced,false);
     assert.ok((await inspect()).nativeInputs.some(item=>item.trusted&&item.value===customAnswer));
+    assert.deepEqual((await inspect()).questionAnswers.map(item=>[item.question,item.answer]),[[questions.choice,'使用独立配置'],[questions.custom,customAnswer]]);
+    assert.equal((await call('getCurrentSession')).messages.filter(item=>item.role==='user').length,2,'Hidden-pet custom input stays an answer inside its existing task');
 
     stage='enlarged long blocking question keeps all controls within the viewport';await call('setPet',{enabled:true});
     const beforeLongQuestion=await settledPet();await ask('cancel');
     await until('long question entry settles',async()=>(await inspect()).phase==='visible');
-    value=await inspect();assertLayout(value);assert.equal(value.geometry.width,440);
+    value=await inspect();assertLayout(value);assert.equal(value.geometry.width,600);
     assert.ok(value.geometry.height>350,'Long question and eight choices use the enlarged vertical space');
     assert.ok(value.geometry.height<=560,'Question keeps its bounded maximum height');
     assert.equal(value.contentContained,true,'Long question, choices and footer controls remain inside the enlarged panel');assert.equal(value.stopVisible,true);
@@ -243,10 +249,12 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await click('#pet-dialog-cancel');await idle();
     assert.equal(answers.cancel.cancelled,true);assert.equal(answers.cancel.source,'user');
     assert.equal(Object.hasOwn(answers.cancel,'answer'),false);assert.equal(Object.hasOwn(answers.cancel,'approval'),false);
+    assert.equal((await inspect()).questionAnswers.length,2,'Cancelling a question does not invent an answer card');
 
     stage='stop entry cancels blocked primary task';await ask('stop');await click('#pet-dialog-stop');await idle();
     await until('stopped question removed',async()=>!(await call('getPetDialog')).question&&!(await inspect()).replaced);
     assert.equal(answers.stop,undefined,'Stop must not invent a question answer');
+    assert.equal((await inspect()).questionAnswers.length,2);
 
     stage='left-click pet opens chat with internal send and outside collapse keeps drafts';await call('setPet',{enabled:true});
     const beforeChat=await settledPet();await click('#pet-overlay-hit');
@@ -302,6 +310,14 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
     await js(`(()=>{for(const{node,value,priority}of window.__petSmokeEdgeStyles||[])if(value)node.style.setProperty('display',value,priority);else node.style.removeProperty('display');delete window.__petSmokeEdgeStyles;window.dispatchEvent(new Event('resize'));return true})()`);await settledPet();
     await click('#task-input');await until('edge chat closes normally',async()=>(await inspect()).inputBubbleHidden);
 
+    stage='answered task questions restore in history without casual chat or additional rounds';
+    const answeredSession=await call('getCurrentSession'),liveAnswers=(await inspect()).questionAnswers;
+    assert.equal(answeredSession.questionAnswers.length,2);assert.equal(liveAnswers.length,2,'Casual pet chat and reactions never create main-task answer cards');
+    await js(`renderSessionSnapshot(${JSON.stringify(answeredSession)})`);
+    assert.deepEqual((await inspect()).questionAnswers,liveAnswers);
+    assert.equal(await js(`document.querySelectorAll('.message.user').length`),answeredSession.messages.filter(item=>item.role==='user').length);
+    await js(`(()=>{for(const node of document.querySelectorAll('.task-activity'))node.open=true;document.querySelector('.question-answer-card')?.scrollIntoView({block:'center',behavior:'instant'});return true})()`);
+    await capture('pet-dialog-question-answer-history.png');
     stage='scope switch deletes temporary chat and rejects stale payload';const previous=await call('getPetDialog');await call('newSession');
     await until('new session clears pet chat',async()=>{const next=await call('getPetDialog');return next.sessionId!==previous.sessionId&&!next.messages.length&&!next.question;});
     assert.equal(await js(`window.forge.sendPetChat(${JSON.stringify({workspaceId:previous.workspaceId,sessionId:previous.sessionId,text:'不得发送旧输入'})}).then(()=>false,()=>true)`),true);
@@ -316,6 +332,7 @@ module.exports = async function smokePetDialog({ win, output, dataDir }) {
       speechAndInputAreSeparateBubbles:true,noHistoryWindow:true,inputBelowPet:true,bundledCharacterAnchor:true,ordinarySpeechLifetimeIncludes500msTransitions:true,timing,
       acceptedConsecutiveChatDraftCleared:true,longQuestionEightChoicesContained:true,enlargedLongBlockingQuestion:true,bottomEdgeNoLayoutFeedback:true,
       sixStyles:true,narrowWindow:true,answers,requests:records,screenshots};
+    result.taskQuestionAnswersVisible=true;result.taskQuestionAnswersHistoryRestored=true;result.answersDoNotAddUserTurns=true;result.casualChatExcludedFromMainHistory=true;
     await fs.writeFile(path.join(output,'pet-dialog-smoke-result.json'),JSON.stringify(result,null,2)+'\n');return result;
   } catch(error) {
     const failure={status:'failed',stage,error:error.message,stack:error.stack,answers,records,problems,geometryChecks};

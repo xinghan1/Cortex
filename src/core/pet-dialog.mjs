@@ -293,7 +293,20 @@ export function createPetDialogController({ getConfig, requestModel, emit = () =
       if (choice === custom || choice && (!Number.isSafeInteger(input.choiceIndex) || input.choiceIndex < 0 || input.choiceIndex >= question.options.length)
           || custom && !validText(input.text, PET_DIALOG_LIMITS.textChars)) throw new Error('请选择一个有效选项或填写回答。');
       const answer = clean(choice ? question.options[input.choiceIndex] : input.text.trim());
-      if (blocking) { settleQuestion({ questionId: question.id, answer, ...(choice ? { choiceIndex: input.choiceIndex } : {}), source: 'user' }); return publish(); }
+      if (blocking) {
+        const record = blocking;
+        const result = { questionId: question.id, answer, ...(choice ? { choiceIndex: input.choiceIndex } : {}), source: 'user' };
+        settleQuestion(result);
+        // An answered task decision is public activity, not another model/user
+        // turn. Main validates this captured run/session before archiving it.
+        // Casual pet chat, cancellation and stale answers never enter this path.
+        if ([record.runId, record.sessionId].every(value => typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\x00-\x1f\x7f]/u.test(value))) {
+          try { emit({ type: 'question-answer', questionId: question.id, question: question.question,
+            options: [...question.options], ...result, runId: record.runId, sessionId: record.sessionId }); }
+          catch { /* A display callback cannot invent a different answer. */ }
+        }
+        return publish();
+      }
       return launch(answer);
     },
     dismiss(input) {

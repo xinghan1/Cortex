@@ -46,6 +46,30 @@ test('custom answers and explicit question cancellation remain distinct from ans
   assert.equal(f.controller.snapshot().question, null); assert.equal(f.usage.length, 0);
 });
 
+test('answered task questions emit one redacted activity receipt with the exact question, answer and captured task scope', async () => {
+  const f = fixture({ redact: value => value.replaceAll('PRIVATE', '[hidden]') });
+  const selected = f.controller.ask({ question: '如何处理 PRIVATE？', options: ['保留 PRIVATE', '调整'] }, { runId: 'run-one', sessionId: 'session-one' });
+  const selectedId = f.controller.snapshot().question.id; f.controller.answer({ id: selectedId, choiceIndex: 0 }); await selected;
+  const custom = f.controller.ask({ question: '另一项具体要求？' }, { runId: 'run-two', sessionId: 'session-two' });
+  const customId = f.controller.snapshot().question.id;
+  assert.throws(() => f.controller.answer({ id: selectedId, text: '迟到回答' }), /已结束/);
+  f.controller.answer({ id: customId, text: ' 使用 PRIVATE 的自定义方案 ' }); await custom;
+  assert.deepEqual(f.events.filter(event => event.type === 'question-answer'), [
+    { type: 'question-answer', questionId: selectedId, question: '如何处理 [hidden]？', options: ['保留 [hidden]', '调整'], answer: '保留 [hidden]', choiceIndex: 0, source: 'user', runId: 'run-one', sessionId: 'session-one' },
+    { type: 'question-answer', questionId: customId, question: '另一项具体要求？', options: [], answer: '使用 [hidden] 的自定义方案', source: 'user', runId: 'run-two', sessionId: 'session-two' },
+  ]);
+  assert.deepEqual(f.controller.snapshot().messages, []); assert.equal(f.requests.length, 0); assert.equal(f.usage.length, 0);
+});
+
+test('cancelled, stopped, unscoped and casual pet questions do not produce main-task answer receipts', async () => {
+  const f = fixture();
+  const cancelled = f.controller.ask({ question: '可取消的问题' }, { runId: 'run', sessionId: 'session' }); f.controller.dismiss({ id: f.controller.snapshot().question.id }); await cancelled;
+  const stopped = f.controller.ask({ question: '任务停止' }, { runId: 'run', sessionId: 'session' }); const rejected = assert.rejects(stopped, { name: 'AbortError' }); f.controller.stop(); await rejected;
+  const unscoped = f.controller.ask({ question: '未绑定任务' }); f.controller.answer({ id: f.controller.snapshot().question.id, text: '回答' }); await unscoped;
+  f.controller.greet({ runId: 'run', sessionId: 'session' }); await f.controller.settled(); f.controller.answer({ id: f.controller.snapshot().question.id, text: '仅宠物闲聊' }); await f.controller.settled();
+  assert.deepEqual(f.events.filter(event => event.type === 'question-answer'), []);
+});
+
 test('stopping or changing sessions rejects the pending decision without inventing a choice', async () => {
   for (const action of ['parent', 'stop', 'close']) {
     const f = fixture(), parent = new AbortController();

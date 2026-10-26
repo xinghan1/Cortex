@@ -148,7 +148,7 @@
       place(panel, parent); place(inputBubble, parent);
       for (const node of [panel, inputBubble]) { node.dataset.mode = fallback ? 'composer' : 'bubble'; node.dataset.blocking = String(isBlocking); }
       const width = Math.max(1, Math.min(316, view.innerWidth - 16));
-      const speechWidth = Math.max(1, Math.min(isBlocking ? 440 : 316, view.innerWidth - 16));
+      const speechWidth = Math.max(1, Math.min(isBlocking ? 600 : 316, view.innerWidth - 16));
       if (!fallback) { setStyle(panel, 'width', `${speechWidth}px`); setStyle(inputBubble, 'width', `${width}px`); }
       if (fallback) {
         for (const node of [panel, inputBubble]) for (const name of ['left', 'top', 'width', 'maxHeight']) setStyle(node, name, '');

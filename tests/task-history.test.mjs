@@ -19,6 +19,39 @@ const deepFreeze = value => {
   if (value && typeof value === 'object') { Object.freeze(value); Object.values(value).forEach(deepFreeze); }
   return value;
 };
+const answerEvent = (runId, questionId, patch = {}) => ({ type: 'question-answer', runId, sessionId: 'original-session', questionId,
+  question: '请选择处理方式。', options: ['保留', '调整'], answer: '调整', choiceIndex: 1, source: 'user', messageIndex: 0, sequence: 2, ...patch });
+
+test('task question answers survive event rollover and session forks without adding user messages or rounds', () => {
+  const choice = answerEvent('first', 'choice'), custom = answerEvent('second', 'custom', { question: '补充具体需求？', options: [], choiceIndex: undefined, answer: '完整自定义回答\n保留换行', messageIndex: 2 }); delete custom.choiceIndex;
+  const session = deepFreeze({ id: 'forked-session', messages: [user('第一项任务'), assistant('第一项完成'), user('第二项任务'), assistant('第二项完成')],
+    taskRuns: [record('first', 0, 1), record('second', 2, 3)], events: Array.from({ length: 150 }, (_, index) => ({ type: 'telemetry', runId: 'second', sequence: index + 10 })),
+    questionAnswers: [choice, custom] });
+  const blocks = project(session), runs = runBlocks(blocks);
+  assert.equal(runs.length, 2); assert.equal(blocks.filter(item => item.type === 'message' && item.message.role === 'user').length, 2);
+  assert.deepEqual(events(runs[0]).filter(event => event.type === 'question-answer').map(event => [event.questionId, event.answer]), [['choice', '调整']]);
+  assert.deepEqual(events(runs[1]).filter(event => event.type === 'question-answer').map(event => [event.questionId, event.answer]), [['custom', '完整自定义回答\n保留换行']]);
+  assert.equal(session.messages.length, 4); assert.equal(session.questionAnswers[0].sessionId, 'original-session', 'Forked history retains the original answer scope while matching its run');
+});
+
+test('canonical and per-run answer receipts deduplicate, filter cancelled/private data and cannot attach another task question', () => {
+  const kept = answerEvent('r', 'kept', { providerState: 'PRIVATE_PROVIDER', accessToken: 'PRIVATE_TOKEN' });
+  const invalid = answerEvent('r', 'cancelled', { cancelled: true }), wrong = answerEvent('other', 'wrong');
+  const session = deepFreeze({ messages: [user('任务'), assistant('完成')], taskRuns: [{ ...record('r', 0, 1), activityEvents: [kept, kept, invalid, wrong] }], events: [kept],
+    questionAnswers: [kept, invalid, wrong, answerEvent('r', 'fake-choice', { answer: '并未选择此项' }), answerEvent('r', 'model', { source: 'assistant' })] });
+  const restored = events(runBlocks(project(session))[0]).filter(event => event.type === 'question-answer');
+  assert.equal(restored.length, 1); assert.equal(restored[0].questionId, 'kept'); assert.doesNotMatch(JSON.stringify(restored), /PRIVATE|providerState|accessToken/);
+});
+
+test('an answer archive restores inside its recorded tool sequence and remains inspectable for an unanchored legacy run', () => {
+  const answer = answerEvent('r', 'between');
+  const session = { messages: [user('任务'), assistant('完成')], taskRuns: [record('r', 0, 1)],
+    events: [{ type: 'tool-start', runId: 'r', toolCallId: 'ask', name: 'ask_user_question', sequence: 1, messageIndex: 0 },
+      { type: 'tool-result', runId: 'r', toolCallId: 'ask', name: 'ask_user_question', result: 'done', sequence: 3, messageIndex: 0 }], questionAnswers: [answer] };
+  assert.deepEqual(events(runBlocks(project(session))[0]).map(event => event.type), ['tool-start', 'question-answer', 'tool-result']);
+  const legacy = runBlocks(project({ ...session, taskRuns: [record('r', 99, 1)] }))[0]; assert.equal(legacy.unanchored, true);
+  assert.equal(events(legacy).filter(event => event.type === 'question-answer')[0].questionId, 'between');
+});
 
 test('generated screenshot receipts reload only within the tool message current run and keep byte data out of events', () => {
   const screenshot = { name: 'local-ui.png', mediaType: 'image/png', dataUrl: 'data:image/png;base64,eA==' };

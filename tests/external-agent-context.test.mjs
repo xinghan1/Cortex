@@ -37,3 +37,12 @@ test('reference text reserves the existing four-MiB request bound without trunca
     const result = externalAgentPrompt(prompt, history); assert.ok(Buffer.byteLength(result) <= max); assert.ok(result.endsWith(prompt)); assert.ok(result.length > prompt.length);
   }
 });
+
+
+test('recovered display-only partial replies never become completed native reference history', () => {
+  const history = [{ role: 'user', content: '原始任务' },
+    { role: 'assistant', content: 'RECOVERED_UNFINISHED', localOnly: true, source: 'interrupted-stream' },
+    { role: 'assistant', content: '已完整保存的回复' }];
+  assert.deepEqual(rows(externalAgentPrompt(current, history)), [{ role: 'user', content: '原始任务' }, { role: 'assistant', content: '已完整保存的回复' }]);
+  assert.equal(history[1].content, 'RECOVERED_UNFINISHED');
+});

@@ -24,9 +24,13 @@ function encryptedStorage() {
     const data = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]); return Buffer.concat([iv, cipher.getAuthTag(), data]);
   }, decryptString: value => { const decipher = createDecipheriv('aes-256-gcm', key, value.subarray(0, 12)); decipher.setAuthTag(value.subarray(12, 28)); return Buffer.concat([decipher.update(value.subarray(28)), decipher.final()]).toString('utf8'); } };
 }
+const LOGIN_FLAGS = ['auth', 'login', '--login-mode', 'legacy', '--no-browser'];
+const AUTH_CODE = Buffer.from('fixture-only authorization code').toString('base64');
+const AUTH_URL = 'https://signin.volcengine.com/authorize/oauth/authorize?client_id=trn%3Asignin%3A%3A%3Adevtools%2Fcross-device&redirect_uri=https%3A%2F%2Fsignin.volcengine.com%2Fauthorize%2Foauth%2Fauthorize&response_type=code&code_challenge_method=S256&state=fixture%2Bstate%3D&code_challenge=fixture_challenge-0123&scope=openid%20profile';
+const pendingAuthorization = extra => ({ stage: 'authorize_pending', method: 'sso_no_browser', authorize_url: AUTH_URL, expires_in_sec: 600, ...extra });
 async function fixture(t, options = {}) {
   const base = path.resolve('artifacts', 'test-ark-account'); await fs.mkdir(base, { recursive: true }); const directory = await fs.mkdtemp(path.join(base, 'case-'));
-  const calls = [], profiles = new Map(), agents = [], safeStorage = options.safeStorage || encryptedStorage();
+  const calls = [], profiles = new Map(), agents = [], openedUrls = [], states = [], observerErrors = [], watchers = new Set(), pendingHomes = new Set(), autoSubmitted = new Set(), safeStorage = options.safeStorage || encryptedStorage();
   const runtime = { init: async () => {}, publicState: async () => ({ status: 'ready', version: '1.0.42' }), ensure: async () => ({ entry: path.join(directory, 'official-arkcli.exe'), version: '1.0.42' }) };
   const spawnImpl = (entry, args, config) => {
     const child = new EventEmitter(); Object.assign(child, { pid: 72000 + calls.length, stdout: new PassThrough(), stderr: new PassThrough(), killed: false });
@@ -37,7 +41,12 @@ async function fixture(t, options = {}) {
       try {
         if (await options.handler?.(invocation)) return;
         const home = config.env.HOME;
-        if (args[0] === 'auth' && args[1] === 'login') { profiles.set(home, { name: 'official-profile', type: options.type || 'agent-plan', region: 'cn-beijing', project: 'default', owner_trn: 'trn:iam::account:user/fixture', key: 'PRIVATE_RUNTIME_KEY_' + calls.length }); child.finish('Logged in.\n'); return; }
+        if (args[0] === 'auth' && args[1] === 'login') {
+          assert.deepEqual(args.slice(0, 5), LOGIN_FLAGS, 'both phases must explicitly choose the pinned legacy flow');
+          if (!args.includes('--code')) { assert.equal(args.length, 5); pendingHomes.add(home); child.finish(pendingAuthorization(options.pending)); return; }
+          assert.equal(pendingHomes.has(home), true, 'phase two must reuse phase one HOME'); assert.equal(args[5], '--code'); assert.equal(args.length, 7);
+          profiles.set(home, { name: 'official-profile', type: options.type || 'agent-plan', region: 'cn-beijing', project: 'default', owner_trn: 'trn:iam::account:user/fixture', key: 'PRIVATE_RUNTIME_KEY_' + calls.length }); child.finish({ auth_method: 'sso_no_browser' }); return;
+        }
         const saved = profiles.get(home); assert.ok(saved, 'commands must use the same official isolated home');
         const requested = args.indexOf('--profile'), choice = requested >= 0 ? options.summary?.find(row => row.name === args[requested + 1]) : null;
         const profile = { ...saved, ...(choice || {}) };
@@ -50,21 +59,39 @@ async function fixture(t, options = {}) {
       } catch (error) { child.testError = error; child.finish(undefined, 2); }
     }); return child;
   };
-  const config = { dataDir: directory, safeStorage, runtime, spawnImpl, killTreeImpl: async child => child?.kill(), onChange: options.onChange || (() => {}), requestTimeoutMs: 200, loginTimeoutMs: 200, getProxyEnv: () => ({ HTTPS_PROXY: 'http://127.0.0.1:9911', ARK_API_KEY: 'IGNORE_OVERRIDE' }) };
-  const create = () => { const agent = new ArkAccount(config); agents.push(agent); return agent; }; const agent = create();
-  t.after(async () => { for (const item of agents) await item.dispose(); for (const call of calls) assert.equal(call.child.testError, undefined); assert.equal(path.dirname(directory), base); await fs.rm(directory, { recursive: true, force: true }); });
-  return { directory, agent, create, calls, profiles, safeStorage, config };
+  const config = { dataDir: directory, safeStorage, runtime, spawnImpl, killTreeImpl: async child => child?.kill(), requestTimeoutMs: 1000, loginTimeoutMs: options.loginTimeoutMs ?? 5000,
+    openExternal: async url => { openedUrls.push(url); await options.openExternal?.(url); }, getProxyEnv: () => ({ HTTPS_PROXY: 'http://127.0.0.1:9911', ARK_API_KEY: 'IGNORE_OVERRIDE' }) };
+  const create = () => {
+    let agent; agent = new ArkAccount({ ...config, onChange: () => { queueMicrotask(async () => {
+      try {
+        const state = await agent.publicState(); states.push(state); for (const watch of watchers) watch(state);
+        await options.onChange?.(state, agent);
+        if (options.autoSubmit !== false && state.attempt?.phase === 'waiting-authorization-code') {
+          const home = calls.findLast(call => call.args.slice(0, 2).join('/') === 'auth/login' && !call.args.includes('--code'))?.options.env.HOME;
+          if (home && !autoSubmitted.has(home)) { autoSubmitted.add(home); await agent.submitAuthorizationCode(AUTH_CODE); }
+        }
+      } catch (error) { observerErrors.push(error); }
+    }); } }); agents.push(agent); return agent;
+  }; const agent = create();
+  const waitForState = predicate => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { watchers.delete(watch); reject(new Error('Timed out waiting for fixture state')); }, 1500);
+    const watch = state => { if (predicate(state)) { clearTimeout(timer); watchers.delete(watch); resolve(state); } }; watchers.add(watch);
+    void agent.publicState().then(watch, reject);
+  });
+  t.after(async () => { for (const item of agents) await item.dispose(); await new Promise(resolve => setImmediate(resolve)); for (const call of calls) assert.equal(call.child.testError, undefined); assert.deepEqual(observerErrors, []); assert.equal(path.dirname(directory), base); await fs.rm(directory, { recursive: true, force: true }); });
+  return { directory, agent, create, calls, profiles, openedUrls, states, waitForState, safeStorage, config };
 }
 
 test('official browser authorization and documented profile-key export securely bind the exact runtime profile', async t => {
   const f = await fixture(t); await f.agent.init(); assert.equal(f.calls.length, 0); assert.equal((await f.agent.publicState()).session.status, 'disconnected');
   await f.agent.signIn({ profileName: 'official-profile' }); const state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true);
-  assert.deepEqual(f.calls.map(call => call.args.slice(0, 3)), [['auth', 'login', 'volc-sso'], ['auth', 'status', '--format'], ['auth', 'whoami', '--format'], ['auth', 'status', '--profile'], ['auth', 'whoami', '--profile'], ['profile', 'apikey', 'get'], ['resources', 'list', '--profile']]);
+  assert.deepEqual(f.calls.map(call => call.args.slice(0, 3)), [['auth', 'login', '--login-mode'], ['auth', 'login', '--login-mode'], ['auth', 'status', '--format'], ['auth', 'whoami', '--format'], ['auth', 'status', '--profile'], ['auth', 'whoami', '--profile'], ['profile', 'apikey', 'get'], ['resources', 'list', '--profile']]);
+  assert.deepEqual(f.calls[0].args, LOGIN_FLAGS); assert.deepEqual(f.calls[1].args, [...LOGIN_FLAGS, '--code', AUTH_CODE]); assert.deepEqual(f.openedUrls, [AUTH_URL]);
   const key = [...f.profiles.values()][0].key; assert.ok(key); assert.equal(f.agent.redact(`key=${key}`), 'key=[已隐藏方舟凭据]');
   assert.doesNotMatch(JSON.stringify(state), /PRIVATE_RUNTIME_KEY|owner_trn|trn:iam/);
-  for (const call of f.calls) { assert.equal(call.options.env.HOME, call.options.env.USERPROFILE); assert.ok(call.options.env.HOME.startsWith(f.directory + path.sep)); assert.equal(call.options.env.ARK_API_KEY, undefined); assert.equal(call.options.env.HTTPS_PROXY, 'http://127.0.0.1:9911'); assert.equal(call.options.shell, false); assert.equal(call.options.windowsHide, true); assert.equal(call.args.includes('--debug'), false); }
+  for (const call of f.calls) { assert.equal(call.options.env.HOME, call.options.env.USERPROFILE); assert.ok(call.options.env.APPDATA.startsWith(call.options.env.HOME + path.sep)); assert.ok(call.options.env.LOCALAPPDATA.startsWith(call.options.env.HOME + path.sep)); assert.ok(call.options.env.HOME.startsWith(f.directory + path.sep)); assert.equal(call.options.env.ARK_API_KEY, undefined); assert.equal(call.options.env.HTTPS_PROXY, 'http://127.0.0.1:9911'); assert.equal(call.options.shell, false); assert.equal(call.options.windowsHide, true); assert.equal(call.args.includes('--debug'), false); }
   const persisted = await fs.readFile(path.join(f.directory, 'ark-account', 'connection.json'), 'utf8'); assert.equal(persisted.includes(key), false); assert.equal(persisted.includes('official-profile'), false);
-  await f.agent.dispose(); const restarted = f.create(), restored = await restarted.publicState(); assert.equal(restored.session.profileId, state.session.profileId); assert.equal(restored.session.status, 'connected'); assert.equal(f.calls.length, 7);
+  await f.agent.dispose(); const restarted = f.create(), restored = await restarted.publicState(); assert.equal(restored.session.profileId, state.session.profileId); assert.equal(restored.session.status, 'connected'); assert.equal(f.calls.length, 8);
   const models = await restarted.listModels(); assert.deepEqual(models.map(model => model.id), ['official-model']);
   const result = await restarted.requestModel({ provider: 'doubao', authMode: 'ark-account', arkProfileId: state.session.profileId, model: 'official-model', baseUrl: 'https://evil.example', apiKey: 'OVERRIDE', requestModel: async config => {
     assert.equal(config.baseUrl, 'https://ark.cn-beijing.volces.com/api/plan/v3'); assert.equal(config.apiKey, key); assert.equal(config.authMode, 'apiKey'); assert.equal(config.apiProtocol, 'chat-completions'); assert.match(config.connectionKey, /^ark:/u); return { text: 'done' };
@@ -163,7 +190,7 @@ test('browser login waits for an explicit official profile choice without silent
   assert.equal(f.calls.some(call => call.args.slice(0, 3).join('/') === 'profile/apikey/get'), false);
   await assert.rejects(f.agent.selectProfile('invented-profile'), { code: 'ARK_PROFILE_UNAVAILABLE' });
   await f.agent.selectProfile('plan-option'); await signing; state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.identity.type, 'agent-plan');
-  assert.equal(f.calls.filter(call => call.args.slice(0, 2).join('/') === 'auth/login').length, 1);
+  assert.equal(f.calls.filter(call => call.args.slice(0, 2).join('/') === 'auth/login').length, 2);
   await f.agent.requestModel({ provider: 'doubao', authMode: 'ark-account', model: 'official-model', requestModel: async config => { assert.equal(config.baseUrl, 'https://ark.cn-beijing.volces.com/api/plan/v3'); return {}; } });
 });
 
@@ -194,4 +221,116 @@ test('a changed SSO identity after profile discovery cannot bind credentials fro
   } });
   await assert.rejects(f.agent.signIn({ profileName: 'official-profile' }), { code: 'ARK_ACCOUNT_CHANGED' });
   assert.equal(f.calls.some(call => call.args.slice(0, 3).join('/') === 'profile/apikey/get'), false);
+});
+
+test('authorization opens and reopens the exact official URL and ignores the remote next_command', async t => {
+  const f = await fixture(t, { autoSubmit: false, pending: { next_command: 'untrusted-program --export-private-credentials' } });
+  const signing = f.agent.signIn({ profileName: 'official-profile' });
+  const pending = await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code');
+  assert.equal(pending.attempt.verificationUrl, AUTH_URL); assert.equal(f.profiles.size, 0); assert.equal(f.calls.length, 1);
+  await f.agent.openAuthorization(); assert.deepEqual(f.openedUrls, [AUTH_URL, AUTH_URL]);
+  await f.agent.submitAuthorizationCode(`  ${AUTH_CODE}  `); await signing;
+  const login = f.calls.filter(call => call.args[0] === 'auth' && call.args[1] === 'login');
+  assert.deepEqual(login.map(call => call.args), [LOGIN_FLAGS, [...LOGIN_FLAGS, '--code', AUTH_CODE]]);
+  assert.equal(login[0].options.env.HOME, login[1].options.env.HOME); assert.equal(f.calls.some(call => call.entry.includes('untrusted-program') || call.args.includes('--export-private-credentials')), false);
+  assert.equal(JSON.stringify(f.states).includes(AUTH_CODE), false); assert.equal(JSON.stringify(await f.agent.publicState()).includes(AUTH_CODE), false);
+  const persisted = await fs.readFile(path.join(f.directory, 'ark-account', 'connection.json'), 'utf8'); assert.equal(persisted.includes(AUTH_CODE), false);
+  const record = JSON.parse(persisted), grant = JSON.parse(f.safeStorage.decryptString(Buffer.from(record.encrypted, 'base64')));
+  assert.equal(JSON.stringify(grant).includes(AUTH_CODE), false); assert.equal(f.agent.redact(AUTH_CODE), '[已隐藏方舟凭据]');
+});
+
+test('malicious authorization URLs and invalid pending metadata never open a browser or activate an account', async t => {
+  const changeParam = (key, value) => { const url = new URL(AUTH_URL); url.searchParams.set(key, value); return url.href; };
+  const cases = [
+    ['foreign host', { authorize_url: AUTH_URL.replace('signin.volcengine.com/', 'evil.example/') }],
+    ['lookalike host', { authorize_url: AUTH_URL.replace('signin.volcengine.com/', 'signin.volcengine.com.evil.example/') }],
+    ['insecure scheme', { authorize_url: AUTH_URL.replace('https:', 'http:') }],
+    ['userinfo', { authorize_url: AUTH_URL.replace('https://', 'https://user:password@') }],
+    ['foreign redirect', { authorize_url: changeParam('redirect_uri', 'https://evil.example/callback') }],
+    ['same-device client', { authorize_url: changeParam('client_id', 'trn:signin:::devtools/same-device') }],
+    ['missing challenge', { authorize_url: changeParam('code_challenge', '') }],
+    ['wrong method', { method: 'broker' }],
+    ['invalid expiry', { expires_in_sec: 0 }],
+    ['oversized expiry', { expires_in_sec: 601 }],
+  ];
+  for (const [name, pending] of cases) await t.test(name, async t => {
+    const f = await fixture(t, { autoSubmit: false, pending });
+    await assert.rejects(f.agent.signIn({ profileName: 'official-profile' }), { code: 'ARK_PROTOCOL_ERROR' });
+    assert.deepEqual(f.openedUrls, []); assert.equal(f.profiles.size, 0); assert.equal(f.calls.length, 1);
+    assert.equal((await f.agent.publicState()).session.sharing, false); assert.deepEqual(await fs.readdir(path.join(f.directory, 'ark-account', 'profiles')), []);
+  });
+});
+
+test('a rejected authorization code can be retried against the same pending URL and HOME without leaking it', async t => {
+  const rejectedCode = Buffer.from('rejected fixture code containing private authorization data').toString('base64'); let exchanges = 0;
+  const f = await fixture(t, { autoSubmit: false, handler: ({ args, child }) => {
+    if (args[0] !== 'auth' || args[1] !== 'login' || !args.includes('--code')) return false;
+    exchanges++; if (exchanges !== 1) return false;
+    child.stderr.write(`SECRET_REMOTE_ERROR ${rejectedCode}`); child.finish(undefined, 1); return true;
+  } });
+  const signing = f.agent.signIn({ profileName: 'official-profile' });
+  const before = await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code');
+  await f.agent.submitAuthorizationCode(rejectedCode);
+  const rejected = await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code' && state.error?.code === 'ARK_AUTH_EXCHANGE_FAILED');
+  assert.equal(rejected.attempt.verificationUrl, before.attempt.verificationUrl); assert.equal(rejected.attempt.expiresAt, before.attempt.expiresAt);
+  assert.equal(f.profiles.size, 0); assert.equal(JSON.stringify(rejected).includes(rejectedCode), false); assert.equal(f.agent.redact(rejectedCode), '[已隐藏方舟凭据]');
+  await f.agent.submitAuthorizationCode(AUTH_CODE); await signing;
+  const login = f.calls.filter(call => call.args[0] === 'auth' && call.args[1] === 'login'); assert.equal(login.length, 3);
+  assert.ok(login.every(call => call.options.env.HOME === login[0].options.env.HOME)); assert.ok(login.every(call => JSON.stringify(call.args.slice(0, 5)) === JSON.stringify(LOGIN_FLAGS)));
+  assert.equal(login.filter(call => !call.args.includes('--code')).length, 1); assert.equal(JSON.stringify(f.states).includes(rejectedCode), false);
+  const record = JSON.parse(await fs.readFile(path.join(f.directory, 'ark-account', 'connection.json'), 'utf8'));
+  assert.equal(f.safeStorage.decryptString(Buffer.from(record.encrypted, 'base64')).includes(rejectedCode), false);
+});
+
+test('malformed authorization-code input leaves the valid pending authorization intact', async t => {
+  const f = await fixture(t, { autoSubmit: false }); const signing = f.agent.signIn({ profileName: 'official-profile' });
+  await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code');
+  for (const code of ['', 'not base64!', 'A'.repeat(16385)]) await assert.rejects(f.agent.submitAuthorizationCode(code), { code: 'ARK_AUTH_CODE_INVALID' });
+  assert.equal(f.calls.length, 1); assert.equal((await f.agent.publicState()).attempt.verificationUrl, AUTH_URL);
+  const cancelled = f.agent.cancelSignIn(); await assert.rejects(signing, { name: 'AbortError' }); await cancelled; assert.equal(f.profiles.size, 0);
+});
+
+test('a failed browser opener preserves the pending authorization for an explicit reopen', async t => {
+  let failOpen = true;
+  const f = await fixture(t, { autoSubmit: false, openExternal: async () => { if (failOpen) throw new Error(`PRIVATE_OPENER_DIAGNOSTIC ${AUTH_CODE}`); } });
+  const signing = f.agent.signIn({ profileName: 'official-profile' });
+  const failed = await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code' && state.error?.code === 'ARK_BROWSER_OPEN_FAILED');
+  assert.equal(failed.attempt.verificationUrl, AUTH_URL); assert.equal(failed.session.sharing, false); assert.equal(f.profiles.size, 0); assert.equal(f.calls.length, 1);
+  assert.doesNotMatch(JSON.stringify(failed.error), /PRIVATE_OPENER_DIAGNOSTIC/); assert.equal(JSON.stringify(failed.error).includes(AUTH_CODE), false);
+  failOpen = false; await f.agent.openAuthorization(); assert.deepEqual(f.openedUrls, [AUTH_URL, AUTH_URL]);
+  await f.agent.submitAuthorizationCode(AUTH_CODE); await signing; assert.equal((await f.agent.publicState()).session.status, 'connected');
+  assert.equal(f.calls.filter(call => call.args[0] === 'auth' && call.args[1] === 'login' && !call.args.includes('--code')).length, 1);
+});
+
+test('an expired code-entry window cannot activate an account or retain its staged home', async t => {
+  const f = await fixture(t, { autoSubmit: false, loginTimeoutMs: 40 });
+  const signing = f.agent.signIn({ profileName: 'official-profile' }), rejected = assert.rejects(signing, { code: 'ARK_AUTH_EXPIRED' });
+  await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code'); await rejected;
+  assert.equal(f.profiles.size, 0); assert.equal(f.calls.length, 1); assert.equal((await f.agent.publicState()).session.sharing, false);
+  assert.deepEqual(await fs.readdir(path.join(f.directory, 'ark-account', 'profiles')), []);
+  await assert.rejects(f.agent.submitAuthorizationCode(AUTH_CODE), { code: 'ARK_BUSY' });
+});
+
+test('cancelling while waiting for a new authorization code preserves the existing encrypted account', async t => {
+  const f = await fixture(t, { autoSubmit: false });
+  const first = f.agent.signIn({ profileName: 'official-profile' }); await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code');
+  await f.agent.submitAuthorizationCode(AUTH_CODE); await first;
+  const previous = (await f.agent.publicState()).session.profileId, filename = path.join(f.directory, 'ark-account', 'connection.json'), record = await fs.readFile(filename, 'utf8');
+  const signing = f.agent.signIn({ profileName: 'official-profile' }); await f.waitForState(state => state.attempt?.phase === 'waiting-authorization-code');
+  const cancelled = f.agent.cancelSignIn(); await assert.rejects(signing, { name: 'AbortError' }); await cancelled;
+  const state = await f.agent.publicState(); assert.equal(state.session.profileId, previous); assert.equal(state.session.sharing, true); assert.equal(state.attempt, null);
+  assert.equal(await fs.readFile(filename, 'utf8'), record); assert.equal(f.profiles.size, 1);
+  assert.deepEqual(await fs.readdir(path.join(f.directory, 'ark-account', 'profiles')), [previous]);
+  await assert.rejects(f.agent.submitAuthorizationCode(AUTH_CODE), { code: 'ARK_BUSY' });
+});
+
+
+test('cancelling while the operating-system browser opener is stalled never blocks account cancellation', { timeout: 2000 }, async t => {
+  let entered; const opening = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, { autoSubmit: false, openExternal: () => { entered(); return new Promise(() => {}); } });
+  const signing = f.agent.signIn({ profileName: 'official-profile' });
+  const rejected = assert.rejects(signing, { name: 'AbortError' });
+  await opening; await f.agent.cancelSignIn(); await rejected;
+  assert.equal((await f.agent.publicState()).session.sharing, false);
+  assert.equal(f.calls.length, 1);
 });

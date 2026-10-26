@@ -6,6 +6,9 @@ const { spawn } = require('node:child_process');
 const { AppUpdater } = require('./core/app-updater.cjs');
 const { createUpdateFetch } = require('./core/update-transport.cjs');
 const { Store } = require('./core/store.cjs');
+const { SessionCheckpoints, recoverInterruptedSession } = require('./core/session-checkpoints.cjs');
+const sessionRunOwner = randomUUID();
+const sessionRecoveryErrors = new Map();
 const { RoleModels, ROLE_KEYS } = require('./core/role-models.cjs');
 const { makePendingContextUsage } = require('./core/session-metrics.cjs');
 const { createTurnUsage } = require('./core/turn-usage.cjs');
@@ -51,7 +54,7 @@ let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
   if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
   const previousVersions = ['Synora-code-0.16.7-win32-x64', 'Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
-  previousVersions.unshift('Synora-code-0.23.5-win32-x64', 'Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
+  previousVersions.unshift('Synora-code-0.24.0-win32-x64', 'Synora-code-0.23.5-win32-x64', 'Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
@@ -278,7 +281,7 @@ async function initializeOfficialAgents() {
   claudeRuntime = new ClaudeRuntime({ dataDir: path.join(root, 'claude'), onChange });
   claudeAgent = new ClaudeAgent({ dataDir: path.join(root, 'claude'), runtime: claudeRuntime, version: app.getVersion(), onChange,
     getProxyEnv: () => officialProxyEnvironment('https://claude.ai') });
-  arkAccount = new ArkAccount({ dataDir: path.join(root, 'ark'), safeStorage, version: app.getVersion(), onChange,
+  arkAccount = new ArkAccount({ dataDir: path.join(root, 'ark'), safeStorage, version: app.getVersion(), onChange, openExternal: url => shell.openExternal(url),
     getProxyEnv: () => officialProxyEnvironment('https://ark.cn-beijing.volces.com') });
   await Promise.all([antigravity.init(), kimiAgent.init(), glmAgent.init(), claudeAgent.init(), arkAccount.init()]);
 }
@@ -312,7 +315,13 @@ async function readSessionForContext(id) {
     const loaded = await store.getSession(id);
     if (sessionRenameLocks.has(id) || sessionDeleteLocks.has(id)) throw new Error('此会话正在更新，请稍后重试。');
     // A read begun before the atomic title update may complete afterwards.
-    if (revision === sessionRenameRevision) return loaded;
+    if (revision === sessionRenameRevision) {
+      if (recoverInterruptedSession(loaded, { ownerId: sessionRunOwner })) {
+        try { await store.saveSession(loaded); }
+        catch { sessionRecoveryErrors.set(loaded.id, '已恢复上次异常退出前的消息，但中断状态保存失败；原会话文件已保留，请检查本地存储。'); }
+      }
+      return loaded;
+    }
   }
 }
 function broadcastAppearance(value) {
@@ -538,6 +547,20 @@ const petDialog = createPetDialogController({
   onTask: request => handoffPetTask(request),
   requestModel: dispatchModelRequest, redact, onUsage: recordRunUsage,
   emit: event => {
+    if (event.type === 'question-answer') {
+      if (activeRun?.kind !== 'agent' || activeRun.controller.signal.aborted || event.source !== 'user'
+          || event.runId !== activeRun.id || event.sessionId !== currentSession?.id
+          || typeof event.questionId !== 'string' || !event.questionId || event.questionId.length > 200
+          || typeof event.question !== 'string' || typeof event.answer !== 'string'
+          || !Array.isArray(event.options) || event.options.some(option => typeof option !== 'string')) return;
+      if (currentSession.questionAnswers?.some(answer => answer.runId === event.runId && answer.questionId === event.questionId)) return;
+      // This is a user's tool-question answer inside the existing turn, never
+      // a new user message. Explicit fields keep native/private metadata out.
+      emit({ type: 'question-answer', questionId: event.questionId, question: event.question, answer: event.answer,
+        options: event.options, ...(Number.isSafeInteger(event.choiceIndex) && event.choiceIndex >= 0 ? { choiceIndex: event.choiceIndex } : {}),
+        source: 'user', runId: event.runId, sessionId: event.sessionId, messageIndex: Math.max(0, currentSession.messages.length - 1) });
+      return;
+    }
     if (win && !win.isDestroyed() && host.active === context)
       win.webContents.send('forge:event', { ...event, workspaceId, sessionId: currentSession?.id || null });
     else host.publishWorkspaces();
@@ -707,7 +730,8 @@ function liveImageViewSources(event) {
   return sources;
 }
 function emit(event) {
-  if (!win || win.isDestroyed()) return;
+  // Archive/checkpoint state even after the renderer disappears. Only native
+  // delivery below depends on a live window; shutdown still finishes its save.
   if (event.type === 'reconnect' && event.status === 'waiting' && !Number.isFinite(event.retryAt)) {
     event = { ...event, retryAt: Date.now() + Math.max(0, Math.min(60_000, Number(event.delayMs) || 0)) };
   }
@@ -754,8 +778,12 @@ function emit(event) {
       }
     }
   }
+  if (activeRun?.kind === 'agent' && clean.type === 'question-answer' && currentSession) {
+    const answers = currentSession.questionAnswers = Array.isArray(currentSession.questionAnswers) ? currentSession.questionAnswers : [];
+    if (!answers.some(answer => answer.runId === clean.runId && answer.questionId === clean.questionId)) answers.push({ ...clean });
+  }
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
-  if (host.active === context) {
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed() && host.active === context) {
     const imageSources = liveImageViewSources(clean);
     win.webContents.send('forge:event', imageSources.length ? { ...clean, imageSources } : clean);
   }
@@ -772,6 +800,7 @@ function emit(event) {
     else currentSession.events[previousAgent] = historicalEvent;
     currentSession.events = currentSession.events.slice(-150);
   }
+  if (activeRun?.kind === 'agent' && activeRun.sessionId === currentSession?.id) activeRun.checkpoints?.observe(clean);
 }
 function emitSessionMetrics() {
   if (currentSession) emit({ type: 'session-metrics', sessionId: currentSession.id, metrics: sessionMetricsSnapshot(currentSession) });
@@ -973,6 +1002,8 @@ async function officialAgentUserInput({ questions, signal, localSessionId } = {}
     const selected = Number.isSafeInteger(reply.choiceIndex) ? options[reply.choiceIndex] : null;
     const answer = selected ? typeof selected.value === 'string' ? selected.value : selected.label : reply.answer;
     if (typeof answer !== 'string' || !answer.trim() || answer.length > 4000 || Object.hasOwn(answers, question.question)) return { action: 'cancel' };
+    await run.checkpoints.flush();
+    if (run !== activeRun || run.controller.signal.aborted || signal?.aborted) return { action: 'cancel' };
     answers[question.question] = answer;
   }
   return { action: 'accept', content: { answers } };
@@ -1003,6 +1034,8 @@ async function officialAgentPermission({ toolCall, options, signal, localSession
     const reply = await petDialog.ask({ question, options: choices.map(option => option.name) },
       { signal: signal || run.controller.signal, runId: run.id, sessionId: run.sessionId, choiceOnly: true });
     if (run !== activeRun || run.controller.signal.aborted || signal?.aborted || reply?.source !== 'user' || reply.cancelled) return null;
+    await run.checkpoints.flush();
+    if (run !== activeRun || run.controller.signal.aborted || signal?.aborted) return null;
     return Number.isSafeInteger(reply.choiceIndex) && reply.choiceIndex >= 0 ? choices[reply.choiceIndex]?.optionId ?? null : null;
   }
   const allow = options.find(option => option.kind === 'allow_once') || (permissionMode === 'full' ? options.find(option => option.kind === 'allow_always') : null);
@@ -1308,12 +1341,20 @@ async function fetchModelCatalog(arg = {}) {
   }
 }
 async function broadcastState() { if (win && !win.isDestroyed()) emit({ type: 'state', state: await state() }); }
-async function saveCurrentSession() {
-  if (!currentSession || currentSession.temporary === true || loadedSnapshot) return;
-  const clean = JSON.parse(redact(JSON.stringify(currentSession)));
+async function persistSessionSnapshot(session, snapshot) {
+  if (!session || session.temporary === true) return;
+  const clean = JSON.parse(redact(JSON.stringify(snapshot)));
   await store.saveSession(clean);
-  currentSession.updatedAt = clean.updatedAt;
-  if (initialized && lastRememberedSessionId !== currentSession.id) await rememberSessionSelection();
+  session.updatedAt = clean.updatedAt;
+  if (initialized && currentSession === session && lastRememberedSessionId !== session.id) await rememberSessionSelection();
+}
+async function saveCurrentSession() {
+  const session = currentSession;
+  if (!session || session.temporary === true || loadedSnapshot) return;
+  if (activeRun?.checkpoints && activeRun.sessionId === session.id && !activeRun.checkpointsFinalized) {
+    activeRun.checkpoints.touch();
+    await activeRun.checkpoints.flush();
+  } else await persistSessionSnapshot(session, session);
 }
 async function rememberSessionSelection() {
   if (!initialized || host.active !== context) return false;
@@ -1322,7 +1363,11 @@ async function rememberSessionSelection() {
   return saved;
 }
 function publicSession(session) {
-  const { contextCheckpoint, usageBaseline, contextUsage, turnUsage, ...publicData } = session;
+  if (win && !win.isDestroyed() && host.active === context && sessionRecoveryErrors.has(session.id)) {
+    const error = sessionRecoveryErrors.get(session.id); sessionRecoveryErrors.delete(session.id);
+    emit({ type: 'storage-error', error });
+  }
+  const { contextCheckpoint, usageBaseline, contextUsage, turnUsage, runCheckpoint, ...publicData } = session;
   publicData.taskRuns = store.sessionTaskRuns(session);
   const usages = new Map(publicData.taskRuns.filter(record => record.usage).map(record => [record.runId, record.usage]));
   publicData.events = (session.events || []).map(event => event.type === 'run-end' && usages.has(event.runId)
@@ -1487,6 +1532,16 @@ async function startTask(input) {
   run.demo = demo;
   run.messageStartIndex = currentSession.messages.length - 1;
   activeRun = run;
+  const runSession = currentSession;
+  run.checkpoints = new SessionCheckpoints({ session: runSession, run, ownerId: sessionRunOwner,
+    save: snapshot => persistSessionSnapshot(runSession, snapshot),
+    onError: cause => {
+      if (run.checkpointError) return;
+      run.checkpointError = '会话增量保存失败，任务已停止；请检查本地存储后继续。';
+      run.controller.abort();
+      emit({ type: 'storage-error', error: run.checkpointError + ' ' + redact(cause?.message || '无法写入会话文件。') });
+    },
+  });
   // Let invoke resolve before the first event, so the renderer can set its running state.
   const executeRun = async () => {
     if (activeRun !== run) return;
@@ -1515,19 +1570,22 @@ async function startTask(input) {
         if (connection.session.profileId !== officialAgentProfileId) throw new Error('官方代理账号已变化，请重新开始任务。');
         await runExternalAgentTurn({ agent: controller, session: currentSession, cwd: tools.root, prompt: userText, attachments,
           modelId: settings.model, reasoningEffort, provider, runId: run.id, signal: run.controller.signal, emit,
-          onPermission: officialAgentPermission, onUserInput: officialAgentUserInput,
+          onPermission: async request => { const decision = await officialAgentPermission(request); await run.checkpoints.flush(); return decision; }, onUserInput: async request => { const answer = await officialAgentUserInput(request); await run.checkpoints.flush(); return answer; },
           onUsage: record => recordRunUsage(record).catch(() => {}), redact });
         emit({ type: 'files-changed', operation: 'official-agent', path: '' });
       } else {
         await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : useArkAccount ? 'ark-account' : 'apiKey', deepseekProfileId, geminiProfileId, arkProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount || useArkAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
           if (name === PET_QUESTION_TOOL.name)
-            return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(value => JSON.stringify(value));
+            return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(async value => { await run.checkpoints.flush(); return JSON.stringify(value); });
+          return run.checkpoints.flush().then(() => {
+          options.signal?.throwIfAborted();
           if (name === 'read_url' || name.startsWith('browser_')) {
             if (name !== 'read_url' && !(name === 'browser_navigate' && isXmlURL(args.url))) emit({ type: 'browser-open' });
             return browser.execute(name, args, { ...options, approve });
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL], requestModel: dispatchModelRequest, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
+          });
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);
@@ -1538,7 +1596,7 @@ async function startTask(input) {
           takeSteering: () => takeSteering(run),
           previousContextUsage,
           contextMeasurement: previousContextUsage.measurement || previousContextUsage.lastReported?.measurement,
-          onMessagesChanged: () => { currentSession.contextUsage = makePendingContextUsage(currentSession.contextUsage); emitSessionMetrics(); },
+          onMessagesChanged: () => { runSession.contextUsage = makePendingContextUsage(runSession.contextUsage); run.checkpoints.touch(); emitSessionMetrics(); },
           contextCheckpoint: sessionContextCheckpoint(),
           onContextCompacted: () => saveCurrentSession(),
           onContextUsage: sample => {
@@ -1558,6 +1616,7 @@ async function startTask(input) {
       if (run.controller.signal.aborted) status = 'stopped';
       try { await persistentTaskUndo.seal(run.id, run.sessionId, tools.root); }
       catch { emit({ type: 'storage-error', error: '本轮撤销记录保存失败，自动撤销已停用；文件改动仍保留。' }); }
+      if (run.checkpointError) { status = 'failed'; error = run.checkpointError; }
       const endEvent = { type: 'run-end', runId: run.id, kind: 'agent', status, fileChangeCount: run.fileChangeCount, ...(error ? { error } : {}), startedAt: run.startedAt, endedAt: Date.now(), elapsedMs: Math.max(0, Math.round(performance.now() - run.startedMonotonic)), messageStartIndex: run.messageStartIndex, messageIndex: currentSession.messages.length - 1, ...(run.telemetry ? { telemetry: run.telemetry } : {}),
         ...(demo ? { demo: true } : { usage: createTurnUsage([...(run.usageRecords?.values() || [])]) }) };
       // Store only one timing/rate summary per task. Streaming estimates stay
@@ -1566,15 +1625,18 @@ async function startTask(input) {
       currentSession.events = currentSession.events.slice(-150);
       rememberTaskRun(endEvent);
       try {
-        await saveCurrentSession();
-        if (run.controller.signal.aborted && endEvent.status !== 'stopped') {
+        // Finish drains older checkpoints before committing the terminal snapshot.
+        await run.checkpoints.finish(); run.checkpointsFinalized = true;
+        if (!run.checkpointError && run.controller.signal.aborted && endEvent.status !== 'stopped') {
           status = 'stopped'; endEvent.status = status;
           await saveCurrentSession();
         }
       }
       catch (cause) { status = 'failed'; error = '会话保存失败，请检查本地存储后继续。'; endEvent.status = status; endEvent.error = error; emit({ type: 'storage-error', error: '会话保存失败：' + cause.message }); }
-      if (run.controller.signal.aborted) status = 'stopped';
+      if (run.controller.signal.aborted && !run.checkpointError) status = 'stopped';
+      if (run.checkpointError) { status = 'failed'; error = run.checkpointError; }
       endEvent.status = status;
+      run.checkpoints.dispose();
       activeRun = null;
       run.finish();
       for (const item of pendingPrompts) item.mode = 'queue';
@@ -1586,7 +1648,7 @@ async function startTask(input) {
     }
   };
   try { await saveCurrentSession(); }
-  catch (cause) { run.controller.abort(); if (currentSession.messages.at(-1) === userMessage) currentSession.messages.pop(); activeRun = null; run.finish(); throw cause; }
+  catch (cause) { run.controller.abort(); run.checkpoints.dispose(); if (runSession.messages.at(-1) === userMessage) runSession.messages.pop(); activeRun = null; run.finish(); throw cause; }
   setTimeout(executeRun, 40);
   return { runId: run.id };
 }
@@ -1962,6 +2024,8 @@ function buildHandlers() {
     claudeAgentRetryStorage: () => mutateShared(async () => { await claudeAgent.retryLocalRead(); await broadcastAllStates(); return state(); }),
     arkInstall: () => mutateShared(async () => { await arkAccount.ensure(); await broadcastAllStates(); return state(); }),
     arkSignIn: () => mutateShared(async () => { await arkAccount.signIn(); await broadcastAllStates(); return state(); }),
+    arkOpenAuthorization: async () => { await arkAccount.openAuthorization(); await broadcastAllStates(); return state(); },
+    arkSubmitAuthorizationCode: async arg => { await arkAccount.submitAuthorizationCode(arg?.code); await broadcastAllStates(); return state(); },
     arkSelectProfile: async arg => { await arkAccount.selectProfile(arg?.profileName); await broadcastAllStates(); return state(); },
     arkCancelSignIn: () => { void arkAccount.cancelSignIn().catch(() => {}); return null; },
     arkDisconnect: () => mutateShared(async () => { await arkAccount.disconnect(); await broadcastAllStates(); return state(); }),
@@ -2056,7 +2120,7 @@ function buildHandlers() {
       petDialog.react({ kind: arg.kind, sequence: arg.sequence }, { sessionId: currentSession.id }); return publicPetDialog();
     },
     cancelPromptCompletion: arg => promptCompletion.cancel(arg),
-    stopTask: () => { ++stopGeneration; pauseQueue('任务已停止，待发送消息已暂停。'); activeRun?.controller.abort(); petDialog.stop(); return null; },
+    stopTask: async () => { ++stopGeneration; pauseQueue('任务已停止，待发送消息已暂停。'); const run = activeRun; run?.controller.abort(); petDialog.stop(); if (run?.done) await run.done; return null; },
     stopSubagent: async arg => {
       if (!arg || typeof arg.id !== 'string' || Object.keys(arg).some(key => key !== 'id')) throw new Error('子智能体参数无效。');
       const manager = activeRun?.kind === 'agent' && activeRun.subagentManager;
@@ -2336,6 +2400,7 @@ async function shutdown() {
   run?.controller.abort(); terminal?.stop();
   for (const done of [...approvals.values()]) done(false);
   if (run?.done) await run.done;
+  await store.flushSessions();
   if (fileOperationDone) await fileOperationDone;
   await promptCompletion.settled();
   await sideChat.settled();

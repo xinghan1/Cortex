@@ -14,6 +14,10 @@
     ARK_RUNTIME_MISSING: '火山方舟登录组件不可用，请重新安装新版。',
     ARK_SIGN_IN_REQUIRED: '请重新登录火山方舟并连接可用配置。',
     ARK_AUTH_FAILED: '火山方舟官方授权未完成，请重新登录。',
+    ARK_AUTH_CODE_INVALID: '授权码无效或已失效，请从当前官方授权页面重新复制授权码后提交。',
+    ARK_AUTH_EXCHANGE_FAILED: '授权码验证未完成，请检查网络后重新提交；如授权码已失效，请从当前官方页面重新复制。',
+    ARK_AUTH_EXPIRED: '本次授权已过期，请重新登录火山方舟。',
+    ARK_BROWSER_OPEN_FAILED: '无法打开官方授权页面，请检查默认浏览器后点击“打开授权页面”重试。',
     ARK_RUNTIME_KEY_UNAVAILABLE: '账号已授权，但当前配置没有可用的模型调用密钥，请在官方控制台开通对应 API 或 Plan。',
     ARK_PROFILE_UNSUPPORTED: '当前火山方舟配置暂不支持，请选择北京区域的 API、Agent Plan 或 Coding Plan。',
     ARK_CATALOG_EMPTY: '当前配置未提供可调用的文本模型或接入点，请核对官方套餐与模型配置。',
@@ -120,6 +124,20 @@
     const message = el('p', spec.prefix + '-login-message'); message.className = 'official-agent-message'; message.setAttribute('role', 'status');
     const verification = el('div', spec.prefix + '-verification'); verification.className = 'official-agent-verification'; verification.hidden = true;
     const verificationUrl = el('p', spec.prefix + '-verification-url'), userCode = el('code', spec.prefix + '-user-code'); verification.append(verificationUrl, userCode);
+    const authorizationField = spec.provider === 'doubao' ? el('div', 'ark-authorization-field') : null;
+    const codeInput = authorizationField ? el('input', 'ark-code-input') : null;
+    const codeSubmit = authorizationField ? el('button', 'ark-code-submit', '提交授权码') : null;
+    const authorizationOpen = authorizationField ? el('button', 'ark-open-authorization', '打开授权页面') : null;
+    if (authorizationField) {
+      authorizationField.className = 'form-field'; authorizationField.hidden = true;
+      codeInput.type = 'password'; codeInput.autocomplete = 'off'; codeInput.spellcheck = false; codeInput.maxLength = 16384;
+      codeInput.setAttribute('autocapitalize', 'none'); codeInput.setAttribute('aria-label', '火山方舟官方授权码'); codeInput.placeholder = '粘贴官方页面返回的授权码';
+      codeSubmit.type = 'button'; codeSubmit.className = 'button solid'; authorizationOpen.type = 'button'; authorizationOpen.className = 'button';
+      authorizationField.append(el('p', '', '在官方页面完成登录后，复制授权码并粘贴到下方。授权码仅用于本次连接。'), authorizationOpen, codeInput, codeSubmit);
+      codeInput.addEventListener('input', () => { localError = null; render(); });
+      codeInput.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); void submitAuthorizationCode(); } });
+      codeSubmit.addEventListener('click', submitAuthorizationCode); authorizationOpen.addEventListener('click', openAuthorization);
+    }
     const regionField = spec.regions.length ? el('label', spec.prefix + '-region-field') : null;
     const region = regionField ? el('select', spec.prefix + '-region') : null;
     if (regionField) {
@@ -137,13 +155,15 @@
       profileSelect.addEventListener('change', () => render());
       profileConfirm.addEventListener('click', chooseProfile);
     }
-    panel.append(status, help, version, download, verification, ...(profileField ? [profileField] : []), actions, message); $('base-url-field').before(panel);
+    panel.append(status, help, version, download, verification, ...(authorizationField ? [authorizationField] : []), ...(profileField ? [profileField] : []), actions, message); $('base-url-field').before(panel);
     let action = null, cancelling = false, cancelled = false, localError = null, disposed = false;
-    let regionDirty = false, choosingProfile = false, profileSnapshot = '';
+    let regionDirty = false, choosingProfile = false, profileSnapshot = '', submittingCode = false, openingAuthorization = false, authorizationSnapshot = '';
     const account = () => getScope()?.[spec.stateKey] || {};
     const validRegion = value => spec.regions.some(([id]) => id === value);
     const signing = () => action === 'signin' || account().session?.status === 'connecting';
     const busy = () => !!action || signing() || account().runtime?.status === 'downloading';
+    const waitingForCode = () => !!authorizationField && !disposed && getRole() == null && $('provider-select').value === spec.provider
+      && mode?.value === spec.authMode && account().session?.status === 'connecting' && account().attempt?.phase === 'waiting-authorization-code';
     function render() {
       if (disposed) return;
       const value = account(), runtime = value.runtime || {}, session = value.session || {};
@@ -160,7 +180,9 @@
         for (const option of mode.children) if (option.value === spec.authMode) option.disabled = getRole() != null;
       }
       const phases = { initialize: '正在启动官方代理…', initializing: '正在启动官方代理…', authenticate: spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权',
-        'waiting-browser': spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权', 'choosing-profile': '请选择要连接的 API 或套餐配置', 'model-list': '正在读取模型目录…', committing: '正在保存本机连接…' };
+        'waiting-browser': spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权', 'waiting-authorization-code': '等待粘贴官方页面返回的授权码',
+        'exchanging-authorization-code': '正在验证官方授权码…', 'validating-authorization-code': '正在验证官方授权码…',
+        'choosing-profile': '请选择要连接的 API 或套餐配置', 'model-list': '正在读取模型目录…', committing: '正在保存本机连接…' };
       status.textContent = downloading ? `正在下载 ${spec.name} 官方代理…` : connecting ? phases[value.attempt?.phase] || '正在连接官方代理…'
         : connected ? `${spec.name} 官方代理已连接` : session.status === 'connected' && regionMismatch ? '请连接所选地区账号'
           : session.status === 'reauth_required' ? '请重新连接账号' : runtime.status === 'ready' ? '官方代理已安装，尚未连接账号' : '尚未安装官方代理';
@@ -177,6 +199,14 @@
       buttons.disconnect.hidden = connecting || !(session.profileId || connected || session.status === 'reauth_required'); buttons.disconnect.disabled = locked;
       buttons.retry.hidden = !value.error && runtime.status !== 'error'; buttons.retry.disabled = locked;
       buttons.models.hidden = !connected; buttons.models.disabled = locked || runtime.status !== 'ready';
+      if (authorizationField) {
+        const waiting = waitingForCode(), snapshot = waiting ? JSON.stringify([value.attempt.verificationUrl || '', value.attempt.expiresAt || '']) : '';
+        if (!waiting || snapshot !== authorizationSnapshot) codeInput.value = '';
+        authorizationSnapshot = snapshot; authorizationField.hidden = panel.hidden || !waiting;
+        const processing = submittingCode || openingAuthorization || cancelling;
+        codeInput.disabled = !waiting || processing; codeSubmit.disabled = !waiting || processing || !codeInput.value.trim();
+        authorizationOpen.disabled = !waiting || processing || typeof value.attempt.verificationUrl !== 'string' || !value.attempt.verificationUrl;
+      }
       if (profileField) {
         const waiting = connecting && value.attempt?.phase === 'choosing-profile';
         const profiles = Array.isArray(value.profiles) ? value.profiles : [];
@@ -221,9 +251,26 @@
       catch (error) { if (!disposed) localError = { code: errorCode(error) }; }
       finally { choosingProfile = false; if (!disposed) render(); }
     }
+    async function openAuthorization() {
+      if (!waitingForCode() || openingAuthorization || submittingCode || cancelling || authorizationOpen.disabled) return;
+      openingAuthorization = true; localError = null; render(); onChange();
+      try { const next = await bridge.arkOpenAuthorization(); if (!disposed && !cancelled && next?.settings) onState(next); }
+      catch (error) { if (!disposed && !cancelled) localError = { code: errorCode(error) }; }
+      finally { openingAuthorization = false; if (!disposed) { render(); onChange(); } }
+    }
+    async function submitAuthorizationCode() {
+      if (!waitingForCode() || submittingCode || openingAuthorization || cancelling) { if (codeInput) codeInput.value = ''; return; }
+      let code = codeInput.value.trim(); codeInput.value = '';
+      if (!code || code.length > 16384 || !/^[A-Za-z\d+/_-]+={0,2}$/u.test(code)) { localError = { code: 'ARK_AUTH_CODE_INVALID' }; code = ''; render(); return; }
+      submittingCode = true; localError = null; render(); onChange();
+      try { const pending = bridge.arkSubmitAuthorizationCode({ code }); code = ''; const next = await pending; if (!disposed && !cancelled && next?.settings) onState(next); }
+      catch (error) { if (!disposed && !cancelled) localError = { code: errorCode(error) }; }
+      finally { code = ''; codeInput.value = ''; submittingCode = false; if (!disposed) { render(); onChange(); } }
+    }
     async function cancel() {
       if (disposed || !signing() || cancelling) return;
       cancelling = true; cancelled = true; localError = null;
+      if (codeInput) codeInput.value = '';
       if (profileSelect) { profileSelect.value = ''; profileSnapshot = ''; } render(); onChange();
       try {
         const next = await bridge[spec.bridgePrefix + 'CancelSignIn']();
@@ -240,7 +287,7 @@
       clearError() { localError = null; render(); },
       getRegion: () => region?.value,
       fill(value = 'apiKey', selectedRegion) { if (spec.provider !== 'gemini') mode.value = value === spec.authMode && getRole() == null ? value : 'apiKey'; regionDirty = validRegion(selectedRegion); if (regionDirty) region.value = selectedRegion; localError = null; render(); },
-      destroy() { if (disposed) return; disposed = true; mode?.removeEventListener('change', changed); region?.removeEventListener('change', regionChanged); regionField?.remove(); panel.remove(); },
+      destroy() { if (disposed) return; if (codeInput) codeInput.value = ''; disposed = true; mode?.removeEventListener('change', changed); region?.removeEventListener('change', regionChanged); regionField?.remove(); panel.remove(); },
     });
   }
   root.ForgeAntigravityLogin = Object.freeze({ create, errorMessage, formatBytes });

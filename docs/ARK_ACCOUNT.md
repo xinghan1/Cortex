@@ -7,10 +7,14 @@
 控制器在每次登录专用的 `HOME` / `USERPROFILE` 中运行原始 CLI：
 
 ```text
-arkcli auth login volc-sso
+arkcli auth login --login-mode legacy --no-browser
+# 浏览器完成后，授权码仅交回同一隔离 HOME 的官方 CLI：
+arkcli auth login --login-mode legacy --no-browser --code <授权码>
 arkcli auth status --format json
 arkcli auth whoami --format json
 ```
+
+固定版本 1.0.42 默认 `auto` 会优先尝试 Broker 链路，`--no-browser` 本身不会强制旧链路。因此两段均明确传入 `--login-mode legacy`，不执行响应里的 `next_command`。Phase 1 必须返回 `authorize_pending` JSON；Synora 验证官方 HTTPS 地址后使用 Electron 打开默认浏览器，保留重新打开入口。用户将官方页面的 base64 授权码粘贴到软件的密码式输入框；提交、取消或过期后清空，不进入会话历史、日志或连接文件。兑换失败且会话未过期时可重试同一授权，取消会保留原有连接。
 
 Profile 候选来自本次返回的 `profiles_summary` 与 `active_profile`。无参 `signIn()` 在 `attempt.phase=choosing-profile` 等待；`selectProfile(profileName)` 只能选择该列表中的名称，并继续原登录任务。即使只有一个候选，也需要用户明确选择。取消授权会中止等待并清理尚未绑定的隔离目录。
 
@@ -52,7 +56,7 @@ $env:CI = '1'
 node node_modules/@volcengine/ark-cli/scripts/postinstall.js
 ```
 
-官方脚本按随包 `manifest.json` 下载并校验 SHA-256。仓库构建流程通过 `scripts/prepare-accounts.mjs` 检查账号组件。控制器直接定位该包的 `bin/arkcli-<platform>-<arch>`，再次验证哈希；不会从 `PATH` 选择任意同名程序。Windows 安装包需保留 `electron-builder.json` 中的 `asarUnpack` 原生二进制规则。缺少二进制或校验失败时，`ensure()` 明确报错。
+官方脚本按随包 `manifest.json` 下载并校验 SHA-256。仓库构建流程通过 `scripts/prepare-accounts.mjs` 检查账号组件。控制器直接定位该包的 `bin/arkcli-<platform>-<arch>`，再次验证哈希；不会从 `PATH` 选择任意同名程序。Windows 安装包必须将整个 `node_modules/@volcengine/ark-cli/` 解包到 `app.asar.unpacked`，包括 `package.json`、`manifest.json` 与原生程序；CLI 业务命令启动时会检查物理包元数据，仅解包 exe 会报 `update_execution_boundary` 并在打开授权页前失败。打包冒烟除帮助命令外，还执行隔离的 `legacy --no-browser` 第一阶段验证此边界，不完成真实授权。缺少二进制或校验失败时，`ensure()` 明确报错。
 
 `node --test tests/ark-account.test.mjs` 使用假 CLI 和测试加密器验证授权、Profile 范围、取消、回滚与调用隔离，不登录真实账号或发送推理请求。
 

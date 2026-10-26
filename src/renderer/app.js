@@ -1420,7 +1420,7 @@ function refreshControlLocks() {
   renderModelSettingsScope();
   if (isChatGPTBusy()) {
     document.querySelectorAll('button,input,select,textarea').forEach((control) => {
-      if (['chatgpt-cancel-sign-in', 'deepseek-login-cancel', 'gemini-login-cancel', 'antigravity-cancel-sign-in', 'kimi-agent-cancel-sign-in', 'glm-agent-cancel-sign-in', 'claude-agent-cancel-sign-in', 'ark-cancel-sign-in', 'ark-profile-select', 'ark-profile-confirm'].includes(control.id)) return;
+      if (['chatgpt-cancel-sign-in', 'deepseek-login-cancel', 'gemini-login-cancel', 'antigravity-cancel-sign-in', 'kimi-agent-cancel-sign-in', 'glm-agent-cancel-sign-in', 'claude-agent-cancel-sign-in', 'ark-cancel-sign-in', 'ark-profile-select', 'ark-profile-confirm', 'ark-code-input', 'ark-code-submit', 'ark-open-authorization'].includes(control.id)) return;
       if (!chatgptDisabledControls.has(control)) chatgptDisabledControls.set(control, control.disabled);
       control.disabled = true;
     });
@@ -2061,6 +2061,22 @@ function historicalTaskRecords(session) {
   });
 }
 
+function renderQuestionAnswer(event, { target, historical = false, runId } = {}) {
+  const answer = window.ForgeTaskHistory?.questionAnswer(event);
+  if (!answer || historical && answer.runId !== runId) return null;
+  if (!historical && (!running || activeTaskActivity?.status !== 'running' || answer.runId !== activeTaskActivity.runId
+      || answer.sessionId !== sessionId || taskKind === 'undo')) return null;
+  target ||= taskProcessTarget();
+  const existing = [...target.querySelectorAll('.question-answer-card')].find(card => card.dataset.runId === answer.runId && card.dataset.questionId === answer.questionId);
+  if (existing) return existing;
+  const card = element('section', 'question-answer-card'); card.dataset.questionId = answer.questionId; card.dataset.runId = answer.runId;
+  card.append(element('p', 'question-answer-title', 'AI 提问'), element('p', 'question-answer-question', answer.question));
+  const response = element('div', 'question-answer-response'); response.dataset.kind = Number.isSafeInteger(answer.choiceIndex) ? 'choice' : 'custom';
+  response.append(element('p', 'question-answer-label', Number.isSafeInteger(answer.choiceIndex) ? `用户回答 · 选项 ${answer.choiceIndex + 1}` : '用户回答 · 自定义'),
+    element('p', 'question-answer-text', answer.answer));
+  card.append(response); target.append(card); return card;
+}
+
 function renderHistoricalTaskActivity(record, items = []) {
   const activity = createTaskActivity(record);
   activity.status = ['completed', 'failed', 'stopped'].includes(record.status) ? record.status : 'completed';
@@ -2087,6 +2103,7 @@ function renderHistoricalTaskActivity(record, items = []) {
       } else if (event.type === 'subagent-update') renderSubagentUpdate(event, { target: activity.events, historical: true });
       else if (event.type === 'images-viewed') renderImageViewed(event, { target: activity.events, historical: true });
       else if (event.type === 'approval-review') renderApprovalReview(event, { target: activity.events, historical: true });
+      else if (event.type === 'question-answer') renderQuestionAnswer(event, { target: activity.events, historical: true, runId: record.runId || record.id });
       else if (event.type === 'context-compacted') appendContextCompactionNotice(event, activity.events);
       else if (event.type === 'command-output') {
         output = commandOutputForEvent(event, tools, activity.events, output);
@@ -4181,6 +4198,9 @@ function handleEvent(event) {
     case 'tool-result': rememberTaskChange(event); if (taskKind !== 'undo') completeTool(event); break;
     case 'file-change-recorded': rememberTaskChange(event); break;
     case 'images-viewed': renderImageViewed(event); break;
+    case 'question-answer':
+      if (renderQuestionAnswer(event)) { moveTaskActivityToEnd(); scrollBottom(); }
+      break;
     case 'subagent-update':
       renderSubagentUpdate(event);
       moveTaskActivityToEnd(); scrollBottom(); break;

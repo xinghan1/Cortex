@@ -7,12 +7,39 @@
   const recordFields = ['runId', 'id', 'kind', 'demo', 'status', 'error', 'startedAt', 'endedAt', 'elapsedMs', 'durationMs', 'messageStartIndex', 'messageIndex', 'telemetry', 'finalTelemetry', 'fileChangeCount'];
   const usageFields = ['version', 'inputTokens', 'outputTokens', 'totalTokens', 'requests', 'reportedRequests', 'unreportedRequests', 'partialRequests', 'status', 'historicalApproximate'];
   const eventFields = ['type', 'runId', 'sequence', 'messageIndex', 'toolCallId', 'name', 'args', 'result', 'fileChange', 'text', 'id', 'kind', 'title', 'detail', 'path', 'before', 'after', 'command', 'url', 'selector', 'action', 'approved', 'status', 'reason', 'reviewReason', 'count', 'throughIndex', 'beforeChars', 'afterChars', 'budgetMode', 'contextLimit', 'contextLimitKind', 'triggerTokens', 'targetTokens', 'requestedTriggerTokens', 'effectiveTriggerTokens', 'triggerClamped', 'triggerClampReason', 'triggerFloorApplied', 'estimatedBeforeTokens', 'estimatedAfterTokens', 'compressionTriggerBasis', 'reportedContextTokens', 'estimatedGrowthTokens', 'triggerChars', 'targetChars'];
-  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review', 'images-viewed']);
+  const extraTypes = new Set(['command-output', 'approval-request', 'approval-auto', 'approval-resolved', 'context-compacted', 'subagent-update', 'approval-review', 'images-viewed', 'question-answer']);
   const pick = (value, fields) => {
     const result = {};
     if (value && typeof value === 'object') for (const field of fields) if (Object.prototype.hasOwnProperty.call(value, field)) result[field] = value[field];
     return result;
   };
+  function questionAnswer(value) {
+    const publicText = (text, max) => typeof text === 'string' && text.trim() && text.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(text);
+    const identifier = text => typeof text === 'string' && text.length > 0 && text.length <= 200 && !/[\x00-\x1f\x7f]/u.test(text);
+    if (!value || value.type !== 'question-answer' || value.source !== 'user' || value.cancelled === true
+        || !identifier(value.questionId) || !identifier(value.runId) || !identifier(value.sessionId)
+        || !publicText(value.question, 4000) || !publicText(value.answer, 4000)) return null;
+    const options = value.options === undefined ? [] : value.options;
+    if (!Array.isArray(options) || options.length > 8 || options.some(option => !publicText(option, 160))) return null;
+    const choice = Object.prototype.hasOwnProperty.call(value, 'choiceIndex');
+    if (choice && (!Number.isSafeInteger(value.choiceIndex) || value.choiceIndex < 0 || value.choiceIndex >= options.length || value.answer !== options[value.choiceIndex])) return null;
+    return { type: 'question-answer', questionId: value.questionId, question: value.question, answer: value.answer,
+      options: [...options], ...(choice ? { choiceIndex: value.choiceIndex } : {}), source: 'user', runId: value.runId, sessionId: value.sessionId,
+      ...(Number.isSafeInteger(value.sequence) && value.sequence >= 0 ? { sequence: value.sequence } : {}),
+      ...(Number.isSafeInteger(value.messageIndex) && value.messageIndex >= 0 ? { messageIndex: value.messageIndex } : {}) };
+  }
+  function withQuestionAnswers(session, runId, saved) {
+    const events = [...saved], keys = new Set(events.map(questionAnswer).filter(Boolean).map(value => `${value.runId}:${value.questionId}`));
+    for (const item of Array.isArray(session.questionAnswers) ? session.questionAnswers : []) {
+      const answer = questionAnswer(item); if (!answer || answer.runId !== runId) continue;
+      const key = `${answer.runId}:${answer.questionId}`; if (keys.has(key)) continue; keys.add(key);
+      // Canonical answers survive event-log rollover. Their original sequence
+      // restores them beside the same tool/question, without another user turn.
+      const before = Number.isSafeInteger(answer.sequence) ? events.findIndex(event => Number.isSafeInteger(event?.sequence) && event.sequence > answer.sequence) : -1;
+      if (before >= 0) events.splice(before, 0, answer); else events.push(answer);
+    }
+    return events;
+  }
   const displayMessage = (message, index) => {
     const clean = pick(message, messageFields);
     if (Array.isArray(clean.toolCalls)) clean.toolCalls = clean.toolCalls.map(call => pick(call, ['id', 'name', 'arguments']));
@@ -71,6 +98,7 @@
     return clean;
   }
   const displayEvent = event => {
+    if (event.type === 'question-answer') return { type: 'event', event: questionAnswer(event) };
     const clean = pick(event, eventFields), change = fileChange(clean.fileChange);
     if (event.type === 'images-viewed') {
       clean.version = event.version;
@@ -176,8 +204,8 @@
     // last 150 session events, so message records remain the source of truth
     // for tool inputs/results. Event-only demo tools and approval/output
     // details supplement them, without duplicating real calls.
-    const events = [...(Array.isArray(record.activityEvents) ? record.activityEvents
-      : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []))];
+    const events = withQuestionAnswers(session, record.runId || record.id, Array.isArray(record.activityEvents) ? record.activityEvents
+      : (Array.isArray(session.events) ? session.events.filter(value => value?.runId && value.runId === (record.runId || record.id)) : []));
     const imageRequests = new Set(events.filter(value => value?.type === 'images-viewed').map(value => value.requestId));
     for (const view of Array.isArray(session.imageViews) ? session.imageViews : []) {
       if (view?.type !== 'images-viewed' || view.runId !== (record.runId || record.id)
@@ -203,10 +231,15 @@
       agents.set(agent.id, { first: index, agent });
     }
     let currentCall = null, assistantCursor = start, anchor = start;
-    const matchedResults = new Set();
+    const matchedResults = new Set(), answeredQuestions = new Set();
     for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
       let value = events[eventIndex];
       if (!value || typeof value !== 'object') continue;
+      if (value.type === 'question-answer') {
+        value = questionAnswer(value);
+        if (!value || value.runId !== (record.runId || record.id) || answeredQuestions.has(value.questionId)) continue;
+        answeredQuestions.add(value.questionId);
+      }
       if (value.type === 'images-viewed') {
         const images = (Array.isArray(value.images) ? value.images : [])
           .filter(image => image && imageMessageIds.has(image.messageId));
@@ -295,8 +328,8 @@
       const runId = record.runId || record.id;
       if (typeof runId !== 'string' || !runId) return [];
       const snapshots = new Map();
-      const saved = Array.isArray(record.activityEvents) ? record.activityEvents
-        : (Array.isArray(session.events) ? session.events.filter(value => value?.runId === runId) : []);
+      const saved = withQuestionAnswers(session, runId, Array.isArray(record.activityEvents) ? record.activityEvents
+        : (Array.isArray(session.events) ? session.events.filter(value => value?.runId === runId) : []));
       const images = new Map();
       const displayOnlyImageIds = new Set((Array.isArray(session.imageToolSources) ? session.imageToolSources.slice(-64) : [])
         .filter(source => source?.role === 'tool' && source.source === 'image-tool' && typeof source.id === 'string').map(source => source.id));
@@ -312,7 +345,9 @@
       for (const agent of Array.isArray(session.subagents) ? session.subagents : []) {
         if (agent?.parentRunId === runId && publicAgent(agent) && !snapshots.has(agent.id)) snapshots.set(agent.id, { type: 'subagent-update', runId, agent });
       }
-      return [...images.values(), ...snapshots.values()].map(displayEvent);
+      const answers = new Map();
+      for (const item of saved) { const answer = questionAnswer(item); if (answer?.runId === runId && !answers.has(answer.questionId)) answers.set(answer.questionId, answer); }
+      return [...images.values(), ...snapshots.values(), ...answers.values()].map(displayEvent);
     };
     const appendLegacy = index => {
       for (const record of legacy.get(index) || []) blocks.push({ type: 'run', record: displayRecord(record), items: standaloneSubagents(record), finalIndex: null, unanchored: true });
@@ -333,7 +368,7 @@
     return blocks;
   }
 
-  const api = Object.freeze({ project });
+  const api = Object.freeze({ project, questionAnswer });
   if (typeof module === 'object' && module.exports) module.exports = api;
   globalThis.ForgeTaskHistory = api;
 })();

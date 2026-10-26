@@ -7,14 +7,14 @@ const source = (await fs.readFile(new URL('../src/main.cjs', import.meta.url), '
 const functions = source.slice(source.indexOf('async function officialAgentUserInput('), source.indexOf('\nfunction dispatchModelRequest('));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const plain = value => JSON.parse(JSON.stringify(value));
-function fixture(permissionMode = 'full') {
-  const approvals = [], events = [], requests = [];
+function fixture(permissionMode = 'full', checkpointFlush = async () => {}) {
+  const approvals = [], events = [], requests = [], flushes = [];
   const pet = createPetDialogController({ getConfig: async () => assert.fail('A native decision must not call a model'), requestModel: async config => { requests.push(config); assert.fail('No inference'); }, emit: event => events.push(event) });
-  const run = { id: 'run-a', sessionId: 'local-session', externalAgent: true, controller: new AbortController() };
+  const run = { id: 'run-a', sessionId: 'local-session', externalAgent: true, controller: new AbortController(), checkpoints: { flush: async () => { flushes.push('answer-saved'); await checkpointFlush(); } } };
   const context = vm.createContext({ activeRun: run, permissionMode, petDialog: pet, publicSettings: () => ({ authMode: 'kimi-agent' }),
     accountLabel: () => 'Kimi 官方代理', approve: async request => { approvals.push(request); return true; } });
   vm.runInContext(functions, context);
-  return { context, pet, run, approvals, events, requests,
+  return { context, pet, run, approvals, events, requests, flushes,
     permission: input => context.officialAgentPermission({ localSessionId: run.sessionId, signal: run.controller.signal, ...input }),
     input: input => context.officialAgentUserInput({ localSessionId: run.sessionId, signal: run.controller.signal, ...input }) };
 }
@@ -68,4 +68,31 @@ test('ZCode native choices preserve their values, custom text is supported only 
   assert.deepEqual(plain(await custom), { action: 'accept', content: { answers: { '补充说明': '保持已有文件' } } });
   const cancelled = f.input({ questions: [{ question: '要继续吗', options: [{ label: '继续', value: 'go' }] }] }); question = f.pet.snapshot().question; f.pet.dismiss({ id: question.id });
   assert.deepEqual(plain(await cancelled), { action: 'cancel' }); assert.equal(f.approvals.length, 0); assert.equal(f.requests.length, 0);
+});
+
+
+test('native multi-question input waits for each answer checkpoint before asking or returning the next answer', async () => {
+  const pendingWrites = [];
+  const f = fixture('full', () => new Promise(resolve => pendingWrites.push(resolve)));
+  let returned = false;
+  const answers = f.input({ questions: [{ question: '第一问', options: [] }, { question: '第二问', options: [] }] }).then(value => { returned = true; return value; });
+  f.pet.answer({ id: f.pet.snapshot().question.id, text: '第一答' }); await tick();
+  assert.equal(pendingWrites.length, 1); assert.equal(f.pet.snapshot().question, null); assert.equal(returned, false);
+  pendingWrites.shift()(); await tick(); assert.equal(f.pet.snapshot().question.question, '第二问');
+  f.pet.answer({ id: f.pet.snapshot().question.id, text: '第二答' }); await tick();
+  assert.equal(pendingWrites.length, 1); assert.equal(returned, false);
+  pendingWrites.shift()();
+  assert.deepEqual(plain(await answers), { action: 'accept', content: { answers: { '第一问': '第一答', '第二问': '第二答' } } });
+});
+
+test('native fixed-choice reply cannot be returned before saving and storage failure never accepts the answer', async () => {
+  let finishWrite;
+  const f = fixture('full', () => new Promise(resolve => { finishWrite = resolve; })); let returned = false;
+  const answer = f.permission(kimiQuestion()).then(value => { returned = true; return value; });
+  f.pet.answer({ id: f.pet.snapshot().question.id, choiceIndex: 1 }); await tick(); assert.equal(returned, false);
+  finishWrite(); assert.equal(await answer, 'q0_opt_1');
+  const broken = fixture('full', async () => { throw new Error('checkpoint unavailable'); });
+  const rejected = broken.input({ questions: [{ question: '不能丢失回答', options: [] }] });
+  broken.pet.answer({ id: broken.pet.snapshot().question.id, text: '真实回答' });
+  await assert.rejects(rejected, /checkpoint unavailable/); assert.equal(broken.pet.snapshot().question, null);
 });

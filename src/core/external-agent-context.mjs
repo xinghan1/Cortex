@@ -33,7 +33,7 @@ export function externalAgentPrompt(prompt, contextMessages, { maxContextChars =
   maxContextChars = Math.min(maxContextChars, Math.floor((MAX_PROMPT_BYTES - Buffer.byteLength(prompt, 'utf8')) / 3));
   if (maxContextChars < 512) return prompt;
   const entries = [];
-  for (const message of contextMessages) if (message && ['user', 'assistant'].includes(message.role)
+  for (const message of contextMessages) if (message && message.localOnly !== true && ['user', 'assistant'].includes(message.role)
       && typeof message.content === 'string' && /\S/u.test(message.content)) entries.push({ role: message.role, content: message.content });
   if (!entries.length) return prompt;
   const budget = maxContextChars - opening.length - ending.length - omission.length - 8;

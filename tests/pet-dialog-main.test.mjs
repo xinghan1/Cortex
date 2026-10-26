@@ -10,7 +10,7 @@ const wiringStart = source.indexOf('const petDialog = createPetDialogController(
 const wiringSource = source.slice(wiringStart, source.indexOf('\nfunction publicSettings()', wiringStart));
 const handlersStart = source.indexOf('    getPetDialog: () => publicPetDialog(),');
 const handlersSource = source.slice(handlersStart, source.indexOf('    cancelPromptCompletion:', handlersStart));
-const stopStart = source.indexOf('    stopTask: () => ');
+const stopStart = source.indexOf('    stopTask: async () => ');
 const stopSource = source.slice(stopStart, source.indexOf('\n', stopStart));
 const toolStart = source.indexOf('execute: (name, args, options) => {', source.indexOf('async function startTask('));
 const toolEnd = source.indexOf('\n        } }, toolDefinitions:', toolStart);
@@ -21,7 +21,7 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 
 function fixture(extra = {}) {
   const events = [], requests = [], usage = [], calls = [], roleCalls = [];
-  const run = { id: 'main-run', sessionId: 'session-a', controller: new AbortController() };
+  const run = { id: 'main-run', sessionId: 'session-a', kind: 'agent', controller: new AbortController(), checkpoints: { flush: async () => {} } };
   const runtimeContext = {}, host = { active: runtimeContext, publishWorkspaces: () => calls.push('publish-workspaces') };
   const config = { provider: 'relay', model: 'pet-model', authMode: 'apiKey', baseUrl: 'https://fixture.invalid/v1',
     apiKey: 'local-fixture-key', connectionKey: 'connection-a', apiProtocol: 'responses' };
@@ -126,4 +126,39 @@ test('the main stream generation guard drops a role revision change and old part
   assert.doesNotMatch(JSON.stringify(f.events), /NEW_REVISION_PRIVATE_TEXT/);
   assert.equal(f.usage[0].status, 'stopped');
   held.resolve({ message: { content: '迟到结果', toolCalls: [] }, usageReported: false }); await tick();
+});
+
+
+test('the actual stopTask handler waits for the cancelled run final checkpoint promise', async () => {
+  const done = deferred(), f = fixture(); f.run.done = done.promise;
+  let returned = false;
+  const stopping = f.handlers.stopTask().then(() => { returned = true; });
+  await tick(); assert.equal(f.run.controller.signal.aborted, true); assert.equal(returned, false);
+  done.resolve(); await stopping; assert.equal(returned, true);
+});
+
+
+test('main routes only a scoped real question answer to the turn archive, with public fields and duplicate rejection', () => {
+  let publish, f; const archived = [];
+  f = fixture({ createPetDialogController: options => { publish = options.emit; return createPetDialogController(options); },
+    emit: event => { archived.push(event); (f.sandbox.currentSession.questionAnswers ||= []).push({ ...event }); } });
+  const answer = { type: 'question-answer', questionId: 'question-one', question: '保留哪个文件？', answer: '保留第二个', options: ['第一个', '第二个'],
+    choiceIndex: 1, source: 'user', runId: f.run.id, sessionId: f.run.sessionId, providerState: 'MUST_NOT_ARCHIVE', apiKey: 'MUST_NOT_ARCHIVE' };
+  for (const invalid of [{ ...answer, source: 'automatic' }, { ...answer, sessionId: 'other-session' }, { ...answer, runId: 'other-run' }]) publish(invalid);
+  assert.equal(archived.length, 0);
+  publish(answer); publish(answer);
+  assert.equal(archived.length, 1); assert.equal(archived[0].messageIndex, 0); assert.equal(archived[0].answer, '保留第二个');
+  assert.equal(archived[0].source, 'user'); assert.equal(Object.hasOwn(archived[0], 'providerState'), false); assert.equal(Object.hasOwn(archived[0], 'apiKey'), false);
+  assert.equal(f.sandbox.currentSession.messages.length, 0, 'An answer never creates a fake user turn');
+  f.run.controller.abort(); publish({ ...answer, questionId: 'question-after-stop' }); assert.equal(archived.length, 1);
+});
+
+test('API tool-question returns the real user answer only after its checkpoint is durable', async () => {
+  const f = fixture(), saved = deferred(); let returned = false, flushing = false;
+  f.run.checkpoints.flush = async () => { flushing = true; await saved.promise; };
+  const pending = f.sandbox.executeTool('ask_user_question', { question: '需要保留什么？' }, { signal: f.run.controller.signal }).then(value => { returned = true; return value; });
+  const id = f.pet.snapshot().question.id;
+  f.handlers.answerPetDialog({ ...f.scope(), id, text: '保留现有数据' }); await tick();
+  assert.equal(flushing, true); assert.equal(returned, false); saved.resolve();
+  assert.equal(JSON.parse(await pending).answer, '保留现有数据');
 });

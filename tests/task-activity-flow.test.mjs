@@ -35,6 +35,7 @@ class Element {
 
 const source = await fs.readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
 const groupSource = await fs.readFile(new URL('../src/renderer/tool-operation-groups.js', import.meta.url), 'utf8');
+const historySource = await fs.readFile(new URL('../src/renderer/task-history.js', import.meta.url), 'utf8');
 function appFunction(name) {
   const start = source.indexOf(`function ${name}(`), end = source.indexOf('\nfunction ', start + 1);
   assert.ok(start >= 0, name);
@@ -49,9 +50,11 @@ function fixture() {
     performance: { now: () => 842000 }, clearInterval() {}, window: {},
     showTokenRate() {}, finishContextCompaction() {}, renderTaskReconnect() {},
     hasTokenRate: () => false,
+    taskProcessTarget: () => context.activity.events,
   });
-  vm.runInContext('let running = true; let contextCompacting = false; let activeTaskActivity; let taskActivityTimer = null; let latestTelemetry = null;', context);
-  for (const name of ['activityDuration', 'taskElapsed', 'renderTaskActivityElapsed', 'createTaskActivity', 'setTaskActivityPhase', 'clearTaskReconnect', 'finishTaskActivity'])
+  vm.runInContext('let running = true; let contextCompacting = false; let activeTaskActivity; let taskActivityTimer = null; let latestTelemetry = null; let taskKind = "agent"; let sessionId = "session";', context);
+  vm.runInContext(historySource, context); context.window.ForgeTaskHistory = context.ForgeTaskHistory;
+  for (const name of ['activityDuration', 'taskElapsed', 'renderTaskActivityElapsed', 'createTaskActivity', 'setTaskActivityPhase', 'clearTaskReconnect', 'finishTaskActivity', 'renderQuestionAnswer'])
     vm.runInContext(appFunction(name), context);
   vm.runInContext(groupSource, context);
   const activity = context.createTaskActivity({ runId: 'current' });
@@ -61,6 +64,31 @@ function fixture() {
   vm.runInContext('activeTaskActivity = activity', context);
   return { context, activity, messages, runStatus };
 }
+
+test('answered choices and custom text render once in the current task flow without creating a user message or another round', () => {
+  const { context, activity, messages } = fixture();
+  const choice = { type: 'question-answer', questionId: 'one', runId: 'current', sessionId: 'session', question: '采用哪种方式？', options: ['保留', '调整'], answer: '调整', choiceIndex: 1, source: 'user' };
+  const card = context.renderQuestionAnswer(choice); assert.ok(card); assert.equal(card.parentElement, activity.events);
+  assert.equal(card.querySelector('.question-answer-question').textContent, choice.question); assert.equal(card.querySelector('.question-answer-text').textContent, choice.answer);
+  assert.equal(card.querySelector('.question-answer-response').dataset.kind, 'choice'); assert.equal(context.renderQuestionAnswer(choice), card);
+  const answer = '完整自定义回答\n' + '较长的具体要求'.repeat(300);
+  const custom = context.renderQuestionAnswer({ ...choice, questionId: 'two', question: '<script>原文问题</script>', options: [], choiceIndex: undefined, answer });
+  assert.equal(custom, null, 'A malformed choice index is rejected');
+  const event = { ...choice, questionId: 'two', question: '<script>原文问题</script>', options: [], answer }; delete event.choiceIndex;
+  const customCard = context.renderQuestionAnswer(event); assert.equal(customCard.querySelector('.question-answer-text').textContent, answer); assert.equal(customCard.querySelector('.question-answer-question').textContent, event.question);
+  assert.equal(customCard.querySelector('.question-answer-response').dataset.kind, 'custom'); assert.equal(activity.events.querySelectorAll('.question-answer-card').length, 2);
+  assert.equal(messages.children.length, 1); assert.equal(messages.querySelectorAll('article.message').length, 0);
+});
+
+test('live question receipts cannot cross sessions, tasks, cancellations, casual chat or settled activity', () => {
+  const { context, activity } = fixture();
+  const base = { type: 'question-answer', questionId: 'q', runId: 'current', sessionId: 'session', question: '当前问题', options: [], answer: '真实回答', source: 'user' };
+  for (const patch of [{ runId: 'different' }, { sessionId: 'different' }, { cancelled: true }, { source: 'assistant' }, { type: 'pet-dialog' }]) assert.equal(context.renderQuestionAnswer({ ...base, ...patch }), null);
+  activity.status = 'completed'; assert.equal(context.renderQuestionAnswer(base), null); assert.equal(activity.events.childElementCount, 0);
+  const historical = context.renderQuestionAnswer(base, { target: activity.events, historical: true, runId: 'current' }); assert.ok(historical);
+  assert.equal(context.renderQuestionAnswer({ ...base, questionId: 'other', runId: 'wrong' }, { target: activity.events, historical: true, runId: 'current' }), null);
+  assert.equal(activity.events.querySelectorAll('.question-answer-card').length, 1);
+});
 
 test('round heading shows only elapsed time during work and after completion', () => {
   const { context, activity } = fixture();

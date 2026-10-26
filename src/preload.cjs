@@ -122,6 +122,8 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   claudeAgentRetryStorage: () => call('claudeAgentRetryStorage'),
   arkInstall: () => call('arkInstall'),
   arkSignIn: arg => call('arkSignIn', arg),
+  arkOpenAuthorization: () => call('arkOpenAuthorization'),
+  arkSubmitAuthorizationCode: arg => call('arkSubmitAuthorizationCode', arg),
   arkSelectProfile: arg => call('arkSelectProfile', arg),
   arkCancelSignIn: () => call('arkCancelSignIn'),
   arkDisconnect: () => call('arkDisconnect'),

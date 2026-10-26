@@ -14,6 +14,18 @@ const uuid = value => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3
 const fail = (code, message) => Object.assign(new Error(`[${code}] ${message}`), { name: 'ArkAccountError', code });
 const cancelled = () => Object.assign(fail('ARK_CANCELLED', '火山方舟账号操作已取消。'), { name: 'AbortError' });
 const check = signal => { if (signal?.aborted) throw cancelled(); };
+export function arkAuthorizationUrl(value) {
+  if (typeof value !== 'string' || value.length > 8192 || /[\x00-\x20\x7f]/u.test(value)) throw invalid();
+  let url; try { url = new URL(value); } catch { throw invalid(); }
+  if (url.protocol !== 'https:' || url.hostname !== 'signin.volcengine.com' || url.port || url.username || url.password || url.hash
+      || url.pathname !== '/authorize/oauth/authorize' || url.searchParams.get('client_id') !== 'trn:signin:::devtools/cross-device'
+      || url.searchParams.get('redirect_uri') !== 'https://signin.volcengine.com/authorize/oauth/authorize'
+      || url.searchParams.get('response_type') !== 'code' || url.searchParams.get('code_challenge_method') !== 'S256'
+      || !url.searchParams.get('state') || !url.searchParams.get('code_challenge')) throw invalid();
+  return value;
+}
+const authCodeValid = value => typeof value === 'string' && value.length > 0 && value.length <= 16384 && /^[A-Za-z\d+/_-]+={0,2}$/u.test(value);
+
 const invalid = () => fail('ARK_PROTOCOL_ERROR', '官方 Ark CLI 返回的账号或运行时资料无效，请更新组件后重试。');
 const types = ['platform', 'agent-plan', 'coding-plan', 'agent-plan-team', 'coding-plan-team'];
 // Official contracts: volcengine/ark-cli skills/arkcli-profile/SKILL.md
@@ -106,16 +118,16 @@ export function createArkCliRuntime() {
 }
 
 export class ArkAccount {
-  #dir; #profiles; #file; #safe; #runtime; #spawn; #kill; #proxy; #change; #version; #timeout; #loginTimeout;
+  #dir; #profiles; #file; #safe; #runtime; #spawn; #kill; #proxy; #change; #openExternal; #version; #timeout; #loginTimeout;
   #initialized = null; #grant = null; #attempt = null; #failure = null; #storageError = false; #closed = false; #rejected = false;
   #writes = Promise.resolve(); #commands = new Set(); #requests = new Set(); #knownSecrets = new Set(); #epoch = 0;
   constructor({ dataDir, safeStorage, runtime = createArkCliRuntime(), spawnImpl = spawn, killTreeImpl = killAntigravityProcessTree,
-    getProxyEnv = () => ({}), onChange = () => {}, version = '0.0.0', requestTimeoutMs = 60000, loginTimeoutMs = 600000 } = {}) {
+    getProxyEnv = () => ({}), onChange = () => {}, openExternal, version = '0.0.0', requestTimeoutMs = 60000, loginTimeoutMs = 600000 } = {}) {
     if (!text(dataDir, 8192) || !path.isAbsolute(dataDir) || !runtime?.ensure || !runtime?.publicState || typeof spawnImpl !== 'function' || typeof killTreeImpl !== 'function'
-        || typeof getProxyEnv !== 'function' || typeof onChange !== 'function' || !text(version, 80)
+        || typeof getProxyEnv !== 'function' || typeof onChange !== 'function' || openExternal !== undefined && typeof openExternal !== 'function' || !text(version, 80)
         || ![requestTimeoutMs, loginTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0 && value <= 600000)) throw fail('ARK_INVALID_CONFIG', '火山方舟账号连接配置无效。');
     this.#dir = path.join(path.resolve(dataDir), 'ark-account'); this.#profiles = path.join(this.#dir, 'profiles'); this.#file = path.join(this.#dir, 'connection.json');
-    this.#safe = safeStorage; this.#runtime = runtime; this.#spawn = spawnImpl; this.#kill = killTreeImpl; this.#proxy = getProxyEnv; this.#change = onChange; this.#version = version;
+    this.#safe = safeStorage; this.#runtime = runtime; this.#spawn = spawnImpl; this.#kill = killTreeImpl; this.#proxy = getProxyEnv; this.#change = onChange; this.#openExternal = openExternal; this.#version = version;
     this.#timeout = requestTimeoutMs; this.#loginTimeout = loginTimeoutMs;
   }
   #changed() { try { Promise.resolve(this.#change()).catch(() => {}); } catch {} }
@@ -164,7 +176,7 @@ export class ArkAccount {
     await this.init(); const grant = this.#grant, rejected = this.#rejected;
     return { runtime: await this.#runtime.publicState(), session: { status: this.#attempt ? 'connecting' : rejected || this.#storageError ? 'reauth_required' : grant ? 'connected' : 'disconnected', sharing: Boolean(grant) && !rejected && !this.#storageError, profileId: grant?.profileId || null,
       ...(grant ? { identity: { name: grant.profile.name, type: grant.profile.type, region: grant.profile.region, project: grant.profile.project } } : {}) },
-    attempt: this.#attempt ? { phase: this.#attempt.phase } : null, profiles: this.#attempt?.profiles ? structuredClone(this.#attempt.profiles) : grant ? [{ name: grant.profile.name, type: grant.profile.type, region: grant.profile.region, project: grant.profile.project }] : [],
+    attempt: this.#attempt ? { phase: this.#attempt.phase, ...(this.#attempt.verificationUrl ? { verificationUrl: this.#attempt.verificationUrl, expiresAt: this.#attempt.expiresAt } : {}) } : null, profiles: this.#attempt?.profiles ? structuredClone(this.#attempt.profiles) : grant ? [{ name: grant.profile.name, type: grant.profile.type, region: grant.profile.region, project: grant.profile.project }] : [],
     error: this.#failure ? { ...this.#failure } : null, storageRecovery: this.#storageError,
     storage: { owner: 'official-cli-and-app', homeIsolated: true, credentialScope: 'app-isolated', encrypted: true }, models: grant ? structuredClone(grant.models) : [] };
   }
@@ -173,7 +185,7 @@ export class ArkAccount {
     const proxy = await this.#proxy(); check(signal);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => /^(?:path|pathext|systemroot|windir|comspec|temp|tmp|appdata|localappdata|lang|lc_all|node_extra_ca_certs)$/iu.test(key) && typeof value === 'string'));
     if (object(proxy)) for (const [key, value] of Object.entries(proxy)) if (/^(?:https?_proxy|all_proxy|no_proxy)$/iu.test(key) && text(value, 4096)) env[key] = value;
-    env.HOME = home; env.USERPROFILE = home; env.CI = '1'; env.ARKCLI_NO_UPDATE_NOTIFIER = '1';
+    env.HOME = home; env.USERPROFILE = home; env.APPDATA = path.join(home, 'AppData', 'Roaming'); env.LOCALAPPDATA = path.join(home, 'AppData', 'Local'); env.CI = '1'; env.ARKCLI_NO_UPDATE_NOTIFIER = '1';
     return { cwd: home, env, windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] };
   }
   async #run(args, profileId, { signal, login = false } = {}) {
@@ -198,6 +210,77 @@ export class ArkAccount {
       } catch (error) { finish(error?.name === 'ArkAccountError' ? error : fail('ARK_START_FAILED', '无法启动官方 Ark CLI，请重新安装组件。')); }
     });
   }
+  async #authorize(attempt) {
+    const flags = ['auth', 'login', '--login-mode', 'legacy', '--no-browser'];
+    // The pinned CLI's default broker flow does not implement --no-browser.
+    // Keep both phases in its documented legacy cross-device flow and HOME.
+    const response = parseJson(await this.#run(flags, attempt.profileId, { signal: attempt.controller.signal, login: true }));
+    if (response.stage !== 'authorize_pending' || response.method !== 'sso_no_browser'
+        || !Number.isSafeInteger(response.expires_in_sec) || response.expires_in_sec <= 0 || response.expires_in_sec > 600) throw invalid();
+    attempt.verificationUrl = arkAuthorizationUrl(response.authorize_url);
+    attempt.expiresAt = Date.now() + Math.min(response.expires_in_sec * 1000, this.#loginTimeout);
+    let first = true;
+    while (true) {
+      check(attempt.controller.signal);
+      if (Date.now() >= attempt.expiresAt) throw fail('ARK_AUTH_EXPIRED', '本次方舟授权已过期，请重新登录。');
+      const codePending = new Promise((resolve, reject) => {
+        let timer;
+        const cleanup = () => { clearTimeout(timer); attempt.controller.signal.removeEventListener('abort', abort); attempt.submitCode = null; };
+        const abort = () => { cleanup(); reject(cancelled()); };
+        attempt.submitCode = code => { cleanup(); resolve(code); };
+        attempt.controller.signal.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => { cleanup(); reject(fail('ARK_AUTH_EXPIRED', '本次方舟授权已过期，请重新登录。')); }, Math.max(1, attempt.expiresAt - Date.now()));
+        if (attempt.controller.signal.aborted) abort();
+      });
+      // Attach a handler before awaiting browser startup: cancellation can win.
+      codePending.catch(() => {});
+      attempt.phase = 'waiting-authorization-code'; this.#changed();
+      if (first) { first = false; await this.openAuthorization().catch(error => { if (error.name === 'AbortError') throw error; this.#setError(error); }); }
+      const code = await codePending; check(attempt.controller.signal);
+      attempt.phase = 'exchanging-authorization-code'; this.#failure = null; this.#changed();
+      try { await this.#run([...flags, '--code', code], attempt.profileId, { signal: attempt.controller.signal, login: true }); }
+      catch (error) {
+        check(attempt.controller.signal);
+        if (Date.now() >= attempt.expiresAt) throw fail('ARK_AUTH_EXPIRED', '本次方舟授权已过期，请重新登录。');
+        if (error.code !== 'ARK_AUTH_FAILED') throw error;
+        this.#setError(fail('ARK_AUTH_EXCHANGE_FAILED', '授权码校验或兑换未完成，请复制当前官方页面的完整授权码后重试。'));
+        continue;
+      }
+      delete attempt.verificationUrl; delete attempt.expiresAt; this.#failure = null; return;
+    }
+  }
+  async openAuthorization() {
+    const attempt = this.#attempt;
+    if (!attempt || attempt.controller.signal.aborted || attempt.phase !== 'waiting-authorization-code' || !attempt.verificationUrl) throw fail('ARK_BUSY', '当前没有等待中的方舟授权页面。');
+    const url = arkAuthorizationUrl(attempt.verificationUrl);
+    if (Date.now() >= attempt.expiresAt) throw fail('ARK_AUTH_EXPIRED', '本次方舟授权已过期，请重新登录。');
+    try {
+      if (!this.#openExternal) throw new Error();
+      await new Promise((resolve, reject) => {
+        let timer;
+        const finish = (error) => { clearTimeout(timer); attempt.controller.signal.removeEventListener('abort', abort); error ? reject(error) : resolve(); };
+        const abort = () => finish(cancelled());
+        attempt.controller.signal.addEventListener('abort', abort, { once: true });
+        timer = setTimeout(() => finish(new Error('Browser startup timed out')), 15000);
+        if (attempt.controller.signal.aborted) return abort();
+        Promise.resolve().then(() => this.#openExternal(url)).then(() => finish(), finish);
+      });
+    } catch (error) {
+      if (attempt.controller.signal.aborted || error?.name === 'AbortError') throw cancelled();
+      throw fail('ARK_BROWSER_OPEN_FAILED', '无法打开官方授权页面，请检查默认浏览器后点击重新打开。');
+    }
+    if (this.#attempt === attempt && attempt.phase === 'waiting-authorization-code' && this.#failure?.code === 'ARK_BROWSER_OPEN_FAILED') { this.#failure = null; this.#changed(); }
+    return this.publicState();
+  }
+  async submitAuthorizationCode(code) {
+    const attempt = this.#attempt;
+    if (!attempt || attempt.controller.signal.aborted || attempt.phase !== 'waiting-authorization-code' || !attempt.submitCode) throw fail('ARK_BUSY', '当前没有等待中的方舟授权。');
+    if (typeof code === 'string') code = code.trim();
+    if (!authCodeValid(code)) throw fail('ARK_AUTH_CODE_INVALID', '请粘贴官方页面返回的完整 base64 授权码。');
+    if (Date.now() >= attempt.expiresAt) throw fail('ARK_AUTH_EXPIRED', '本次方舟授权已过期，请重新登录。');
+    this.#knownSecrets.add(code); this.#failure = null; attempt.phase = 'exchanging-authorization-code'; attempt.submitCode(code); this.#changed();
+    return this.publicState();
+  }
   async #identityInfo(profileId, profileName, signal) {
     const flags = profileName ? ['--profile', profileName] : [];
     const status = parseJson(await this.#run(['auth', 'status', ...flags, '--format', 'json'], profileId, { signal }));
@@ -216,7 +299,7 @@ export class ArkAccount {
       let committed = false, staged = false;
       try {
         if (!attempt.profiles) {
-          await this.#run(['auth', 'login', 'volc-sso'], attempt.profileId, { signal: controller.signal, login: true }); attempt.phase = 'validating-profile'; this.#changed();
+          await this.#authorize(attempt); attempt.phase = 'validating-profile'; this.#changed();
           const identity = await this.#identityInfo(attempt.profileId, undefined, controller.signal); attempt.profiles = profileChoices(identity.status, identity.whoami); attempt.owner = identityOwner(identity.status, identity.whoami);
         }
         const candidates = attempt.profiles.filter(row => profileName ? row.name === profileName : profileType ? row.type === profileType : true);

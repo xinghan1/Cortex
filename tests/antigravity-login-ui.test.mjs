@@ -10,6 +10,7 @@ class Element{
   constructor(document){Object.assign(this,{document,children:[],events:new Map(),attributes:{},value:'',textContent:'',hidden:false,disabled:false});}
   set id(value){this._id=value;this.document.nodes.set(value,this);}get id(){return this._id;}
   append(...nodes){this.children.push(...nodes);}before(...nodes){this.document.body.append(...nodes);}
+  replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(key,value){this.attributes[key]=String(value);}removeAttribute(key){delete this.attributes[key];}
   addEventListener(type,handler){this.events.set(type,handler);}removeEventListener(type,handler){if(this.events.get(type)===handler)this.events.delete(type);}
   click(){if(!this.disabled)return this.events.get('click')?.();}remove(){this.removed=true;}
@@ -37,7 +38,7 @@ function fixture({initial=empty(),role=null,methods={},descriptor}={}){
   for(const value of ['apiKey',spec.authMode]){const option=new Element(document);option.value=value;document.nodes.get(spec.modeId).append(option);}
   let state={settings:{provider:spec.provider},[spec.stateKey]:initial},busy=false;const calls=[],args=[],applied=[],invalidations=[];let refreshed=0;
   const bridge={getState:async()=>state};
-  for(const suffix of ['Install','SignIn','CancelSignIn','Disconnect','RetryStorage']){const name=spec.bridgePrefix+suffix;bridge[name]=value=>{calls.push(name);args.push(value);return methods[name]?methods[name](value):state;};}
+  for(const suffix of ['Install','SignIn','CancelSignIn','Disconnect','RetryStorage','OpenAuthorization','SubmitAuthorizationCode','SelectProfile']){const name=spec.bridgePrefix+suffix;bridge[name]=value=>{calls.push(name);args.push(value);return methods[name]?methods[name](value):state;};}
   const context=vm.createContext({document,URL});vm.runInContext(source,context);let ui;
   ui=context.ForgeAntigravityLogin.create({document,bridge,descriptor,getScope:()=>state,getRole:()=>role,isBusy:()=>busy,
     onState:next=>{state=next;applied.push(next);ui.render();},onChange:()=>ui.render(),onInvalidate:()=>invalidations.push(true),onRefreshModels:()=>{refreshed++;}});
@@ -57,6 +58,67 @@ test('official-agent panel remains independent from API keys, old CLI and five r
 const kimi={provider:'kimi',authMode:'kimi-agent',stateKey:'kimiAgent',prefix:'kimi-agent',name:'Kimi Code',modeId:'kimi-auth-mode',bridgePrefix:'kimiAgent',errorPrefix:'KIMI_',
   regions:[['mainland-cn','中国大陆'],['global','国际']],allowDeviceCode:true,verificationHosts:['kimi.com','moonshot.cn','moonshot.ai']};
 const glm={provider:'glm',authMode:'glm-agent',stateKey:'glmAgent',prefix:'glm-agent',name:'ZCode',modeId:'glm-auth-mode',bridgePrefix:'glmAgent',errorPrefix:'ZCODE_',regions:[['bigmodel','智谱'],['zai','Z.AI']]};
+const ark={provider:'doubao',authMode:'ark-account',stateKey:'ark',prefix:'ark',name:'火山方舟',modeId:'doubao-auth-mode',bridgePrefix:'ark',errorPrefix:'ARK_',help:'在官方页面登录后，粘贴本次授权码。'};
+const pendingArk=(patch={})=>({...empty(),runtime:{status:'ready'},session:{status:'connecting',sharing:false,profileId:null},attempt:{phase:'waiting-authorization-code',verificationUrl:'https://signin.volcengine.com/authorize/oauth/authorize?state=PUBLIC_PENDING',expiresAt:'2026-10-26T12:10:00.000Z'},...patch});
+const pasteArk=(f,code)=>{f.node('ark-code-input').value=code;f.node('ark-code-input').events.get('input')();};
+
+test('Ark pending authorization shows masked code entry and submits once without retaining the code in rendered state',async()=>{
+  const login=deferred(),submission=deferred(),f=fixture({descriptor:ark,initial:{...empty(),runtime:{status:'ready'}},methods:{arkSignIn:()=>login.promise,arkSubmitAuthorizationCode:()=>submission.promise}});f.open();
+  const signing=f.node('ark-sign-in').click();f.update(pendingArk());f.busy(true);
+  assert.equal(f.node('ark-authorization-field').hidden,false);assert.equal(f.node('ark-code-input').type,'password');assert.equal(f.node('ark-code-input').autocomplete,'off');assert.equal(f.node('ark-code-input').spellcheck,false);
+  assert.equal(f.node('ark-code-input').disabled,false);assert.equal(f.node('ark-code-submit').disabled,true);assert.equal(f.node('ark-open-authorization').disabled,false);assert.equal(f.node('ark-cancel-sign-in').disabled,false);
+  assert.match(f.node('ark-login-status').textContent,/等待粘贴/);assert.doesNotMatch(f.node('ark-login-status').textContent,/已打开/);
+  pasteArk(f,'SYNTHETIC_BASE64_AUTH_CODE');const pending=f.node('ark-code-submit').click();
+  assert.equal(f.node('ark-code-input').value,'','The code is cleared before the IPC promise settles');assert.equal(f.node('ark-code-submit').disabled,true);assert.equal(f.node('ark-code-input').disabled,true);
+  await f.node('ark-code-submit').click();assert.deepEqual(f.calls,['arkSignIn','arkSubmitAuthorizationCode']);assert.equal(f.args[1].code,'SYNTHETIC_BASE64_AUTH_CODE');
+  const choosing={settings:{},ark:pendingArk({attempt:{phase:'choosing-profile'},profiles:[]})};submission.resolve(choosing);await pending;
+  assert.equal(f.node('ark-authorization-field').hidden,true);assert.equal(f.node('ark-code-input').value,'');assert.equal(f.node('ark-profile-field').hidden,false);
+  assert.doesNotMatch(JSON.stringify(f.applied),/SYNTHETIC_BASE64_AUTH_CODE/);
+  login.resolve(choosing);await signing;
+});
+
+test('Ark invalid authorization codes show fixed guidance, clear the input and leave the same pending flow available for another code',async()=>{
+  let attempts=0;const f=fixture({descriptor:ark,initial:pendingArk(),methods:{arkSubmitAuthorizationCode:()=>{if(!attempts++)throw new Error('[ARK_AUTH_CODE_INVALID] PRIVATE_CODE PRIVATE_URL https://host/?token=SECRET');return {settings:{},ark:pendingArk()};}}});f.open();
+  pasteArk(f,'FIRST_SYNTHETIC_CODE');await f.node('ark-code-submit').click();
+  assert.equal(f.node('ark-code-input').value,'');assert.equal(f.node('ark-authorization-field').hidden,false);assert.equal(f.node('ark-code-input').disabled,false);assert.equal(f.node('ark-code-submit').disabled,true);
+  assert.match(f.node('ark-login-message').textContent,/重新复制授权码/);assert.doesNotMatch(f.node('ark-login-message').textContent,/PRIVATE|SECRET|https:/);assert.equal(f.node('ark-cancel-sign-in').disabled,false);
+  pasteArk(f,'SECOND_SYNTHETIC_CODE');await f.node('ark-code-submit').click();assert.deepEqual(f.calls,['arkSubmitAuthorizationCode','arkSubmitAuthorizationCode']);assert.equal(f.node('ark-code-input').value,'');
+});
+
+test('Ark rejects malformed pasted codes before IPC and distinguishes retryable exchange errors from expired authorization',async()=>{
+  for(const code of ['internal space','非法授权码','ab\ncd','a'.repeat(16385)]){
+    const f=fixture({descriptor:ark,initial:pendingArk()});f.open();pasteArk(f,code);await f.node('ark-code-submit').click();
+    assert.deepEqual(f.calls,[]);assert.equal(f.node('ark-code-input').value,'');assert.match(f.node('ark-login-message').textContent,/重新复制授权码/);
+  }
+  const f=fixture({descriptor:ark,initial:pendingArk({error:{code:'ARK_AUTH_EXCHANGE_FAILED',message:'PRIVATE_CREDENTIAL'}})});f.open();
+  assert.match(f.node('ark-login-message').textContent,/检查网络后重新提交/);assert.equal(f.node('ark-authorization-field').hidden,false);assert.equal(f.node('ark-code-input').disabled,false);
+  f.update({...empty(),runtime:{status:'ready'},error:{code:'ARK_AUTH_EXPIRED',message:'PRIVATE_EXPIRED_CODE'}});
+  assert.match(f.node('ark-login-message').textContent,/授权已过期/);assert.equal(f.node('ark-authorization-field').hidden,true);assert.equal(f.node('ark-sign-in').disabled,false);assert.doesNotMatch(f.node('ark-login-message').textContent,/PRIVATE/);
+});
+
+test('Ark reopening delegates only to the verified pending main-process URL and reports browser failure without claiming success',async()=>{
+  let tries=0;const f=fixture({descriptor:ark,initial:pendingArk(),methods:{arkOpenAuthorization:()=>{if(!tries++)throw new Error('[ARK_BROWSER_OPEN_FAILED] PRIVATE_OAUTH_URL?token=SECRET');return {settings:{},ark:pendingArk()};}}});f.open();
+  await f.node('ark-open-authorization').click();assert.match(f.node('ark-login-message').textContent,/无法打开官方授权页面/);assert.doesNotMatch(f.node('ark-login-message').textContent,/PRIVATE|SECRET|https:/);
+  assert.equal(f.node('ark-code-input').disabled,false);assert.equal(f.node('ark-open-authorization').disabled,false);assert.match(f.node('ark-login-status').textContent,/等待粘贴/);
+  await f.node('ark-open-authorization').click();assert.deepEqual(f.calls,['arkOpenAuthorization','arkOpenAuthorization']);assert.deepEqual(f.args,[undefined,undefined]);
+  assert.equal(f.node('ark-verification-url').textContent,'','The renderer does not display nonce URLs');
+});
+
+test('Ark cancellation immediately clears a code and ignores a late successful code submission',async()=>{
+  const submission=deferred(),cancelled={settings:{},ark:empty()},f=fixture({descriptor:ark,initial:pendingArk(),methods:{arkSubmitAuthorizationCode:()=>submission.promise,arkCancelSignIn:()=>cancelled}});f.open();
+  pasteArk(f,'SUBMITTED_SYNTHETIC_CODE');const pending=f.node('ark-code-submit').click();assert.equal(f.node('ark-code-input').value,'');
+  f.node('ark-code-input').value='UNSUBMITTED_SECRET';const cancelling=f.node('ark-cancel-sign-in').click();assert.equal(f.node('ark-code-input').value,'');await cancelling;
+  submission.resolve({settings:{},ark:{...empty(),session:{status:'connected',sharing:true,profileId:'late'}}});await pending;
+  assert.equal(f.applied.length,1);assert.equal(f.applied[0].ark.session.status,'disconnected');assert.equal(f.node('ark-authorization-field').hidden,true);assert.doesNotMatch(f.node('ark-login-message').textContent,/SUBMITTED|UNSUBMITTED/);
+});
+
+test('Ark code entry is cleared when the pending flow changes, the panel closes or the controller is destroyed',()=>{
+  const f=fixture({descriptor:ark,initial:pendingArk()});f.open();pasteArk(f,'OLD_PENDING_CODE');
+  f.update(pendingArk({attempt:{...pendingArk().attempt,verificationUrl:'https://ark.cn-beijing.volces.com/authorize?state=NEW_PENDING'}}));assert.equal(f.node('ark-code-input').value,'');
+  pasteArk(f,'HIDDEN_PANEL_CODE');f.node('doubao-auth-mode').value='apiKey';f.ui.render();assert.equal(f.node('ark-code-input').value,'');assert.equal(f.node('ark-authorization-field').hidden,true);
+  f.open();pasteArk(f,'DESTROYED_CODE');f.ui.destroy();assert.equal(f.node('ark-code-input').value,'');assert.equal(f.node('ark-login-panel').removed,true);
+  for(const role of ['completion','pet']){const r=fixture({descriptor:ark,initial:pendingArk(),role});r.open();assert.equal(r.node('ark-authorization-field').hidden,true);assert.equal(r.node('ark-code-input').disabled,true);}
+});
 
 test('Kimi and ZCode share the agent controller while keeping regional login bridges and runtime state independent',async()=>{
   for(const descriptor of [kimi,glm]){

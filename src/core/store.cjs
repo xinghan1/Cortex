@@ -241,7 +241,7 @@ class Store {
     const destination = path.join(this.dir, relative);
     const temporary = `${destination}.${randomUUID()}.tmp`;
     try {
-      await fs.writeFile(temporary, JSON.stringify(data, null, 2), 'utf8');
+      await fs.writeFile(temporary, JSON.stringify(data, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600, flush: true });
       // Windows readers and security scanners can briefly hold the existing
       // JSON file open. Retry only its atomic replacement, never delete the
       // destination or relax its permissions to make a save succeed.
@@ -340,12 +340,23 @@ class Store {
   }
   async saveSession(session) {
     if (!/^[a-f0-9-]{36}$/.test(String(session?.id))) throw new Error('会话 ID 无效，未保存。');
-    return this.#queueSession(session.id, async () => {
-      if (this.#deletedSessions.has(session.id)) throw new Error('会话记录已删除，不能重新保存。');
-      session.title = this.sessionTitle(session);
-      session.updatedAt = new Date().toISOString();
-      await this.write(path.join('sessions', `${session.id}.json`), JSON.parse(this.redact(JSON.stringify(session))));
+    if (session.temporary === true) return;
+    session.title = this.sessionTitle(session);
+    session.updatedAt = new Date().toISOString();
+    // Capture at invocation, before waiting behind another write. A queued save
+    // must never follow a caller's later session mutations or ID reassignment.
+    const snapshot = JSON.parse(this.redact(JSON.stringify(session)));
+    return this.#queueSession(snapshot.id, async () => {
+      if (this.#deletedSessions.has(snapshot.id)) throw new Error('会话记录已删除，不能重新保存。');
+      await this.write(path.join('sessions', `${snapshot.id}.json`), snapshot);
     });
+  }
+  async flushSessions() {
+    for (;;) {
+      const writes = [...this.#sessionQueues.values()];
+      if (!writes.length) return;
+      await Promise.all(writes);
+    }
   }
   async validateSessionDeletion(id, workspace, { temporary = false } = {}) {
     if (!UUID.test(id)) throw new Error('会话 ID 无效，未删除。');

@@ -123,6 +123,11 @@
   font-size: 11px;
 }
 
+.question-answer-card { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--ui-border, var(--line)); border-radius: 10px; background: transparent; color: var(--ui-text, var(--text)); }
+.question-answer-title, .question-answer-label { margin: 0 0 5px; color: var(--ui-muted, var(--muted)); font-size: 11px; }
+.question-answer-question, .question-answer-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.question-answer-response { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--ui-border, var(--line)); }
+
 /* Quiet, per-round metadata stays outside folded tool/change details. */
 .round-token-usage {
   display: flex;

@@ -25,7 +25,7 @@ const deferred = () => {
 // Execute the production project shutdown implementation as well as the real
 // before-quit callback. No Electron process, account, filesystem write or model
 // request is involved; deferred completions expose the actual shutdown order.
-function runtimeFixture(calls, name, { dirty = false, busy = true, editorDecision = true, completion } = {}) {
+function runtimeFixture(calls, name, { dirty = false, busy = true, editorDecision = true, completion, sessionStorage = Promise.resolve() } = {}) {
   const controller = new AbortController();
   controller.signal.addEventListener('abort', () => calls.push(`${name}:abort-model`));
   let visible = false;
@@ -42,7 +42,7 @@ function runtimeFixture(calls, name, { dirty = false, busy = true, editorDecisio
     activeRun: busy ? { controller, done: completion ?? Promise.resolve() } : null,
     terminal: { stop: () => calls.push(`${name}:stop-terminal`) },
     approvals: new Map([['pending-approval', () => calls.push(`${name}:reject-approval`)]]),
-    fileOperationDone: null, permissionPreferences: settled('permissions'),
+    fileOperationDone: null, store: { flushSessions: async () => { calls.push(`${name}:flush-sessions`); await sessionStorage; } }, permissionPreferences: settled('permissions'),
     approvalReviewerPreferences: settled('reviewer'), roleModels: settled('roles'), modelCapacityPreferences: settled('capacity'),
   });
   vm.runInContext(shutdownSource, context);
@@ -189,4 +189,15 @@ test('the production tray quit callback restores every hidden dirty window befor
   assert.ok(f.calls.indexOf('window-1:show') < f.calls.indexOf('window-1:editor:quit'));
   first.resolve(false); second.resolve(true); await tick();
   assert.equal(f.context.quitting, false); assert.ok(f.contexts.every(value => !value.controller.signal.aborted));
+});
+
+
+test('quit waits for the session checkpoint queue after a cancelled model has settled', async () => {
+  const storage = deferred();
+  const f = fixture({ runtimes: [{ sessionStorage: storage.promise }] });
+  f.requestQuit(); await tick();
+  assert.ok(f.calls.includes('window-0:flush-sessions'));
+  assert.equal(f.calls.includes('app:exit'), false, 'Pending session checkpoints must finish before native exit');
+  storage.resolve(); await tick(); await tick();
+  assert.ok(f.calls.includes('app:exit'));
 });

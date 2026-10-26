@@ -127,15 +127,20 @@ const bridge={
  setReasoningEffort:async arg=>{record('setReasoningEffort',arg);state.settings.providers[state.settings.provider].reasoningEffort=arg.reasoningEffort;return sync();},
  __smokeConfigure:async arg=>setConnection(arg),
  __smokeAccountStatus:async({key,status})=>{state[key].session.status=status;state[key].session.sharing=status==='connected';return clone(state);},
+ __smokeAwaitAuthorizationCode:async()=>{state.ark.session.status='connecting';state.ark.session.sharing=false;state.ark.attempt={phase:'waiting-authorization-code',
+   verificationUrl:'https://signin.volcengine.com/authorize/oauth/authorize?state=public-preview',expiresAt:'2099-01-01T00:10:00.000Z'};emit({type:'state',state});return clone(state);},
+ arkOpenAuthorization:async()=>{record('arkOpenAuthorization');if(state.ark.attempt?.phase!=='waiting-authorization-code')throw Error('No authorization pending');return clone(state);},
+ arkSubmitAuthorizationCode:async arg=>{record('arkSubmitAuthorizationCode');if(state.ark.attempt?.phase!=='waiting-authorization-code'||arg?.code!=='c3ludGhldGljLWF1dGhvcml6YXRpb24=')throw Error('[ARK_AUTH_CODE_INVALID] Invalid preview code');
+   state.ark.attempt={phase:'exchanging-authorization-code'};emit({type:'state',state});return new Promise(resolve=>pending.set('ark-code',resolve));},
  __smokeChooseProfiles:async()=>{state.ark.session.status='connecting';state.ark.session.sharing=false;state.ark.attempt={phase:'choosing-profile'};
    state.ark.profiles=[{name:'platform_cn-beijing',type:'platform',region:'cn-beijing'},
     {name:'agent-plan_cn-beijing_personal',type:'agent-plan',region:'cn-beijing'},
-    {name:'coding-plan_cn-beijing_personal',type:'coding-plan',region:'cn-beijing'}];emit({type:'state',state});return clone(state);},
+    {name:'coding-plan_cn-beijing_personal',type:'coding-plan',region:'cn-beijing'}];emit({type:'state',state});pending.get('ark-code')?.(clone(state));pending.delete('ark-code');return clone(state);},
  arkSelectProfile:async arg=>{record('arkSelectProfile',arg);if(state.ark.attempt?.phase!=='choosing-profile'||!state.ark.profiles.some(profile=>profile.name===arg.profileName))throw Error('Unexpected preview profile selection');
    state.ark.attempt={phase:'validating-profile'};emit({type:'state',state});return new Promise(resolve=>pending.set('ark-profile',resolve));},
  __smokeFinishProfile:async()=>{if(!pending.has('ark-profile'))throw Error('No explicit profile selection pending');state.ark.attempt=null;state.ark.session.status='connected';state.ark.session.sharing=true;
    emit({type:'state',state});for(const key of ['ark-profile','ark']){pending.get(key)?.(clone(state));pending.delete(key);}return clone(state);},
- __smokeSnapshot:async()=>({calls:clone(calls),privateKeyPublic:JSON.stringify(state).includes(privateKey),productionIpc:false,pendingProfile:pending.has('ark-profile')}),
+ __smokeSnapshot:async()=>({calls:clone(calls),privateKeyPublic:JSON.stringify(state).includes(privateKey),productionIpc:false,pendingProfile:pending.has('ark-profile'),pendingCode:pending.has('ark-code')}),
 };
 for(const descriptor of descriptors)for(const action of ['SignIn','CancelSignIn','Disconnect','RetryStorage','Install']){
  const prefix=descriptor.key==='chatgpt'?'chatgpt':descriptor.key;
@@ -143,7 +148,7 @@ for(const descriptor of descriptors)for(const action of ['SignIn','CancelSignIn'
   if(action==='SignIn'){account.session.status='connecting';account.session.sharing=false;account.attempt={phase:'waiting-browser'};
    emit({type:'state',state});return new Promise(resolve=>pending.set(prefix,resolve));}
   account.session.status=action==='CancelSignIn'||action==='Disconnect'?'disconnected':'connected';account.session.sharing=account.session.status==='connected';account.attempt=null;
-  emit({type:'state',state});for(const key of [prefix,prefix+'-profile']){pending.get(key)?.(clone(state));pending.delete(key);}return clone(state);
+  emit({type:'state',state});for(const key of [prefix,prefix+'-profile',prefix+'-code']){pending.get(key)?.(clone(state));pending.delete(key);}return clone(state);
  };
 }
 for(const name of ['setEditorDirty','setMenuState','setContextSettings','setTextScale','copyText','browserLayout','stopFind'])bridge[name]=async()=>null;
@@ -227,6 +232,16 @@ contextBridge.exposeInMainWorld('forge',Object.freeze(bridge));
     const beginProfileChoice=async()=>{
       await js(`window.forge.__smokeAccountStatus({key:'ark',status:'disconnected'}).then(updateState)`);
       await click('#ark-sign-in');await until('Ark browser authorization preview',()=>js(`appState.ark.session.status==='connecting'&&!$('ark-cancel-sign-in').hidden`));
+      await js('window.forge.__smokeAwaitAuthorizationCode().then(updateState)');
+      await until('Ark authorization code entry enabled during login lock',()=>js(`!$('ark-authorization-field').hidden&&!$('ark-code-input').disabled&&!$('ark-open-authorization').disabled`));
+      assert.equal(await js(`$('ark-code-input').type==='password'&&$('ark-code-input').autocomplete==='off'&&$('provider-select').disabled&&$('doubao-auth-mode').disabled&&$('ark-code-submit').disabled&&!$('ark-cancel-sign-in').disabled`),true);
+      assert.equal(await js(`$('ark-login-status').textContent.includes('等待粘贴')&&!$('ark-login-status').textContent.includes('已打开')`),true);
+      await click('#ark-open-authorization');await until('Ark authorization reopen completed',()=>js(`!$('ark-open-authorization').disabled`));
+      await capture('account-models-ark-authorization-code.png');
+      await js(`(()=>{$('ark-code-input').value='c3ludGhldGljLWF1dGhvcml6YXRpb24=';$('ark-code-input').dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+      await until('Ark code submit enabled',()=>js(`!$('ark-code-submit').disabled`));await click('#ark-code-submit');
+      await until('Ark authorization code exchange held',()=>js(`window.forge.__smokeSnapshot().then(value=>value.pendingCode)`));
+      assert.equal(await js(`$('ark-code-input').value===''&&!$('ark-cancel-sign-in').disabled`),true);
       await js('window.forge.__smokeChooseProfiles().then(updateState)');
       await until('Ark three profiles shown',()=>js(`!$('ark-profile-field').hidden&&$('ark-profile-select').options.length===4`));
       const choosing=await profileControls();assert.equal(choosing.value,'','A new authorization must not silently select pay-as-you-go or reuse a cancelled profile');
@@ -282,7 +297,7 @@ contextBridge.exposeInMainWorld('forge',Object.freeze(bridge));
     assert.deepEqual(parent.settings,original.settings);assert.equal(parent.sessionId,original.sessionId);assert.deepEqual(parent.workspace,original.workspace);
     return {status:'completed',realApi:false,realOAuth:false,productionIpc:false,isolatedRenderer:true,accountNamesUnified:true,
       rawReasoningPreserved:true,officialLabelsPreserved:true,managedWithoutAdvertisedLevels:true,modelChangeClearsReasoning:true,
-      claudeAndArkPanels:true,loginCancel:true,doubaoDocumentedFourEfforts:true,arkExplicitProfileChoice:true,arkPayAsYouGoNotPreselected:true,arkBusySelectorUsable:true,arkProfileValidationCancelable:true,modelSlotsSeparate:true,keysAbsentFromRenderer:true,parentPreserved:true,
+      claudeAndArkPanels:true,loginCancel:true,doubaoDocumentedFourEfforts:true,arkAuthorizationCodeEntry:true,arkCodeClearedBeforeExchange:true,arkAuthorizationReopen:true,arkExplicitProfileChoice:true,arkPayAsYouGoNotPreselected:true,arkBusySelectorUsable:true,arkProfileValidationCancelable:true,modelSlotsSeparate:true,keysAbsentFromRenderer:true,parentPreserved:true,
       styles,screenshots,observed};
   } catch(error) {
     if(child&&!child.isDestroyed()){
