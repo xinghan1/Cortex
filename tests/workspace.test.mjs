@@ -32,7 +32,7 @@ const jsonResult = async promise => {
 
 test('tool schemas are complete and expose only the implemented tools', () => {
   assert.deepEqual(TOOL_DEFINITIONS.map(tool => tool.name), [
-    'list_files', 'read_file', 'search_files', 'write_file', 'replace_in_file', 'run_command', 'undo_last_change',
+    'list_files', 'read_file', 'view_image', 'search_files', 'write_file', 'replace_in_file', 'run_command', 'undo_last_change',
   ]);
   for (const tool of TOOL_DEFINITIONS) {
     assert.equal(tool.parameters.type, 'object');

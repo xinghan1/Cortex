@@ -174,6 +174,24 @@ test('end_turn cannot complete a turn whose native tool is still running',async(
   assert.equal(resultEvents(f)[0].result.status,'incomplete');
 });
 
+test('typed native service denials retain valid reported usage while remaining failed and never expose raw error fields',async()=>{
+  for(const [usage,reported]of [
+    [{inputTokens:20,outputTokens:3,cachedInputTokens:7,private:'PRIVATE_UPSTREAM_BODY'},true],
+    [{inputTokens:-1,outputTokens:3},false],
+    [{inputTokens:20,outputTokens:null},false],
+  ]){
+    const f=fixture(async options=>{
+      text(options,'User location is not supported for the API use.');
+      throw Object.assign(new Error('服务端拒绝了本次请求'),{code:'AGY_REGION_UNAVAILABLE',usageReported:true,usage});
+    });
+    await assert.rejects(f.run(),{code:'AGY_REGION_UNAVAILABLE'});
+    assert.equal(f.usage[0].status,'failed');assert.equal(f.usage[0].partial,true);assert.equal(f.usage[0].reported,reported);
+    assert.equal(f.usage[0].inputTokens,reported?20:null);assert.equal(f.usage[0].outputTokens,reported?3:null);
+    assert.equal(f.session.messages.at(-1).localOnly,true);
+    assert.equal(JSON.stringify(f.usage).includes('PRIVATE_UPSTREAM_BODY'),false);
+  }
+});
+
 test('missing, declined or invalid usage stays unknown while explicit zero and bounded cache values remain valid',async()=>{
   for(const report of [{},{usage:{inputTokens:7,outputTokens:4},usageReported:false},{usage:{inputTokens:-1,outputTokens:0}},{usage:{inputTokens:10}}]){
     const f=fixture(async()=>({stopReason:'end_turn',...report}));await f.run();assert.equal(f.usage.length,1);assert.equal(f.usage[0].reported,false);assert.equal(f.usage[0].inputTokens,null);assert.equal(f.usage[0].outputTokens,null);
@@ -186,4 +204,105 @@ test('a rejected or invalid native tool is not relabeled as a successful operati
   const f=fixture(async options=>{tool(options,{status:'failed',content:content('permission denied')});return{stopReason:'end_turn'};});await f.run();
   assert.equal(resultEvents(f)[0].result.status,'failed');assert.equal(resultEvents(f)[0].result.output,'permission denied');
   const invalid=fixture(async options=>{tool(options,{toolCallId:''});return{stopReason:'end_turn'};});await assert.rejects(invalid.run(),/工具标识/u);assert.equal(invalid.events.some(event=>event.type==='tool-start'),false);
+});
+
+const nativePng='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC';
+const nativeImage=(extra={})=>({type:'content',content:{type:'image',mimeType:'image/png',data:nativePng,...extra}});
+const nativeImageViews=f=>f.events.filter(event=>event.type==='images-viewed');
+const previewSource=(id,attachment={name:'old.png',mediaType:'image/png',dataUrl:'data:image/png;base64,'+nativePng})=>({
+  id,role:'tool',source:'image-tool',runId:'older-run',messageIndex:0,attachments:[attachment],
+});
+const poolBytes=session=>(session.imageToolSources||[]).reduce((total,source)=>total+source.attachments.reduce((sum,image)=>{
+  const data=image.dataUrl.split(',')[1];return sum+data.length/4*3-(data.endsWith('==')?2:data.endsWith('=')?1:0);
+},0),0);
+
+test('native embedded image views are receipts only after completed tools and successful end_turn, with a display-only source pool',async()=>{
+  let f;
+  f=fixture(async options=>{
+    tool(options,{kind:'read',content:[nativeImage()]});
+    assert.equal(nativeImageViews(f).length,0);assert.equal(f.session.imageToolSources,undefined);
+    update(options,{sessionUpdate:'tool_call_update',toolCallId:'cmd-1',status:'completed',content:[nativeImage(),...content('Screenshot returned.')]});
+    assert.equal(nativeImageViews(f).length,0);assert.equal(f.session.imageToolSources,undefined);
+    text(options,'Checked the actual UI.');return{stopReason:'end_turn',usage:{inputTokens:10,outputTokens:3}};
+  });
+  await f.run();
+  const views=nativeImageViews(f),sources=f.session.imageToolSources;
+  assert.equal(views.length,1);assert.equal(views[0].version,1);assert.match(views[0].requestId,/^official-image:run-1:/u);
+  assert.equal(sources.length,1);assert.match(sources[0].id,/^[a-f\d-]{36}$/u);assert.equal(sources[0].runId,'run-1');
+  assert.equal(sources[0].role,'tool');assert.equal(sources[0].source,'image-tool');assert.equal(sources[0].messageIndex,0);
+  assert.equal(sources[0].attachments[0].dataUrl,'data:image/png;base64,'+nativePng);
+  assert.match(sources[0].attachments[0].id,/^sha256:[a-f\d]{64}$/u);
+  assert.deepEqual(views[0].images,[{messageId:sources[0].id,attachmentIndex:0,attachmentId:sources[0].attachments[0].id}]);
+  assert.equal(f.session.messages.length,1);assert.equal(f.session.messages[0].role,'assistant');
+  assert.equal(f.session.messages[0].content,'Checked the actual UI.');
+  assert.equal(JSON.stringify(f.events).includes(nativePng),false);assert.equal(JSON.stringify(f.usage).includes(nativePng),false);
+  assert.equal(resultEvents(f)[0].result.output,'[图像内容]\nScreenshot returned.');
+});
+
+test('failed, cancelled, incomplete or invalid native image results never create preview sources or view cards',async()=>{
+  for(const mode of ['tool-failed','throw','cancel','incomplete','invalid','uri-only','raw-only']){
+    const controller=new AbortController(),f=fixture(async options=>{
+      const blocks=mode==='invalid'?[nativeImage({data:'!!!!'})]:mode==='uri-only'?[nativeImage({data:undefined,uri:'file:///private/screenshot.png'})]:[nativeImage()];
+      if(mode==='raw-only')tool(options,{status:'completed',rawOutput:{type:'image',mimeType:'image/png',data:nativePng}});
+      else tool(options,{status:mode==='tool-failed'?'failed':'completed',content:blocks});
+      if(mode==='throw')throw new Error('native service rejected');
+      if(mode==='cancel'){controller.abort();options.signal.throwIfAborted();}
+      return{stopReason:mode==='incomplete'?'max_tokens':'end_turn'};
+    },{signal:controller.signal});
+    if(['throw','cancel','incomplete'].includes(mode))await assert.rejects(f.run());else await f.run();
+    assert.equal(nativeImageViews(f).length,0,mode);assert.equal(f.session.imageToolSources,undefined,mode);
+    assert.equal(JSON.stringify(f.events).includes(nativePng),false,mode);
+  }
+});
+
+test('replayed image updates deduplicate within a turn while a later successful turn receives its own source identity',async()=>{
+  const f=fixture(async options=>{
+    for(let index=0;index<5;index++)tool(options,{toolCallId:'image-'+index,kind:'read',status:'completed',content:[nativeImage(),nativeImage()]});
+    return{stopReason:'end_turn'};
+  });
+  f.session.imageToolSources=[previewSource('prior-source')];
+  await f.run();assert.equal(nativeImageViews(f).length,1);assert.equal(nativeImageViews(f)[0].images.length,1);
+  assert.equal(f.session.imageToolSources.length,2);assert.equal(f.session.imageToolSources[0].id,'prior-source');
+  assert.notEqual(nativeImageViews(f)[0].images[0].messageId,'prior-source');
+  f.events.length=0;f.config.runId='run-2';await f.run();
+  assert.equal(nativeImageViews(f).length,1);assert.equal(f.session.imageToolSources.length,3);
+  assert.equal(f.session.imageToolSources.at(-1).runId,'run-2');assert.equal(f.session.messages.length,0);
+});
+
+test('embedded native image blocks and repeated raw image data never enter public arguments or command output',async()=>{
+  const f=fixture(async options=>{
+    tool(options,{content:[nativeImage()],rawInput:{command:'fixture',image:{type:'image',mimeType:'image/png',data:nativePng}}});
+    for(const rawOutput of [{type:'image',data:nativePng},JSON.stringify({type:'image',data:nativePng}),nativePng,'data:image/png;base64,'+nativePng])
+      update(options,{sessionUpdate:'tool_call_update',toolCallId:'cmd-1',rawOutput});
+    update(options,{sessionUpdate:'tool_call_update',toolCallId:'cmd-1',status:'completed',rawOutput:'Native image checked.'});
+    return{stopReason:'end_turn'};
+  });
+  await f.run();assert.equal(nativeImageViews(f).length,1);assert.equal(JSON.stringify(f.events).includes(nativePng),false);
+  assert.equal(f.events.find(event=>event.type==='tool-start').args.image,'[图像内容]');
+  assert.equal(resultEvents(f)[0].result.output,'Native image checked.');
+});
+
+test('native source pool prunes older originals within its 64-source and 16MiB limits while current metadata stays reference-only',async()=>{
+  const f=fixture(async options=>{tool(options,{status:'completed',content:[nativeImage()]});return{stopReason:'end_turn'};});
+  f.session.imageToolSources=Array.from({length:64},(_,index)=>previewSource('prior-'+index));
+  await f.run();assert.equal(f.session.imageToolSources.length,64);assert.equal(f.session.imageToolSources[0].id,'prior-1');
+  const bytes=Buffer.alloc(2*1024*1024);Buffer.from(nativePng,'base64').copy(bytes);
+  const large={name:'large.png',mediaType:'image/png',dataUrl:'data:image/png;base64,'+bytes.toString('base64')};
+  f.session.imageToolSources=Array.from({length:8},(_,index)=>previewSource('large-'+index,large));
+  await f.run();assert.ok(poolBytes(f.session)<=16*1024*1024);assert.equal(f.session.imageToolSources[0].id,'large-1');
+  assert.equal(f.session.imageToolSources.length,8);assert.ok(nativeImageViews(f).every(event=>!JSON.stringify(event).includes('base64')));
+});
+
+test('native view receipts use batches of at most four references and stop collecting beyond their bounded per-turn pool',async()=>{
+  const f=fixture(async options=>{
+    for(let index=0;index<70;index++){
+      const data=Buffer.concat([Buffer.from(nativePng,'base64'),Buffer.from('fixture-'+index)]).toString('base64');
+      tool(options,{toolCallId:'image-'+index,status:'completed',content:[nativeImage({data})]});
+    }
+    return{stopReason:'end_turn'};
+  });
+  await f.run();assert.equal(f.session.imageToolSources.length,64);assert.equal(nativeImageViews(f).length,16);
+  assert.ok(nativeImageViews(f).every(event=>event.images.length===4));
+  assert.equal(new Set(nativeImageViews(f).map(event=>event.requestId)).size,16);
+  assert.equal(nativeImageViews(f).flatMap(event=>event.images).length,64);assert.equal(f.session.messages.length,0);
 });

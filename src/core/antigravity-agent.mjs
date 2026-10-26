@@ -13,6 +13,9 @@ const fail = (code, message) => Object.assign(new Error(`[${code}] ${message}`),
 const cancelled = () => Object.assign(fail('AGY_CANCELLED', 'Antigravity 操作已取消。'), { name: 'AbortError' });
 const invalid = () => fail('AGY_PROTOCOL_ERROR', '官方 Antigravity 代理返回了无效协议数据。');
 const MAX_FRAME = 16 * 1024 * 1024, MAX_TURN = 128 * 1024 * 1024;
+const REGION_DENIAL = /^User location is not supported for the API use\.?$/iu;
+const REGION_ECHO_REQUEST = /^(?:请(?:你)?(?:原样|逐字)(?:复述|重复)|(?:please\s+)?(?:repeat|echo)(?:\s+(?:exactly|verbatim))?)\s*[:：]\s*User location is not supported for the API use\.?$/iu;
+const normalizeReply = value => value.trim().replace(/\s+/gu, ' ');
 function check(signal) { if (signal?.aborted) throw cancelled(); }
 function waitFor(operation, signal) {
   check(signal);
@@ -328,6 +331,16 @@ export class AntigravityAgent {
     if (!active || active.controller.signal.aborted || active.profile !== this.#profile || params?.sessionId !== active.session?.id || !object(params.update)) return;
     const update = params.update;
     if (!identifier(update.sessionUpdate)) throw invalid();
+    if (update.sessionUpdate === 'agent_message_chunk') {
+      if (update.content?.type !== 'text' || typeof update.content.text !== 'string') active.otherReplyContent = true;
+      else if (active.replyText !== null) {
+        // Google can return its fixed service refusal as ordinary ACP text and
+        // still end the turn successfully. Inspect only a short, current-turn
+        // reply; never classify arbitrary history, quotes, code or explanations.
+        active.replyText = active.replyText.length + update.content.text.length <= 512
+          ? active.replyText + update.content.text : null;
+      }
+    }
     // Only actual session updates after authenticated task creation are exposed.
     // Authentication diagnostics and arbitrary process notifications never are.
     const copy = structuredClone(update), event = { localSessionId: active.localSessionId, sessionId: active.session.id, update: copy };
@@ -361,7 +374,9 @@ export class AntigravityAgent {
         || onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw fail('AGY_INVALID_INPUT', '官方代理任务配置无效。');
     const originalBlocks = promptBlocks(prompt, attachments, { promptCapabilities: { image: true, audio: true } });
     const controller = new AbortController();
-    const active = { profile, controller, localSessionId, onUpdate, onPermission, session: null, done: null, stopping: false };
+    const active = { profile, controller, localSessionId, onUpdate, onPermission, session: null, done: null, stopping: false,
+      replyText: '', otherReplyContent: false,
+      quotesRegionDenial: prompt.length <= 512 && REGION_ECHO_REQUEST.test(normalizeReply(prompt)) };
     const abort = () => { controller.abort(); void this.stop(); }; signal?.addEventListener('abort', abort, { once: true });
     this.#active = active; this.#state = 'running'; this.#error = null; this.#changed();
     active.done = (async () => {
@@ -395,6 +410,10 @@ export class AntigravityAgent {
         if (!identifier(result?.stopReason)) throw invalid();
         const raw = result.usage, usage = object(raw) && Number.isSafeInteger(raw.inputTokens) && raw.inputTokens >= 0 && Number.isSafeInteger(raw.outputTokens) && raw.outputTokens >= 0
           ? { inputTokens: raw.inputTokens, outputTokens: raw.outputTokens } : null;
+        if (result.stopReason === 'end_turn' && !active.otherReplyContent && !active.quotesRegionDenial
+          && active.replyText !== null && REGION_DENIAL.test(normalizeReply(active.replyText)))
+          throw Object.assign(fail('AGY_REGION_UNAVAILABLE', 'Google 服务明确提示当前地区无法使用该模型，本轮任务未完成；请在官方页面核对账号和地区可用性。'),
+            { usage, usageReported: Boolean(usage) });
         return { sessionId: session.id, stopReason: result.stopReason, usage, usageReported: Boolean(usage) };
       } catch (error) { if (!controller.signal.aborted && error.name !== 'AbortError') this.#setError(error, 'task'); throw controller.signal.aborted ? cancelled() : error; }
       finally { signal?.removeEventListener('abort', abort); if (this.#active === active) this.#active = null; this.#state = this.#client?.alive ? 'ready' : 'idle'; this.#changed(); }

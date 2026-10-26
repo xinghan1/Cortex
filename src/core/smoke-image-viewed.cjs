@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const http = require('node:http');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const { BrowserWindow, nativeImage } = require('electron');
 
 module.exports = async function smokeImageViewed({ win, output, dataDir, store }) {
@@ -15,11 +15,17 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
   const image = { id: 'image-' + nonce, name: 'fixture.png', mediaType: 'image/png', dataUrl: 'data:image/png;base64,' + png };
   const priorImage = { id: 'prior-image-' + nonce, name: 'prior-fixture.png', mediaType: 'image/png', dataUrl: nativeImage.createFromBitmap(Buffer.from([60, 180, 60, 255]), { width: 1, height: 1 }).toDataURL() };
   const currentImage = { id: 'current-image-' + nonce, name: 'current-fixture.png', mediaType: 'image/png', dataUrl: nativeImage.createFromBitmap(Buffer.from([80, 80, 220, 255]), { width: 1, height: 1 }).toDataURL() };
+  const localImage = { name: 'ui-screenshot.png', mediaType: 'image/png', dataUrl: '', width: 480 };
   assert.equal(new Set([image.dataUrl, priorImage.dataUrl, currentImage.dataUrl]).size, 3, 'Image fixtures must have distinct thumbnail sources');
-  const prompts = { success: 'IMAGE_VIEWED_SUCCESS_' + nonce, next: 'IMAGE_VIEWED_NEXT_' + nonce, text: 'IMAGE_VIEWED_TEXT_ONLY_' + nonce, failure: 'IMAGE_VIEWED_FAILURE_' + nonce, cancel: 'IMAGE_VIEWED_CANCEL_' + nonce };
-  const attachments = { success: [image, priorImage], next: [currentImage], text: [], failure: [image], cancel: [image] };
+  const prompts = { success: 'IMAGE_VIEWED_SUCCESS_' + nonce, next: 'IMAGE_VIEWED_NEXT_' + nonce, text: 'IMAGE_VIEWED_TEXT_ONLY_' + nonce, failure: 'IMAGE_VIEWED_FAILURE_' + nonce, cancel: 'IMAGE_VIEWED_CANCEL_' + nonce,
+    local: 'IMAGE_VIEWED_LOCAL_UI_' + nonce, localText: 'IMAGE_VIEWED_LOCAL_FOLLOWUP_' + nonce, localFailure: 'IMAGE_VIEWED_LOCAL_FAILURE_' + nonce };
+  const attachments = { success: [image, priorImage], next: [currentImage], text: [], failure: [image], cancel: [image], local: [], localText: [], localFailure: [] };
   const requests = [], problems = [], runIds = new Map();
-  let child, configured = false, stage = 'isolated setup';
+  const sha = value => createHash('sha256').update(String(value)).digest('hex');
+  const messageProof = messages => messages.map(message => ({ id: message.id, role: message.role, source: message.source,
+    toolCallId: message.toolCallId, content: message.content, toolCalls: message.toolCalls,
+    attachments: message.attachments?.map(attachment => ({ id: attachment.id, name: attachment.name, mediaType: attachment.mediaType, sha256: sha(attachment.dataUrl) })) }));
+  let child, configured = false, stage = 'isolated setup', completionRequests = 0;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (label, check, timeout = 15000) => {
     const end = Date.now() + timeout;
@@ -68,19 +74,34 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
       assert.equal(request.method, 'POST'); assert.equal(request.url, '/v1/responses');
       let raw = ''; for await (const chunk of request) { raw += chunk; assert.ok(raw.length < 500000); }
       const body = JSON.parse(raw), user = body.input.findLast(item => item.role === 'user');
+      const system = body.input.filter(item => item.role === 'system').map(item => typeof item.content === 'string' ? item.content
+        : (item.content || []).filter(part => part.type === 'input_text').map(part => part.text).join('\n')).join('\n');
+      if (!body.tools?.length && system.includes('Synora code 的输入框提示词补全助手')) {
+        completionRequests++;
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ id: 'completion-' + completionRequests, status: 'completed', output: answer(JSON.stringify({ continuation: '继续核对 UI。' })),
+          usage: { input_tokens: 3, output_tokens: 2 } })); return;
+      }
       const text = typeof user.content === 'string' ? user.content : user.content.filter(item => item.type === 'input_text').map(item => item.text).join('\n');
       const scene = Object.keys(prompts).find(key => text === prompts[key]); assert.ok(scene); assert.equal(body.model, model);
       assert.deepEqual((Array.isArray(user.content) ? user.content : []).filter(item => item.type === 'input_image').map(item => item.image_url), attachments[scene].map(item => item.dataUrl), 'The latest user input must contain only its own uploaded images');
       const allImageUrls = body.input.filter(item => item.role === 'user').flatMap(item => Array.isArray(item.content) ? item.content.filter(part => part.type === 'input_image').map(part => part.image_url) : []);
       assert.deepEqual(allImageUrls, ['next', 'text'].includes(scene) ? [image.dataUrl, priorImage.dataUrl, currentImage.dataUrl] : attachments[scene].map(item => item.dataUrl), 'Historical pictures must remain in the real model request even when the receipt is scoped to the new round');
       const turn = requests.filter(item => item.scene === scene).length + 1;
-      const record = { scene, turn, imageCount: allImageUrls.length, response, released: false, aborted: false }; requests.push(record);
+      const toolImages = body.input.filter(item => item.type === 'function_call_output').flatMap(item =>
+        Array.isArray(item.output) ? item.output.filter(part => part.type === 'input_image').map(part => part.image_url) : []);
+      if (['local', 'localText', 'localFailure'].includes(scene)) {
+        const expected = scene === 'localText' ? 2 : turn - 1;
+        assert.deepEqual(toolImages.map(sha), Array(expected).fill(sha(localImage.dataUrl)), 'Generated screenshot pixels belong in actual image-bearing tool outputs');
+        assert.equal(body.input.filter(item => item.role === 'user').some(item => item.source === 'image-tool'), false);
+      }
+      const record = { scene, turn, imageCount: allImageUrls.length, toolImageCount: toolImages.length, response, released: false, aborted: false }; requests.push(record);
       response.once('close', () => { if (!record.released) record.aborted = true; });
       if (scene === 'success' && turn === 2) {
         const returned = body.input.find(item => item.type === 'function_call_output' && item.call_id === 'image-read');
         assert.ok(returned); assert.equal(JSON.parse(returned.output).content, 'image fixture read\n');
       }
-      assert.ok(scene === 'success' ? turn <= 2 : turn === 1);
+      assert.ok(scene === 'success' || scene === 'localFailure' ? turn <= 2 : scene === 'local' ? turn <= 3 : turn === 1);
       // The smoke controls completion/HTTP failure/cancellation at this barrier.
     } catch (error) {
       problems.push(error.message);
@@ -229,13 +250,90 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
     assert.equal(await cards(), 0); assert.equal((await views('cancel')).length, 0);
     assert.equal(JSON.stringify((await call('getCurrentSession')).imageViews || []).includes(png), false);
     assert.equal(requests.length, 6); assert.deepEqual(problems, []);
+
+    stage = 'a generated local screenshot is loaded as a tool result but is not viewed until a successful image-bearing response';
+    const previousSession = (await state()).sessionId;
+    await js('newSession()'); await until('blank local screenshot session', async () => (await state()).sessionId !== previousSession && await cards() === 0);
+    child.webContents.invalidate(); await wait(120);
+    const localCapture = (await child.webContents.capturePage()).resize({ width: localImage.width, quality: 'good' }).toPNG();
+    localImage.dataUrl = 'data:image/png;base64,' + localCapture.toString('base64');
+    await fs.writeFile(path.join(project, localImage.name), localCapture);
+    const localFirst = await submit('local'); assert.equal(localFirst.imageCount, 0);
+    finish(localFirst, [{ type: 'function_call', call_id: 'local-view-one', name: 'view_image', arguments: JSON.stringify({ path: localImage.name }) }]);
+    const localSecond = await until('local screenshot enters real model tool output', () => requests.find(record => record.scene === 'local' && record.turn === 2));
+    assert.equal(localSecond.toolImageCount, 1); assert.equal(await cards(), 0); assert.equal((await views('local')).length, 0);
+    const loadedEvents = (await events()).filter(event => event.type === 'tool-result' && event.name === 'view_image');
+    assert.equal(loadedEvents.length, 1); assert.equal(JSON.stringify(loadedEvents).includes(localImage.dataUrl), false);
+    finish(localSecond, [{ type: 'function_call', call_id: 'local-view-again', name: 'view_image', arguments: JSON.stringify({ path: localImage.name }) }]);
+    const localThird = await until('repeated local screenshot reaches next tool continuation', () => requests.find(record => record.scene === 'local' && record.turn === 3));
+    assert.equal(localThird.toolImageCount, 2);
+    await until('local screenshot card and thumbnail arrive live without a session reload', () => js(`(()=>{const card=document.querySelector('.image-view-card'),image=card?.querySelector('img');return card?.open&&image?.naturalWidth===${localImage.width}&&image.src===${JSON.stringify(localImage.dataUrl)}})()`));
+    const localReceipt = (await views('local'))[0];
+    assert.equal(localReceipt.images.length, 1); assert.equal(localReceipt.imageSources.length, 1);
+    assert.equal(localReceipt.imageSources[0].role, 'tool'); assert.equal(localReceipt.imageSources[0].source, 'image-tool');
+    assert.equal(localReceipt.imageSources[0].id, localReceipt.images[0].messageId);
+    assert.equal(await cards(), 1); await capture('image-viewed-generated-ui-live.png');
+    await click(cardSelector('local') + ' .image-view-thumbnail-button');
+    await until('generated UI opens in the real image preview', () => js(`$('image-preview-dialog').open&&$('image-preview-content').naturalWidth===${localImage.width}&&$('image-preview-content').src===${JSON.stringify(localImage.dataUrl)}`));
+    await capture('image-viewed-generated-ui-preview.png'); await click('#image-preview-close');
+    finish(localThird, answer('已实际查看本地截图并核对 UI。')); await complete('local', 'completed');
+    assert.equal((await views('local')).length, 1, 'An unchanged screenshot reopened in the same run keeps one receipt');
+    const localSession = await call('getCurrentSession');
+    assert.equal(localSession.messages.filter(message => message.role === 'user').length, 1, 'Image tools do not manufacture user conversation turns');
+    const localSources = localSession.messages.filter(message => message.role === 'tool' && message.source === 'image-tool');
+    assert.equal(localSources.length, 2); assert.ok(localSources.every(message => message.attachments[0].dataUrl === localImage.dataUrl));
+    assert.equal(localSession.imageViews.length, 1);
+    assert.equal(JSON.stringify([localSession.imageViews, localSession.events, localSession.taskRuns]).includes(localImage.dataUrl), false,
+      'Image receipt, activity and replay archives keep only references, never transient source bytes');
+
+    stage = 'a later text turn cannot recount a historical generated screenshot';
+    const localFollowup = await submit('localText'); assert.equal(localFollowup.toolImageCount, 2);
+    finish(localFollowup, answer('继续文字说明，没有重新读取截图。')); await complete('localText', 'completed');
+    assert.equal((await views('localText')).length, 0); assert.equal(await cards('localText'), 0); assert.equal(await cards(), 1);
+    await js(`loadSession(${JSON.stringify(localSession.id)})`);
+    const localReload = new Promise(resolve => child.webContents.once('did-finish-load', resolve)); child.webContents.reload(); await localReload;
+    await until('generated screenshot card restores from archived tool messages', () => js(`Boolean(appState&&!projectSwitching&&sessionId===${JSON.stringify(localSession.id)}&&document.querySelectorAll('.image-view-card').length===1&&document.querySelector('.image-view-thumbnail')?.naturalWidth===${localImage.width})`));
+    assert.equal(sha(await js('document.querySelector(".image-view-thumbnail").src')), sha(localImage.dataUrl));
+    if (await js(`!document.querySelector(${JSON.stringify(cardSelector('local'))}).closest('.task-activity').open`))
+      await click(`.task-activity[data-run-id="${runIds.get('local')}"] > summary`);
+    await until('historical generated screenshot thumbnail is visible', () => js(`document.querySelector(${JSON.stringify(cardSelector('local') + ' .image-view-thumbnail')}).checkVisibility({visibilityProperty:true,opacityProperty:true})`));
+    await capture('image-viewed-generated-ui-history.png'); await listen();
+
+    stage = 'official image display metadata reloads without entering the model transcript';
+    const nativeArchive = await store.getSession(localSession.id), originalMessages = messageProof((await call('getCurrentSession')).messages);
+    const nativeRun = nativeArchive.taskRuns.find(run => run.runId === runIds.get('local'));
+    assert.ok(nativeRun && Number.isInteger(nativeRun.messageIndex));
+    const nativeSource = { id: randomUUID(), role: 'tool', source: 'image-tool', runId: nativeRun.runId,
+      messageIndex: nativeRun.messageIndex, attachments: [localSources[0].attachments[0]] };
+    nativeArchive.imageToolSources = [nativeSource];
+    nativeArchive.imageViews.push({ type: 'images-viewed', version: 1, runId: nativeRun.runId, requestId: 'official-image:' + nativeRun.runId,
+      messageIndex: nativeRun.messageIndex, images: [{ messageId: nativeSource.id, attachmentIndex: 0, attachmentId: nativeSource.attachments[0].id }] });
+    await store.saveSession(nativeArchive); await js(`loadSession(${JSON.stringify(localSession.id)})`);
+    await until('official native display metadata restores an additional real thumbnail', () => js(`Boolean(document.querySelectorAll('.image-view-card').length===2&&document.querySelector('.image-view-card[data-request-id="official-image:${nativeRun.runId}"] img')?.naturalWidth===${localImage.width})`));
+    assert.deepEqual(messageProof((await call('getCurrentSession')).messages), originalMessages, 'Display metadata does not manufacture model messages');
+    assert.equal(sha(await js(`document.querySelector('.image-view-card[data-request-id="official-image:${nativeRun.runId}"] img').src`)), sha(localImage.dataUrl));
+
+    stage = 'a failed vision continuation never claims to have viewed a generated screenshot';
+    await js('newSession()'); await until('blank failed local screenshot session', async () => (await state()).sessionId !== localSession.id && await cards() === 0);
+    const failedLocalFirst = await submit('localFailure');
+    finish(failedLocalFirst, [{ type: 'function_call', call_id: 'local-view-failed', name: 'view_image', arguments: JSON.stringify({ path: localImage.name }) }]);
+    const failedLocalSecond = await until('failed local screenshot reaches the model', () => requests.find(record => record.scene === 'localFailure' && record.turn === 2));
+    assert.equal(failedLocalSecond.toolImageCount, 1); assert.equal(await cards(), 0);
+    failedLocalSecond.released = true; failedLocalSecond.response.writeHead(401, { 'Content-Type': 'application/json' });
+    failedLocalSecond.response.end(JSON.stringify({ error: { message: 'Fixture local image service denied' } }));
+    await complete('localFailure', 'failed'); assert.equal(await cards(), 0); assert.equal((await views('localFailure')).length, 0);
+    assert.deepEqual(problems, []); assert.equal(requests.length, 12);
     const result = { status: 'completed', realExternalApi: false, realCommands: false, nativeElectron: true,
       actualMultimodalRequest: true, pendingUploadHasNoReceipt: true, successReceiptOnly: true, nativeCollapseAndExpand: true,
       nativeThumbnailPreview: true, toolContinuationDeduplicated: true, historyReferencesWithoutDuplicateBase64: true,
       secondRoundOnlyNewImageReceipt: true, historicalImagesPreservedInModelRequest: true, newRoundThumbnailIdentity: true,
       textOnlyRoundHasNoImageReceipt: true, legacyPollutedReceiptsFilteredOnReload: true,
       boundedEventsFallback: true, rendererReloadRestoresCard: true, failedRequestHasNoReceipt: true,
-      cancelledRequestHasNoReceipt: true, modelRequests: requests.length, screenshots: ['image-viewed-preview.png', 'image-viewed-current-round-preview.png', 'image-viewed-history.png', 'image-viewed-legacy-round-filter.png'] };
+      cancelledRequestHasNoReceipt: true, actualUiScreenshotCaptured: true, generatedScreenshotPixelsInRealToolResponse: true, generatedScreenshotLiveThumbnail: true,
+      loadedFileAloneHasNoReceipt: true, unchangedGeneratedScreenshotDeduplicated: true, generatedScreenshotHistoryRestores: true,
+      generatedScreenshotsDoNotCreateUserTurns: true, officialDisplayMetadataRestoresWithoutModelMessages: true,
+      historicalGeneratedScreenshotNotRecounted: true, failedGeneratedVisionRequestHasNoReceipt: true,
+      modelRequests: requests.length, completionRequests, screenshots: ['image-viewed-preview.png', 'image-viewed-current-round-preview.png', 'image-viewed-history.png', 'image-viewed-legacy-round-filter.png', 'image-viewed-generated-ui-live.png', 'image-viewed-generated-ui-preview.png', 'image-viewed-generated-ui-history.png'] };
     await fs.writeFile(path.join(output, 'image-viewed-result.json'), JSON.stringify(result, null, 2)); return result;
   } catch (error) {
     const failure = { stage, error: error.message, stack: error.stack, problems, requests: requests.map(({ scene, turn, released, aborted }) => ({ scene, turn, released, aborted })) };

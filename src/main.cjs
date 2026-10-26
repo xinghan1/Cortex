@@ -657,6 +657,40 @@ function rememberTerminalEvent(clean) {
     for (let index = terminalEvents.length - 1; index >= 0; index--) if (terminalEvents[index].id === id) terminalEvents.splice(index, 1);
   }
 }
+function liveImageViewSources(event) {
+  if (event?.type !== 'images-viewed' || event.version !== 1 || !Array.isArray(event.images)
+    || event.images.length > 64 || !Array.isArray(currentSession?.messages)) return [];
+  const wanted = new Map();
+  for (const ref of event.images) {
+    if (typeof ref?.messageId !== 'string' || !ref.messageId || ref.messageId.length > 100
+      || !Number.isInteger(ref.attachmentIndex) || ref.attachmentIndex < 0 || ref.attachmentIndex > 3) continue;
+    if (!wanted.has(ref.messageId)) wanted.set(ref.messageId, []);
+    wanted.get(ref.messageId).push(ref);
+  }
+  const sources = []; let totalBytes = 0;
+  const displaySources = (Array.isArray(currentSession.imageToolSources) ? currentSession.imageToolSources.slice(-64) : [])
+    .filter(source => source?.runId === event.runId && Number.isInteger(source.messageIndex)
+      && source.messageIndex >= 0 && source.messageIndex < currentSession.messages.length);
+  for (const [id, refs] of wanted) {
+    const matches = [...currentSession.messages, ...displaySources].filter(message => message?.id === id);
+    const message = matches.length === 1 ? matches[0] : null;
+    if (message?.role !== 'tool' || message.source !== 'image-tool' || !Array.isArray(message.attachments) || message.attachments.length > 4) continue;
+    const attachments = [], included = new Set();
+    for (const ref of refs) {
+      if (included.has(ref.attachmentIndex)) continue;
+      let attachment;
+      try { [attachment] = normalizeImageAttachments([message.attachments[ref.attachmentIndex]]); } catch { continue; }
+      if (ref.attachmentId !== undefined && ref.attachmentId !== attachment.id) continue;
+      const encoded = attachment.dataUrl.slice(attachment.dataUrl.indexOf(',') + 1);
+      const bytes = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+      if (totalBytes + bytes > 8 * 1024 * 1024) continue;
+      totalBytes += bytes; included.add(ref.attachmentIndex);
+      attachments[ref.attachmentIndex] = attachment;
+    }
+    if (included.size) sources.push({ id, role: 'tool', source: 'image-tool', attachments });
+  }
+  return sources;
+}
 function emit(event) {
   if (!win || win.isDestroyed()) return;
   if (event.type === 'reconnect' && event.status === 'waiting' && !Number.isFinite(event.retryAt)) {
@@ -670,7 +704,10 @@ function emit(event) {
       : currentSession.events.filter(item => item.type === 'tool-start').length) + 1;
     emitSessionMetrics();
   }
-  const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...event, workspaceId, sequence: ++eventSequence })));
+  // Picture bytes live once in their message archive. Receipts and replay logs
+  // remain reference-only; only the active renderer receives a transient source.
+  const { imageSources: ignoredImageSources, ...metadataEvent } = event;
+  const clean = JSON.parse(redact(JSON.stringify({ ...(activeRun ? { runId: activeRun.id } : {}), ...metadataEvent, workspaceId, sequence: ++eventSequence })));
   if (activeRun?.kind === 'agent' && clean.type === 'images-viewed' && clean.version === 1 && currentSession) {
     clean.messageIndex = currentSession.messages.length - 1;
     const views = currentSession.imageViews = Array.isArray(currentSession.imageViews) ? currentSession.imageViews : [];
@@ -703,7 +740,10 @@ function emit(event) {
     }
   }
   recordLiveEvent(activeRun, clean); rememberTerminalEvent(clean);
-  if (host.active === context) win.webContents.send('forge:event', clean);
+  if (host.active === context) {
+    const imageSources = liveImageViewSources(clean);
+    win.webContents.send('forge:event', imageSources.length ? { ...clean, imageSources } : clean);
+  }
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
   if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'context-compaction-end', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
     // Snapshots have their own bounded archive. Do not retain a second copy

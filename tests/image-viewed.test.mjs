@@ -23,6 +23,25 @@ test('successful image references retain stable identities without copying image
   assert.equal(JSON.stringify([...seen]).includes(png), false);
 });
 
+test('only actual image-tool attachments become local view references and unchanged content deduplicates within a run', () => {
+  const hash = 'sha256:' + 'a'.repeat(64), changedHash = 'sha256:' + 'b'.repeat(64);
+  const tool = (id, attachmentId = hash) => ({ id, role: 'tool', source: 'image-tool', toolCallId: 'view-' + id,
+    content: '{"status":"loaded","path":"screenshot.png"}', attachments: [{ ...image, id: attachmentId }] });
+  const first = tool('local-first'), again = tool('local-second'), changed = tool('local-changed', changedHash);
+  const allowed = new Set([first.id, again.id, changed.id]), seen = new Set();
+  assert.deepEqual(collectViewedImages([first, again, changed], seen, allowed), [
+    { messageId: first.id, attachmentIndex: 0, attachmentId: hash },
+    { messageId: changed.id, attachmentIndex: 0, attachmentId: changedHash },
+  ]);
+  assert.deepEqual(collectViewedImages([again], seen, allowed), []);
+  assert.equal(collectViewedImages([again], new Set(), new Set([again.id])).length, 1, 'a new run may actually view the same file again');
+  assert.deepEqual(collectViewedImages([{ ...first, source: undefined }, { ...first, role: 'assistant' }]), []);
+  assert.deepEqual(collectViewedImages([{ ...first, attachments: undefined }]), []);
+  assert.deepEqual(collectViewedImages([{ ...first, attachments: [{ path: 'screenshot.png' }] }]), []);
+  assert.deepEqual(collectViewedImages([first, { ...user(), id: first.id }]), [], 'cross-role source IDs remain ambiguous');
+  assert.deepEqual(collectViewedImages([first], new Set(), new Set()), []);
+});
+
 test('only unambiguous original user images can become viewed references; URLs and screenshot paths cannot', () => {
   const messages = [{ ...user(), id: undefined }, { ...user(), role: 'assistant' },
     { ...user(), id: 'url', attachments: [{ dataUrl: 'https://example.invalid/private.png' }] },

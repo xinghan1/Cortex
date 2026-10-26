@@ -38,6 +38,41 @@ test('references resolve only the confirmed original user attachment without cop
   assert.equal(api.create({ ...incoming, type: 'browser-capture' }, { messages: source() }), null);
 });
 
+test('explicit image-tool sources resolve thumbnails while ordinary tool attachments do not', () => {
+  const local = { id: 'local-image', role: 'tool', source: 'image-tool', attachments: [attachment] };
+  const localEvent = event([{ messageId: local.id, attachmentIndex: 0, attachmentId: attachment.id }]);
+  assert.equal(api.resolve(localEvent, [local]).availableCount, 1);
+  assert.equal(api.resolve(localEvent, [{ ...local, source: 'command-output' }]).availableCount, 0);
+  assert.equal(api.resolve(localEvent, [{ ...local, source: undefined }]).availableCount, 0);
+  assert.equal(api.resolve(localEvent, [local, { ...local, role: 'user' }]).availableCount, 0);
+});
+
+test('transient local sources are matched to the receipt and never admit unrelated, ambiguous or unsafe bytes', () => {
+  const local = { id: 'local-image', role: 'tool', source: 'image-tool', attachments: [null, attachment], private: 'PRIVATE_SOURCE' };
+  const localEvent = { ...event([{ messageId: local.id, attachmentIndex: 1, attachmentId: attachment.id }]), imageSources: [local] };
+  const received = plain(api.transientSources(localEvent));
+  assert.deepEqual(received, [{ id: local.id, role: 'tool', source: 'image-tool', attachments: [null, attachment] }]);
+  assert.equal(api.resolve(localEvent, received).availableCount, 1);
+  assert.equal(JSON.stringify(received).includes('PRIVATE_SOURCE'), false);
+  for (const imageSources of [[{ ...local, id: 'unreferenced' }], [{ ...local, role: 'user' }],
+    [{ ...local, source: 'not-image-tool' }], [local, local], [{ ...local, attachments: [null, { ...attachment, id: 'mismatch' }] }],
+    [{ ...local, attachments: [null, { ...attachment, dataUrl: 'https://example.invalid/private.png' }] }]])
+    assert.deepEqual(plain(api.transientSources({ ...localEvent, imageSources })), []);
+  assert.deepEqual(plain(api.transientSources({ ...localEvent, type: 'tool-result' })), []);
+});
+
+test('transient source budgeting admits exactly eight MiB of decoded image bytes and excludes only the excess', () => {
+  const dataUrl = 'data:image/png;base64,' + Buffer.alloc(2 * 1024 * 1024).toString('base64');
+  const large = Array.from({ length: 4 }, (_, index) => ({ id: 'large-' + index, name: 'large.png', mediaType: 'image/png', dataUrl }));
+  const refs = large.map((image, attachmentIndex) => ({ messageId: 'large-tool', attachmentIndex, attachmentId: image.id }));
+  const value = { ...event([...refs, { messageId: 'excess-tool', attachmentIndex: 0, attachmentId: 'excess' }]),
+    imageSources: [{ role: 'tool', source: 'image-tool', id: 'large-tool', attachments: large },
+      { role: 'tool', source: 'image-tool', id: 'excess-tool', attachments: [{ ...attachment, id: 'excess' }] }] };
+  const sources = api.transientSources(value);
+  assert.equal(sources.length, 1); assert.equal(sources[0].attachments.length, 4);
+  assert.equal(api.resolve(value, sources).availableCount, 4);
+});
+
 test('missing, mismatched and ambiguous sources remain explicit missing previews without guessing a file or URL', () => {
   for (const messages of [[], [{ ...source()[0], role: 'assistant' }], [source()[0], source()[0]],
     [{ ...source()[0], attachments: [{ ...attachment, id: 'different' }] }]]) {

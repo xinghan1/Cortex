@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { AntigravityAgent, killAntigravityProcessTree } from '../src/core/antigravity-agent.mjs';
+import { runExternalAgentTurn } from '../src/core/external-agent-turn.mjs';
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const initialized = { protocolVersion: 1, agentInfo: { name: 'antigravity-acp', version: '1.4.3' },
@@ -57,6 +58,97 @@ const permission = sessionId => ({ sessionId, toolCall: { toolCallId: 'operation
 
 const modelOptions = ids => [{ id: 'model', name: 'Model', type: 'select', currentValue: ids[0],
   options: [{ group: 'official', name: 'Official', options: ids.map(value => ({ value, name: value })) }] }];
+
+test('a current-turn plain Google region denial cannot finish as a completed task and does not revoke login', async t => {
+  let denied = true;
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    for (const value of denied ? ['  User location is not ', 'supported for the API use.', '\n'] : ['正常完成。'])
+      child.update(rpc.params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } });
+    child.reply(rpc, { stopReason: 'end_turn' }); return true;
+  } });
+  await f.agent.signIn(); const profile = (await f.agent.publicState()).session.profileId;
+  const events = [], usage = [], session = { id: 'local-1', messages: [{ role: 'user', content: '介绍你能做什么' }] };
+  await assert.rejects(runExternalAgentTurn({ agent: f.agent, session, cwd: f.dir, prompt: '介绍你能做什么', runId: 'denied-run',
+    emit: value => events.push(value), onPermission: async () => null, onUsage: async value => usage.push(value) }), { code: 'AGY_REGION_UNAVAILABLE' });
+  assert.equal(usage[0].status, 'failed'); assert.equal(usage[0].reported, false);
+  assert.equal(session.messages.at(-1).localOnly, true);
+  const state = await f.agent.publicState();
+  assert.equal(state.error.code, 'AGY_REGION_UNAVAILABLE'); assert.equal(state.error.phase, 'task');
+  assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true); assert.equal(state.session.profileId, profile);
+  assert.equal(f.fake.calls.filter(({ rpc }) => rpc.method === 'authenticate').length, 1);
+  denied = false;
+  assert.equal((await f.agent.runTask(task(f))).stopReason, 'end_turn');
+  assert.equal((await f.agent.publicState()).error, null);
+  assert.equal(f.fake.calls.filter(({ rpc }) => rpc.method === 'session/new').length, 1);
+});
+
+test('quoting, explaining or explicitly echoing a region error stays ordinary assistant content', async t => {
+  const phrase = 'User location is not supported for the API use.';
+  for (const [prompt, content] of [
+    ['说明错误', `“${phrase}” 是服务端的地区限制提示。`],
+    ['展示日志', `\`\`\`text\n${phrase}\n\`\`\``],
+    ['介绍你的工作', `我可以修改和验证项目。\n${phrase}`],
+    ['解释原因', `Google 报错：${phrase}`],
+    [`请原样复述：${phrase}`, phrase],
+    ['较长的说明', '正常内容'.repeat(200) + phrase],
+  ]) {
+    const f = await fixture(t, { handler: ({ child, rpc }) => {
+      if (rpc.method !== 'session/prompt') return false;
+      child.update(rpc.params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: content } });
+      child.reply(rpc, { stopReason: 'end_turn' }); return true;
+    } });
+    await f.agent.signIn(); assert.equal((await f.agent.runTask(task(f, { prompt }))).stopReason, 'end_turn');
+    assert.equal((await f.agent.publicState()).error, null);
+  }
+});
+
+test('a text-form region denial retains only the native numeric usage actually reported for that failed turn', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    child.update(rpc.params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'User location is not supported for the API use.' } });
+    child.reply(rpc, { stopReason: 'end_turn', usage: { inputTokens: 14, outputTokens: 3, secret: 'PRIVATE_REPORT_FIELD' } }); return true;
+  } });
+  await f.agent.signIn(); await assert.rejects(f.agent.runTask(task(f)), error => {
+    assert.equal(error.code, 'AGY_REGION_UNAVAILABLE'); assert.equal(error.usageReported, true);
+    assert.deepEqual(error.usage, { inputTokens: 14, outputTokens: 3 }); assert.doesNotMatch(JSON.stringify(error), /PRIVATE_REPORT_FIELD/); return true;
+  });
+});
+
+test('mentioning an earlier region failure while asking for a fix cannot turn another denial into success', async t => {
+  const phrase = 'User location is not supported for the API use.';
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    child.update(rpc.params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: phrase } });
+    child.reply(rpc, { stopReason: 'end_turn' }); return true;
+  } });
+  await f.agent.signIn();
+  await assert.rejects(f.agent.runTask(task(f, { prompt: `报错：${phrase}，请修复并继续执行任务。` })), { code: 'AGY_REGION_UNAVAILABLE' });
+  assert.equal((await f.agent.publicState()).session.status, 'connected');
+});
+
+test('historical and foreign-session region text never reclassifies a successful current reply', async t => {
+  const phrase = 'User location is not supported for the API use.';
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    child.update('other-native-session', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: phrase } });
+    child.update(rpc.params.sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '当前任务正常完成。' } });
+    child.reply(rpc, { stopReason: 'end_turn' }); return true;
+  } });
+  await f.agent.signIn();
+  assert.equal((await f.agent.runTask(task(f, { contextMessages: [{ role: 'assistant', content: phrase }] }))).stopReason, 'end_turn');
+  assert.equal((await f.agent.publicState()).error, null);
+});
+
+test('an explicit native RPC region error uses the same fixed classification without losing the account', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/prompt') return false;
+    child.error(rpc, { code: -32603, message: 'User location is not supported for the API use.', data: { private: 'DO_NOT_PUBLISH' } }); return true;
+  } });
+  await f.agent.signIn(); await assert.rejects(f.agent.runTask(task(f)), { code: 'AGY_REGION_UNAVAILABLE' });
+  const state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true);
+  assert.doesNotMatch(JSON.stringify(state), /DO_NOT_PUBLISH/);
+});
 test('ACP model config without optional category overrides an empty or stale legacy model list', async t => {
   for (const legacy of [[], [{ modelId: 'stale-model', name: 'Stale' }]]) {
     const f = await fixture(t, { handler: ({ child, rpc }) => {

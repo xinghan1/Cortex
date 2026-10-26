@@ -1822,8 +1822,19 @@ function renderApprovalReview(event, { historical = false } = {}) {
   if (!historical && event.status === 'reviewing' && approvals.has(event.id)) resolveComposerApproval(event.id, false, { expired: true });
 }
 
+function archivedImageViewSources(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const displaySources = (Array.isArray(session?.imageToolSources) ? session.imageToolSources.slice(-64) : [])
+    .filter(source => source?.role === 'tool' && source.source === 'image-tool' && typeof source.runId === 'string' && source.runId
+      && Number.isInteger(source.messageIndex) && source.messageIndex >= 0 && source.messageIndex < messages.length);
+  return [...messages, ...displaySources].filter(message => window.ForgeImageViewCard.eligibleSource(message));
+}
+
 function renderImageViewed(event, { target = taskProcessTarget(), historical = false } = {}) {
   if (!window.ForgeImageViewCard) return;
+  if (!historical) for (const source of window.ForgeImageViewCard.transientSources(event)) {
+    if (!imageViewSources.some(message => message.id === source.id)) imageViewSources.push(source);
+  }
   const key = `${event.runId || ''}:${event.requestId || JSON.stringify(event.images || [])}`;
   if (renderedImageViews.has(key)) return;
   const card = window.ForgeImageViewCard.create(event, { messages: imageViewSources, onPreview: openImagePreview });
@@ -2067,6 +2078,7 @@ function toolActivity(name, args, completed = false) {
     stop_agent: completed ? '子任务已停止' : '正在停止子任务',
     list_files: completed ? '已读取文件列表' : '正在浏览项目文件',
     read_file: completed ? '已读取文件' : '正在读取文件',
+    view_image: completed ? '已读取图片' : '正在读取图片',
     search_text: completed ? '已完成搜索' : '正在搜索代码',
     search_files: completed ? '已完成搜索' : '正在搜索代码',
     write_file: completed ? '已写入文件' : '正在写入文件',
@@ -3503,7 +3515,9 @@ function appendContextCompactionNotice(event, target = taskProcessTarget(), pend
   contextCompactionNotices.add(key);
   const note = pendingNote || window.ForgeContextCompaction.createNotice();
   note.dataset.count = String(event.count || 1);
-  if (event.budgetMode === 'model-capacity' && Number.isFinite(event.contextLimit) && Number.isFinite(event.triggerTokens)) {
+  if (event.imageHistoryExceeded === true) {
+    note.title = '图片历史达到单次请求上限，旧截图记录已压缩；原始图片仍保留在本地会话。';
+  } else if (event.budgetMode === 'model-capacity' && Number.isFinite(event.contextLimit) && Number.isFinite(event.triggerTokens)) {
     const usage = Number.isFinite(event.estimatedBeforeTokens) && Number.isFinite(event.estimatedAfterTokens)
       ? `预算估算：≈${event.estimatedBeforeTokens.toLocaleString()} → ≈${event.estimatedAfterTokens.toLocaleString()} Token。` : '';
     const basis = event.compressionTriggerBasis === 'reported-context-plus-estimated-growth' && Number.isFinite(event.reportedContextTokens)
@@ -3519,7 +3533,7 @@ function appendContextCompactionNotice(event, target = taskProcessTarget(), pend
 function renderSessionSnapshot(session) {
   const metrics = session.sessionMetrics || (appState?.sessionId === session.id ? appState.sessionMetrics : null);
   clearConversation();
-  imageViewSources = (session.messages || []).filter(message => message?.role === 'user');
+  imageViewSources = archivedImageViewSources(session);
   const undoRunIds = new Set([...(Array.isArray(session.taskRuns) ? session.taskRuns : []), ...(Array.isArray(session.events) ? session.events : [])]
     .filter(record => record?.kind === 'undo').map(record => record.runId || record.id));
   taskChangeEdits = Array.isArray(session.fileEdits) ? session.fileEdits
@@ -4089,7 +4103,7 @@ function handleEvent(event) {
       }
       break;
     case 'session':
-      if (event.session) imageViewSources = (event.session.messages || []).filter(message => message?.role === 'user');
+      if (event.session) imageViewSources = archivedImageViewSources(event.session);
       if (event.session?.id && event.session.id !== sessionId) renderSessionSnapshot(event.session);
       if (event.session?.id) sessionId = event.session.id;
       if (event.session) {

@@ -7,6 +7,7 @@
   const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
   const validId = value => typeof value === 'string' && value.trim().length > 0
     && Array.from(value).length <= 100 && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value);
+  const eligibleSource = message => message?.role === 'user' || message?.role === 'tool' && message.source === 'image-tool';
   const displayName = (value, index) => typeof value === 'string'
     ? Array.from(value.split(/[\\/]/u).at(-1).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '').trim()).slice(0, 80).join('') || `图片 ${index + 1}`
     : `图片 ${index + 1}`;
@@ -38,7 +39,7 @@
   function resolve(event, messages) {
     const sources = new Map();
     for (const message of Array.isArray(messages) ? messages : []) {
-      if (message?.role !== 'user' || !validId(message.id)) continue;
+      if (!eligibleSource(message) || !validId(message.id)) continue;
       sources.set(message.id, sources.has(message.id) ? null : message);
     }
     const images = references(event).map((reference, index) => {
@@ -50,6 +51,35 @@
     });
     const availableCount = images.filter(image => image.available).length;
     return { count: images.length, availableCount, missingCount: images.length - availableCount, images };
+  }
+  function transientSources(event) {
+    const refs = references(event), wanted = new Map();
+    for (const ref of refs) {
+      if (!wanted.has(ref.messageId)) wanted.set(ref.messageId, []);
+      wanted.get(ref.messageId).push(ref);
+    }
+    if (!Array.isArray(event?.imageSources) || event.imageSources.length > 64) return [];
+    const counts = new Map();
+    for (const message of event.imageSources) if (validId(message?.id)) counts.set(message.id, (counts.get(message.id) || 0) + 1);
+    const result = []; let bytes = 0;
+    for (const message of event.imageSources) {
+      if (message?.role !== 'tool' || message.source !== 'image-tool' || !validId(message.id)
+        || counts.get(message.id) !== 1 || !wanted.has(message.id) || !Array.isArray(message.attachments) || message.attachments.length > 4) continue;
+      const attachments = [];
+      for (const ref of wanted.get(message.id)) {
+        const attachment = message.attachments[ref.attachmentIndex];
+        if (ref.attachmentId !== undefined && attachment?.id !== ref.attachmentId) continue;
+        const image = safeImage(attachment); if (!image) continue;
+        const encoded = image.src.slice(image.src.indexOf(',') + 1);
+        const size = encoded.length / 4 * 3 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+        if (bytes + size > 8 * 1024 * 1024) continue;
+        bytes += size;
+        attachments[ref.attachmentIndex] = { ...(validId(attachment.id) ? { id: attachment.id } : {}),
+          name: displayName(attachment.name, ref.attachmentIndex), mediaType: image.mediaType, dataUrl: image.src };
+      }
+      if (attachments.some(Boolean)) result.push({ id: message.id, role: 'tool', source: 'image-tool', attachments });
+    }
+    return result;
   }
   const node = (tag, className, text) => {
     const element = document.createElement(tag);
@@ -94,5 +124,5 @@
     card.addEventListener('toggle', () => { if (card.open) onExpand(card); });
     return card;
   }
-  return Object.freeze({ references, resolve, create });
+  return Object.freeze({ references, resolve, transientSources, eligibleSource, create });
 });

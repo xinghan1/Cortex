@@ -115,8 +115,14 @@
     // Keep references whose attachment bytes are missing so the card can show
     // its existing "original image not retained" placeholder.
     const imageMessageIds = new Set(messages.slice(start, end + 1)
-      .filter(message => message?.role === 'user' && typeof message.id === 'string' && message.id)
+      .filter(message => (message?.role === 'user' || message?.role === 'tool' && message.source === 'image-tool') && typeof message.id === 'string' && message.id)
       .map(message => message.id));
+    for (const source of (Array.isArray(session.imageToolSources) ? session.imageToolSources.slice(-64) : [])) {
+      if (source?.role === 'tool' && source.source === 'image-tool' && source.runId === (record.runId || record.id)
+        && typeof source.id === 'string' && source.id.trim() && Array.from(source.id).length <= 100
+        && !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(source.id) && Number.isInteger(source.messageIndex)
+        && source.messageIndex >= start && source.messageIndex <= end) imageMessageIds.add(source.id);
+    }
     const changes = new Map((Array.isArray(session.fileEdits) ? session.fileEdits : [])
       .filter(value => value?.runId === (record.runId || record.id) && typeof value.toolCallId === 'string' && fileChange(value))
       .map(value => [value.toolCallId, fileChange(value)]));
@@ -292,9 +298,15 @@
       const saved = Array.isArray(record.activityEvents) ? record.activityEvents
         : (Array.isArray(session.events) ? session.events.filter(value => value?.runId === runId) : []);
       const images = new Map();
+      const displayOnlyImageIds = new Set((Array.isArray(session.imageToolSources) ? session.imageToolSources.slice(-64) : [])
+        .filter(source => source?.role === 'tool' && source.source === 'image-tool' && typeof source.id === 'string').map(source => source.id));
       for (const value of [...saved, ...(Array.isArray(session.imageViews) ? session.imageViews : [])]) {
-        if (value?.type === 'images-viewed' && value.runId === runId && typeof value.requestId === 'string')
-          images.set(value.requestId, { ...value, runId });
+        if (value?.type === 'images-viewed' && value.runId === runId && typeof value.requestId === 'string') {
+          // Display-only native sources are new and always anchored. A damaged
+          // or overlapping task cannot safely borrow them for a guessed range.
+          const references = (Array.isArray(value.images) ? value.images : []).filter(image => !displayOnlyImageIds.has(image?.messageId));
+          if (references.length) images.set(value.requestId, { ...value, images: references, runId });
+        }
       }
       for (const value of saved) if (value?.type === 'subagent-update' && publicAgent(value.agent)) snapshots.set(value.agent.id, { ...value, runId });
       for (const agent of Array.isArray(session.subagents) ? session.subagents : []) {

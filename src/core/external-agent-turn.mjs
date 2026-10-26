@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { IMAGE_ATTACHMENT_LIMITS, normalizeImageAttachments } from './message-images.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const count = value => Number.isSafeInteger(value) && value >= 0;
@@ -6,6 +7,62 @@ const toolNames = { read: 'read_file', edit: 'apply_patch', delete: 'delete_file
   search: 'search_files', execute: 'run_command', fetch: 'read_url', think: 'agent_task' };
 const maxText = 512 * 1024;
 const officialModes = { gemini: 'antigravity-agent', kimi: 'kimi-agent', glm: 'glm-agent' };
+const maxImageSources = 64, maxImageSourceBytes = 16 * 1024 * 1024;
+const nativeImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const imageBytes = image => {
+  const data = image.dataUrl.slice(image.dataUrl.indexOf(',') + 1);
+  return data.length / 4 * 3 - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+};
+function embeddedImage(content) {
+  if (content?.type !== 'image' || !nativeImageTypes.has(content.mimeType) || typeof content.data !== 'string'
+      || content.data.length > 4 * Math.ceil(IMAGE_ATTACHMENT_LIMITS.maxImageBytes / 3)) return null;
+  try {
+    const [attachment] = normalizeImageAttachments([{ mediaType: content.mimeType,
+      name: typeof content.name === 'string' ? content.name : '官方代理图像.' + (content.mimeType === 'image/jpeg' ? 'jpg' : content.mimeType.slice(6)),
+      dataUrl: `data:${content.mimeType};base64,${content.data}` }]);
+    const hash = createHash('sha256').update(Buffer.from(content.data, 'base64')).digest('hex');
+    return { attachment: { ...attachment, id: 'sha256:' + hash }, bytes: imageBytes(attachment) };
+  } catch { return null; }
+}
+// The native result may contain image blocks in raw metadata as well as its
+// public content. Never stringify their binary fields into command/tool logs.
+function publicToolValue(value, imageData = []) {
+  const scrubText = text => {
+    let output = text.replace(/data:image\/[^;,\s]+;base64,[A-Za-z\d+/=]+/gu, '[图像内容]');
+    for (const data of imageData) output = output.replaceAll(data, '[图像内容]');
+    return output;
+  };
+  if (typeof value === 'string') {
+    if (/"type"\s*:\s*"image"/u.test(value)) {
+      try { return publicToolValue(JSON.parse(value), imageData); }
+      catch { return '[图像原始数据未显示]'; }
+    }
+    return scrubText(value).slice(-maxText);
+  }
+  try {
+    return JSON.stringify(value, (_key, item) => item?.type === 'image' ? '[图像内容]'
+      : typeof item === 'string' ? scrubText(item) : item).slice(-maxText);
+  } catch { return '[原始数据无法显示]'; }
+}
+
+function appendImageSources(session, additions) {
+  const pool = [];
+  for (const source of Array.isArray(session.imageToolSources) ? session.imageToolSources.slice(-maxImageSources) : []) {
+    if (!object(source) || source.role !== 'tool' || source.source !== 'image-tool' || typeof source.id !== 'string'
+        || source.id.length > 100 || !source.id || typeof source.runId !== 'string' || source.runId.length > 100 || !count(source.messageIndex)) continue;
+    try {
+      const attachments = normalizeImageAttachments(source.attachments);
+      if (!attachments.length) continue;
+      pool.push({ id: source.id, role: 'tool', source: 'image-tool', runId: source.runId, messageIndex: source.messageIndex, attachments });
+    } catch { /* A malformed old preview cannot grant a new view receipt. */ }
+  }
+  pool.push(...additions);
+  let bytes = pool.reduce((sum, source) => sum + source.attachments.reduce((total, image) => total + imageBytes(image), 0), 0);
+  while (pool.length > maxImageSources || bytes > maxImageSourceBytes) {
+    const removed = pool.shift(); bytes -= removed.attachments.reduce((total, image) => total + imageBytes(image), 0);
+  }
+  session.imageToolSources = pool;
+}
 
 // An external ACP agent owns inference and tools. This adapter only records
 // its public updates; it never executes a tool or feeds its tokens into the
@@ -14,7 +71,7 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
   runId, signal, emit, onPermission, onUserInput = async () => ({ action: 'cancel' }), provider = 'gemini', onUsage = async () => {}, redact = value => value }) {
   if (!agent || typeof agent.runTask !== 'function' || !session?.id || !Array.isArray(session.messages)
       || typeof emit !== 'function' || typeof onPermission !== 'function') throw new Error('官方代理会话配置无效。');
-  const tools = new Map(); let text = '', characters = 0, result, status = 'failed';
+  const tools = new Map(), imageCandidates = new Map(), imageData = new Set(); let text = '', characters = 0, result, status = 'failed', imageCandidateBytes = 0;
   const clean = value => String(redact(String(value)));
   const flush = partial => {
     if (!text) return;
@@ -25,7 +82,8 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
   };
   const toolContent = value => {
     if (!Array.isArray(value)) return '';
-    return value.map(item => item?.type === 'content' && item.content?.type === 'text' ? item.content.text
+    return value.map(item => item?.type === 'content' && item.content?.type === 'image' ? '[图像内容]'
+      : item?.type === 'content' && item.content?.type === 'text' ? item.content.text
       : item?.type === 'diff' ? [item.path, item.oldText, item.newText].filter(part => typeof part === 'string').join('\n') : '')
       .join('\n').slice(-maxText);
   };
@@ -39,15 +97,32 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
     if (typeof id !== 'string' || !id || id.length > 512) throw new Error('官方代理工具标识无效。');
     let record = tools.get(id);
     if (!record) {
-      record = { id: `${runId}:${id}`, name: 'official_agent_tool', started: false, done: false, title: '', output: '', args: null };
+      record = { id: `${runId}:${id}`, name: 'official_agent_tool', started: false, done: false, title: '', output: '', args: null,
+        images: new Set(), imageFailed: false, imageCompleted: false };
       tools.set(id, record);
     }
     if (!record.started && Object.hasOwn(toolNames, update.kind)) record.name = toolNames[update.kind];
     if (typeof update.title === 'string') record.title = update.title.slice(0, 2000);
-    if (object(update.rawInput)) record.args = structuredClone(update.rawInput);
+    for (const item of Array.isArray(update.content) ? update.content.slice(0, 256) : []) {
+      if (item?.type !== 'content' || item.content?.type !== 'image') continue;
+      const image = embeddedImage(item.content); if (!image) continue;
+      const hash = image.attachment.id;
+      if (!imageCandidates.has(hash)) {
+        if (imageCandidates.size >= maxImageSources || imageCandidateBytes + image.bytes > maxImageSourceBytes) continue;
+        imageCandidates.set(hash, image); imageCandidateBytes += image.bytes;
+        imageData.add(item.content.data);
+      }
+      record.images.add(hash);
+    }
+    if (update.status === 'completed') record.imageCompleted = true;
+    if (['failed', 'cancelled', 'stopped'].includes(update.status)) record.imageFailed = true;
+    if (object(update.rawInput)) {
+      try { const value = JSON.parse(publicToolValue(update.rawInput, imageData)); record.args = object(value) ? value : { detail: '[图像内容]' }; }
+      catch { record.args = { detail: '[原始参数无法显示]' }; }
+    }
     const previousOutput = record.output;
     if (Array.isArray(update.content)) record.output = toolContent(update.content);
-    if (update.rawOutput != null && (!Array.isArray(update.content) || !record.output)) record.output = (typeof update.rawOutput === 'string' ? update.rawOutput : JSON.stringify(update.rawOutput)).slice(-maxText);
+    if (update.rawOutput != null && (!Array.isArray(update.content) || !record.output)) record.output = publicToolValue(update.rawOutput, imageData);
     const wasStarted = record.started, terminal = ['completed', 'failed'].includes(update.status);
     if (record.name !== 'official_agent_tool' || terminal) startTool(record);
     if (record.started && record.name === 'run_command' && (record.output !== previousOutput || !wasStarted && record.output)) emit({ type: 'command-output', toolCallId: record.id,
@@ -95,8 +170,29 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
     signal?.throwIfAborted();
     if (result?.stopReason !== 'end_turn') throw new Error(result?.stopReason === 'cancelled' ? '官方代理任务已取消。' : '官方代理尚未完整结束本轮任务。');
     if ([...tools.values()].some(record => !record.done)) throw new Error('官方代理已结束回复，但仍有操作未返回完成状态。');
-    flush(false); status = 'completed';
+    flush(false); signal?.throwIfAborted();
+    const viewed = new Map();
+    for (const record of tools.values()) if (record.imageCompleted && !record.imageFailed)
+      for (const hash of record.images) if (!viewed.has(hash)) viewed.set(hash, imageCandidates.get(hash));
+    if (viewed.size) {
+      const sources = [...viewed.values()].map(image => ({ id: randomUUID(), role: 'tool', source: 'image-tool',
+        attachments: [image.attachment], runId, messageIndex: Math.max(0, session.messages.length - 1) }));
+      appendImageSources(session, sources);
+      for (let index = 0; index < sources.length; index += 4) emit({ type: 'images-viewed', version: 1,
+        requestId: `official-image:${runId}:${index / 4}`, images: sources.slice(index, index + 4).map(source => ({
+          messageId: source.id, attachmentIndex: 0, attachmentId: source.attachments[0].id,
+        })) });
+    }
+    status = 'completed';
     return { ...result, toolCount: tools.size };
+  } catch (error) {
+    // A native service rejection may arrive after it has reported real usage.
+    // Keep only normalized numeric counters, never its raw response or text.
+    if (error?.usageReported === true && count(error.usage?.inputTokens) && count(error.usage?.outputTokens))
+      result = { usageReported: true, usage: { inputTokens: error.usage.inputTokens, outputTokens: error.usage.outputTokens,
+        ...(count(error.usage.cachedInputTokens) && error.usage.cachedInputTokens <= error.usage.inputTokens
+          ? { cachedInputTokens: error.usage.cachedInputTokens } : {}) } };
+    throw error;
   } finally {
     if (signal?.aborted) status = 'stopped';
     flush(status !== 'completed');

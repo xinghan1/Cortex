@@ -20,6 +20,41 @@ const deepFreeze = value => {
   return value;
 };
 
+test('generated screenshot receipts reload only within the tool message current run and keep byte data out of events', () => {
+  const screenshot = { name: 'local-ui.png', mediaType: 'image/png', dataUrl: 'data:image/png;base64,eA==' };
+  const old = { ...result('old-call', 'loaded'), id: 'old-tool-image', source: 'image-tool', attachments: [screenshot] };
+  const current = { ...result('current-call', 'loaded'), id: 'current-tool-image', source: 'image-tool', attachments: [screenshot] };
+  const unrelated = { ...result('ordinary-call', 'loaded'), id: 'ordinary-tool', attachments: [screenshot] };
+  const view = { type: 'images-viewed', version: 1, requestId: 'local-view', runId: 'current', messageIndex: 7,
+    images: [old, current, unrelated].map(message => ({ messageId: message.id, attachmentIndex: 0 })) };
+  const session = deepFreeze({ messages: [user('old request'), assistant('', [call('old-call', 'view_image', {})]), old, assistant('old done'),
+    user('new request'), assistant('', [call('current-call', 'view_image', {}), call('ordinary-call', 'read_file', {})]), current, unrelated, assistant('new done')],
+    taskRuns: [record('old', 0, 3), record('current', 4, 8)], events: [], imageViews: [view] });
+  const restored = events(runBlocks(project(session))[1]).find(event => event.type === 'images-viewed');
+  assert.deepEqual(restored.images, [{ messageId: current.id, attachmentIndex: 0 }]);
+  assert.equal(JSON.stringify(restored).includes(screenshot.dataUrl), false);
+});
+
+test('official image display metadata is scoped to its recorded run and message range without becoming model messages', () => {
+  const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC';
+  const attachment={id:'native-image',name:'native-ui.png',mediaType:'image/png',dataUrl:'data:image/png;base64,'+png};
+  const sources=[{id:'native-old',role:'tool',source:'image-tool',runId:'old',messageIndex:1,attachments:[attachment]},
+    {id:'native-current',role:'tool',source:'image-tool',runId:'current',messageIndex:3,attachments:[attachment]},
+    {id:'native-outside',role:'tool',source:'image-tool',runId:'current',messageIndex:0,attachments:[attachment]},
+    {id:'native-invalid\u0000',role:'tool',source:'image-tool',runId:'current',messageIndex:3,attachments:[attachment]}];
+  const view={type:'images-viewed',version:1,runId:'current',requestId:'official-image:current',messageIndex:3,
+    images:sources.map(source=>({messageId:source.id,attachmentIndex:0,attachmentId:attachment.id}))};
+  const session=deepFreeze({messages:[user('old'),assistant('old done'),user('current'),assistant('current done')],
+    taskRuns:[record('old',0,1),record('current',2,3)],events:[],imageViews:[view],imageToolSources:sources});
+  const projected=project(session),receipt=events(runBlocks(projected)[1]).find(event=>event.type==='images-viewed');
+  assert.deepEqual(receipt.images,[{messageId:'native-current',attachmentIndex:0,attachmentId:attachment.id}]);
+  assert.equal(context.ForgeImageViewCard.resolve(receipt,[...session.messages,...sources]).availableCount,1);
+  assert.equal(session.messages.length,4);assert.equal(session.messages.some(message=>message.source==='image-tool'),false);
+  assert.equal(JSON.stringify(projected).includes(png),false);
+  const damaged=project({...session,taskRuns:[record('current',99,3)]});
+  assert.equal(events(runBlocks(damaged)[0]).some(event=>event.type==='images-viewed'),false,'unanchored native display metadata is not assigned to a guessed task');
+});
+
 test('successful edit snapshots restore by run and tool ID without entering model messages', () => {
   const saved = { runId: 'edit-run', toolCallId: 'edit-2', path: 'app.js', before: 'old\n', after: 'new\n', providerState: 'PRIVATE' };
   const session = deepFreeze({ messages: [user('修改文件'), assistant('', [call('edit-1', 'write_file', { path: 'first.js' }), call('edit-2', 'write_file', { path: 'app.js' })]), result('edit-1', '{"path":"first.js"}'), result('edit-2', '{"path":"app.js"}'), assistant('已修改。')],
