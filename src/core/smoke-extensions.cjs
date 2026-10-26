@@ -31,7 +31,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     while (Date.now() < deadline) { const value = await bounded(Promise.resolve().then(predicate), label, Math.max(1, deadline - Date.now())); if (value) return value; await wait(30); }
     throw new Error('Extensions smoke timed out: ' + label);
   };
-  const point = selector => until('click target ' + selector, () => js(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n||n.disabled||!n.checkVisibility({visibilityProperty:true,opacityProperty:${selector !== '#pet-overlay-video'}}))return null;n.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null})()`));
+  const point = selector => until('click target ' + selector, () => js(`(()=>{const n=document.querySelector(${JSON.stringify(selector)});if(!n||n.disabled||!n.checkVisibility({visibilityProperty:true,opacityProperty:${selector !== '#pet-overlay-hit'}}))return null;n.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});const r=n.getBoundingClientRect(),p={x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};return n.contains(document.elementFromPoint(p.x,p.y))?p:null})()`));
   const pointer = async (location, button = 'left') => {
     child.focus(); child.webContents.focus();
     for (const type of ['mouseMove', 'mouseDown', 'mouseUp']) child.webContents.sendInputEvent({ type, ...location, ...(type === 'mouseMove' ? {} : { button, clickCount: 1 }) });
@@ -143,7 +143,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     await capture('extensions-pet-initial.png');
 
     await step('native dragging and persisted pet settings');
-    const start = await point('#pet-overlay-video'), end = { x: start.x - 180, y: start.y - 100 };
+    const start = await point('#pet-overlay-hit'), end = { x: start.x - 180, y: start.y - 100 };
     child.focus(); child.webContents.focus();
     child.webContents.sendInputEvent({ type: 'mouseMove', ...start });
     child.webContents.sendInputEvent({ type: 'mouseDown', ...start, button: 'left', clickCount: 1 });
@@ -155,12 +155,12 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     const dragged = await until('native drag persisted', async () => { const value = await call('petState'); return value.x < .98 && value.y < .98 && value; });
     pet = await decoded('idle'); assert.ok(pet.box.left < start.x - 110 && pet.box.top < start.y - 80);
     const freshPet = await new DshPetStore({ dataDir }).init(); assert.deepEqual(freshPet.snapshot(), dragged);
-    await pointer(await point('#pet-overlay-video'), 'right');
+    await pointer(await point('#pet-overlay-hit'), 'right');
     await until('native pet context menu', () => js("!document.getElementById('pet-overlay-menu').hidden"));
     await click('#pet-overlay-pat'); await decoded('clicks');
     await js("document.getElementById('pet-overlay-video').dispatchEvent(new Event('ended'))"); await decoded('idle');
     for (const [action, kind] of [['turn', 'turn'], ['action', 'actions']]) {
-      await pointer(await point('#pet-overlay-video'), 'right'); await click('#pet-overlay-' + action); await decoded(kind);
+      await pointer(await point('#pet-overlay-hit'), 'right'); await click('#pet-overlay-' + action); await decoded(kind);
       await js("document.getElementById('pet-overlay-video').dispatchEvent(new Event('ended'))"); await decoded('idle');
     }
 
@@ -297,7 +297,7 @@ module.exports = async function smokeExtensions({ win, output, dataDir, pluginMa
     pet = await decoded('idle'); assert.equal(pet.state.size, 280); assert.equal(pet.state.x, dragged.x); assert.equal(pet.state.y, dragged.y);
     assert.equal(pet.state.followCursor, false);
     await openSettings('pet'); assert.equal(await js("document.getElementById('pet-settings-follow').checked"), false); await click('#pet-settings-close');
-    await pointer(await point('#pet-overlay-video'), 'right'); await click('#pet-overlay-settings'); await visibleDialog('pet-settings-dialog');
+    await pointer(await point('#pet-overlay-hit'), 'right'); await click('#pet-overlay-settings'); await visibleDialog('pet-settings-dialog');
     assert.equal(await js("document.getElementById('extensions-dialog').open"), false, 'The pet context menu opens only independent pet settings');
     await click('#pet-settings-close');
 

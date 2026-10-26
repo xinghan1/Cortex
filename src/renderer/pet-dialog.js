@@ -46,7 +46,7 @@
     let snapshot = { revision: -1, question: null, running: false, activity: null, error: null };
     let busy = false, stopBusy = false, composing = false, draftComposing = false, selected = null, chatOpened = false, muted = false;
     let anchor = null, anchorObserver = null, savedFocus = null, speech = null, lastQuestionId = null, lastActionSequence = -1, pendingAction = null;
-    let inputPhaseTimer = 0, inputOpen = false, reservation = '', lastActionAt = -Infinity, fallbackLatched = false, reservedOpen = false;
+    let inputPhaseTimer = 0, inputOpen = false, lastActionAt = -Infinity;
     let closeAfterComposition = false, reactionPending = false, reactionVersion = 0;
     const speechQueue = [], timers = new Set(), listeners = [];
     const contextKey = value => JSON.stringify([value?.workspaceId || '', value?.sessionId || '']);
@@ -60,10 +60,6 @@
     const setStyle = (node, name, value) => { if (node.style[name] !== value) node.style[name] = value; };
     const layoutHeight = node => node.offsetHeight || node.getBoundingClientRect().height;
     const now = () => view.performance?.now?.() ?? Date.now();
-    function reserve(open, height = 0) {
-      const next = JSON.stringify([open, height]); if (next === reservation) return; reservation = next; reservedOpen = open;
-      if (view.CustomEvent) view.dispatchEvent(new view.CustomEvent('synora:pet-chat-layout', { detail: { open, height } }));
-    }
     function schedule() {
       if (disposed || frame) return;
       frame = view.requestAnimationFrame(() => { frame = 0; layout(); });
@@ -128,9 +124,14 @@
       findAnchor();
       const bounds = anchor?.getBoundingClientRect(), style = anchor && view.getComputedStyle(anchor);
       const naturallyVisible = anchor && !anchor.hidden && bounds?.width > 0 && bounds.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-      if (inputOpen && reservedOpen && !naturallyVisible) fallbackLatched = true;
-      const visiblePet = naturallyVisible && !fallbackLatched;
-      const fallback = !visiblePet, isBlocking = blocking();
+      const character = naturallyVisible ? contentAnchor(bounds, anchor.dataset.packId) : null;
+      const inputTop = character ? Math.max(48, character.bottom + 8) : 0;
+      const availableBelow = Math.max(0, (view.innerHeight || 768) - inputTop - 8);
+      // Visible-pet chat stays out of document flow. Reparenting it into the
+      // composer would change the pet's movement bounds and create a feedback
+      // loop near the bottom edge, so only a hidden pet uses that fallback.
+      const fallback = !naturallyVisible;
+      const visiblePet = naturallyVisible, isBlocking = blocking();
       if (fallback && speech?.local) {
         clearSpeech();
         for (let index = speechQueue.length - 1; index >= 0; index--) if (speechQueue[index].local) speechQueue.splice(index, 1);
@@ -147,26 +148,30 @@
       place(panel, parent); place(inputBubble, parent);
       for (const node of [panel, inputBubble]) { node.dataset.mode = fallback ? 'composer' : 'bubble'; node.dataset.blocking = String(isBlocking); }
       const width = Math.max(1, Math.min(316, view.innerWidth - 16));
-      if (!fallback) for (const node of [panel, inputBubble]) setStyle(node, 'width', `${width}px`);
-      reserve(Boolean(visiblePet && !inputBubble.hidden), visiblePet && !inputBubble.hidden ? Math.ceil(layoutHeight(inputBubble)) + 8 : 0);
+      const speechWidth = Math.max(1, Math.min(isBlocking ? 440 : 316, view.innerWidth - 16));
+      if (!fallback) { setStyle(panel, 'width', `${speechWidth}px`); setStyle(inputBubble, 'width', `${width}px`); }
       if (fallback) {
-        for (const node of [panel, inputBubble]) for (const name of ['left', 'top', 'width']) setStyle(node, name, '');
+        for (const node of [panel, inputBubble]) for (const name of ['left', 'top', 'width', 'maxHeight']) setStyle(node, name, '');
+        setStyle(inputBubble, 'paddingBlock', ''); setStyle(input, 'minHeight', ''); setStyle(input, 'height', '');
         return;
       }
-      const character = contentAnchor(bounds, anchor.dataset.packId);
       for (const node of [panel, inputBubble]) node.dataset.anchor = anchor.dataset.packId === 'dsh-pet' ? 'character' : 'box';
-      const speechHeight = layoutHeight(panel), inputHeight = layoutHeight(inputBubble);
-      const speechLeft = Math.max(8, Math.min(view.innerWidth - width - 8, character.left + character.width * .6 - width));
+      const speechHeight = layoutHeight(panel);
+      const speechLeft = Math.max(8, Math.min(view.innerWidth - speechWidth - 8, character.left + character.width * .6 - speechWidth));
       const inputLeft = Math.max(8, Math.min(view.innerWidth - width - 8, character.left + (character.width - width) / 2));
       setStyle(panel, 'left', `${speechLeft}px`);
       setStyle(panel, 'top', `${Math.max(48, Math.min(view.innerHeight - speechHeight - 8, character.top - speechHeight - 10))}px`);
       setStyle(inputBubble, 'left', `${inputLeft}px`);
-      setStyle(inputBubble, 'top', `${Math.max(48, Math.min(view.innerHeight - inputHeight - 8, character.bottom + 8))}px`);
+      setStyle(inputBubble, 'top', `${inputTop}px`);
+      setStyle(inputBubble, 'maxHeight', `${Math.floor(availableBelow)}px`);
+      const compact = availableBelow < 104;
+      setStyle(inputBubble, 'paddingBlock', compact ? '2px' : '');
+      setStyle(input, 'minHeight', compact ? '32px' : '');
+      setStyle(input, 'height', compact ? '36px' : '');
     }
     function renderInput(nextOpen) {
       if (nextOpen === inputOpen) return;
       inputOpen = nextOpen; clearTimer(inputPhaseTimer);
-      if (!nextOpen) fallbackLatched = false;
       if (nextOpen) {
         inputBubble.hidden = false; inputBubble.dataset.phase = 'entering';
         inputPhaseTimer = later(() => { inputBubble.dataset.phase = 'visible'; }, 500);
@@ -235,7 +240,7 @@
       composing = false; draftComposing = false;
       closeAfterComposition = false; reactionPending = false; ++reactionVersion;
       pendingAction = null;
-      inputOpen = false; fallbackLatched = false; inputBubble.hidden = true; lastQuestionId = null; reserve(false);
+      inputOpen = false; inputBubble.hidden = true; lastQuestionId = null;
       snapshot = { revision: -1, question: null, running: false, activity: null, error: null };
       input.value = ''; error.textContent = ''; error.hidden = true; render(); return refresh();
     }
@@ -330,7 +335,7 @@
       lastActionAt = now(); enqueueSpeech(actionLines[detail.kind], { local: true }); render();
     });
     listen(draft, 'compositionstart', () => { draftComposing = true; schedule(); }); listen(draft, 'compositionend', () => { draftComposing = false; schedule(); });
-    listen(view, 'resize', () => { fallbackLatched = false; schedule(); });
+    listen(view, 'resize', schedule);
     const resizeObserver = view.ResizeObserver ? new view.ResizeObserver(schedule) : null;
     resizeObserver?.observe(panel); resizeObserver?.observe(inputBubble); if (composer) resizeObserver?.observe(composer);
     const bodyObserver = view.MutationObserver ? new view.MutationObserver(findAnchor) : null;
@@ -338,14 +343,14 @@
     const unsubscribe = bridge.onEvent?.(event => {
       if (event?.type === 'pet-dialog') update(event);
       else if (['state', 'workspace-activated'].includes(event?.type)) updateContext(event.state);
-      else if (event?.type === 'pet-state') { fallbackLatched = false; schedule(); }
+      else if (event?.type === 'pet-state') schedule();
     });
     const initialVersion = stateVersion;
     const ready = Promise.resolve(bridge.getState()).then(value => { if (!disposed && initialVersion === stateVersion) return updateContext(value); }).catch(() => {});
     function destroy() {
       if (disposed) return;
       document.documentElement.classList.remove('pet-dialog-replaces-composer'); restoreFocus(); disposed = true; ++actionVersion;
-      clearTimers(); speech = null; speechQueue.length = 0; reserve(false);
+      clearTimers(); speech = null; speechQueue.length = 0;
       if (frame) view.cancelAnimationFrame(frame); frame = 0;
       resizeObserver?.disconnect(); bodyObserver?.disconnect(); anchorObserver?.disconnect();
       for (const remove of listeners) remove(); if (typeof unsubscribe === 'function') unsubscribe(); panel.remove(); inputBubble.remove();

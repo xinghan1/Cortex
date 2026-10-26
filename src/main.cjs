@@ -251,7 +251,15 @@ async function initializeOfficialAgents() {
   ]);
   runExternalAgentTurn = turn.runExternalAgentTurn;
   const onChange = () => { broadcastAllStates().catch(() => {}); };
-  const fetchImpl = (input, options) => electronSession.defaultSession.fetch(input, options);
+  const fetchImpl = async (input, options) => {
+    options?.signal?.throwIfAborted();
+    // A user may enable or change their VPN after the app starts. Refresh the
+    // Windows/PAC proxy route before public component downloads without closing
+    // connections used by running conversations.
+    await electronSession.defaultSession.forceReloadProxyConfig();
+    options?.signal?.throwIfAborted();
+    return electronSession.defaultSession.fetch(input, options);
+  };
   const root = path.join(dataDir, 'official-agents');
   antigravityRuntime = new AntigravityRuntime({ dataDir: path.join(root, 'antigravity'), fetchImpl, onChange });
   antigravity = new AntigravityAgent({ dataDir: path.join(root, 'antigravity'), runtime: antigravityRuntime,

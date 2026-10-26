@@ -89,7 +89,7 @@ module.exports = async function smokePetTask({ win, output, dataDir, store }) {
   });
   const petSend=async text=>{
     const before=records.length;
-    if(await js(`$('pet-dialog-input-bubble').hidden`))await click('#pet-overlay-video');
+    if(await js(`$('pet-dialog-input-bubble').hidden`))await click('#pet-overlay-hit');
     await until('pet editor available',()=>js(`!$('pet-dialog-input-bubble').hidden&&!$('pet-dialog-input').disabled`));
     await click('#pet-dialog-input');await child.webContents.insertText(text);await click('#pet-dialog-send');
     return until('one pet request accepted',()=>records.length>before&&records.slice(before).find(record=>record.source==='pet'));

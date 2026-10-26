@@ -85,3 +85,173 @@ test('unsupported platform fails before network and installation directory junct
   await fs.symlink(outside, path.join(f.dir, 'antigravity-runtime'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(f.runtime.ensure(), { code: 'AGY_STORAGE_ERROR' }); assert.deepEqual(await fs.readdir(outside), []);
 });
+
+function streamed(bytes, { total = bytes.length, status = 200, etag, contentRange, encoding, error, cleanup = () => {} } = {}) {
+  let sent = false;
+  return { ok: status >= 200 && status <= 299, status,
+    headers: new Headers({ ...(total === null ? {} : { 'content-length': String(total) }), ...(etag ? { etag } : {}),
+      ...(contentRange ? { 'content-range': contentRange } : {}), ...(encoding ? { 'content-encoding': encoding } : {}) }),
+    body: { getReader: () => ({ async read() { if (!sent) { sent = true; return { done: false, value: bytes }; }
+      if (error) throw error; return { done: true }; }, cancel: async () => cleanup('cancel'), releaseLock: () => cleanup('release') }) } };
+}
+
+test('transient HTTP and network errors retry at most twice while strict redirect handling is preserved', async t => {
+  for (const kind of ['network', 408, 429, 503]) {
+    let calls = 0;
+    const f = await fixture(t, { fetchImpl: async (url, options) => {
+      calls++; assert.equal(url, release.url); assert.equal(options.redirect, 'error'); assert.equal(options.headers['Accept-Encoding'], 'identity');
+      if (calls === 1) {
+        if (kind === 'network') throw Object.assign(new Error('PRIVATE_AUTH_URL'), { code: 'ECONNRESET' });
+        return new Response(null, { status: kind, headers: { 'retry-after': '0' } });
+      }
+      return new Response(zip, { headers: { 'content-length': String(zip.length) } });
+    } });
+    await f.runtime.ensure(); assert.equal(calls, 2); assert.equal((await f.runtime.publicState()).status, 'ready');
+  }
+  let calls = 0;
+  const exhausted = await fixture(t, { fetchImpl: async () => { calls++; return new Response(null, { status: 503, headers: { 'retry-after': '0' } }); } });
+  await assert.rejects(exhausted.runtime.ensure(), { code: 'AGY_DOWNLOAD_FAILED' }); assert.equal(calls, 3);
+});
+
+test('interrupted or short known-length bodies resume from the exact verified prefix and release readers', async t => {
+  for (const interrupted of [true, false]) {
+    const offset = 91, cleaned = []; let calls = 0;
+    const f = await fixture(t, { fetchImpl: async (_url, options) => {
+      calls++;
+      if (calls === 1) return streamed(zip.subarray(0, offset), { total: zip.length, etag: '"fixture-etag"',
+        ...(interrupted ? { error: Object.assign(Error('PRIVATE body reset'), { code: 'ECONNRESET' }) } : {}), cleanup: value => cleaned.push(value) });
+      assert.deepEqual(options.headers, { 'Accept-Encoding': 'identity', Range: 'bytes=' + offset + '-', 'If-Range': '"fixture-etag"' });
+      return streamed(zip.subarray(offset), { status: 206, etag: '"fixture-etag"', contentRange: 'bytes ' + offset + '-' + (zip.length - 1) + '/' + zip.length,
+        cleanup: value => cleaned.push(value) });
+    } });
+    const installed = await f.runtime.ensure(); assert.equal(calls, 2);
+    assert.deepEqual(await fs.readFile(installed.entry), files.get('agy_acp_server.exe'));
+    assert.equal(cleaned.filter(value => value === 'cancel').length, 2); assert.equal(cleaned.filter(value => value === 'release').length, 2);
+  }
+});
+
+test('a server ignoring Range restarts the complete buffer, while unknown-length failures restart without Range', async t => {
+  for (const knownLength of [true, false]) {
+    let calls = 0;
+    const f = await fixture(t, { fetchImpl: async (_url, options) => {
+      if (++calls === 1) return streamed(zip.subarray(0, 73), { total: knownLength ? zip.length : null, error: Error('PRIVATE interrupted body') });
+      assert.equal(options.headers?.Range, knownLength ? 'bytes=73-' : undefined);
+      return new Response(zip, { headers: { 'content-length': String(zip.length) } });
+    } });
+    await f.runtime.ensure(); assert.equal(calls, 2); assert.equal((await f.runtime.publicState()).status, 'ready');
+  }
+});
+
+test('resume rejects wrong offsets, totals, ranges, lengths and changed entity tags without further retries', async t => {
+  const offset = 81, correct = 'bytes ' + offset + '-' + (zip.length - 1) + '/' + zip.length;
+  for (const patch of [
+    { contentRange: 'bytes 0-' + (zip.length - 1) + '/' + zip.length },
+    { contentRange: 'bytes ' + offset + '-' + (zip.length - 1) + '/' + (zip.length + 1) },
+    { contentRange: 'bytes ' + offset + '-' + (zip.length - 2) + '/' + zip.length },
+    { total: zip.length - offset + 1 }, { etag: '"different-entity"' },
+  ]) {
+    let calls = 0;
+    const f = await fixture(t, { fetchImpl: async () => {
+      if (++calls === 1) return streamed(zip.subarray(0, offset), { total: zip.length, etag: '"fixture-etag"' });
+      return streamed(zip.subarray(offset), { status: 206, etag: '"fixture-etag"', contentRange: correct, ...patch });
+    } });
+    await assert.rejects(f.runtime.ensure(), { code: 'AGY_DOWNLOAD_FAILED' }); assert.equal(calls, 2);
+    assert.equal((await f.runtime.publicState()).status, 'error');
+  }
+});
+
+test('a transport closing after all declared bytes still requires the complete pinned archive digest', async t => {
+  for (const corrupt of [false, true]) {
+    let calls = 0;
+    const bytes = Buffer.from(zip); if (corrupt) bytes[40] ^= 1;
+    const f = await fixture(t, { fetchImpl: async () => { calls++; return streamed(bytes, { error: Error('PRIVATE connection close') }); } });
+    if (corrupt) await assert.rejects(f.runtime.ensure(), { code: 'AGY_INTEGRITY_FAILED' });
+    else await f.runtime.ensure();
+    assert.equal(calls, 1);
+  }
+});
+
+test('integrity, archive, TLS, permanent DNS, invalid sizes and nonretryable HTTP responses never retry or expose raw errors', async t => {
+  const invalid = Buffer.from(zip); invalid.writeUInt16LE(1, zip.readUInt32LE(zip.length - 6) + 8);
+  for (const [fetchImpl, code, override] of [
+    [async () => new Response(Buffer.alloc(zip.length)), 'AGY_INTEGRITY_FAILED'],
+    [async () => new Response(invalid), 'AGY_ARCHIVE_INVALID', { release: { ...release, sha256: sha(invalid) } }],
+    [async () => { throw Error('net::ERR_CERT_AUTHORITY_INVALID PRIVATE secret'); }, 'AGY_DOWNLOAD_TLS'],
+    [async () => { throw Object.assign(Error('PRIVATE secret'), { cause: { code: 'ENOTFOUND' } }); }, 'AGY_DOWNLOAD_DNS'],
+    [async () => new Response(null, { status: 403 }), 'AGY_DOWNLOAD_FAILED'],
+    [async () => new Response(null, { status: 302, headers: { location: 'https://untrusted.example/private' } }), 'AGY_DOWNLOAD_FAILED'],
+    [async () => new Response(null, { status: 407 }), 'AGY_DOWNLOAD_PROXY'],
+    [async () => new Response(zip, { headers: { 'content-length': String(256 * 1024 * 1024 + 1) } }), 'AGY_DOWNLOAD_FAILED'],
+    [async () => new Response(zip, { headers: { 'content-length': String(zip.length - 1) } }), 'AGY_DOWNLOAD_FAILED'],
+    [async () => new Response(zip, { status: 206, headers: { 'content-range': 'bytes 0-' + (zip.length - 1) + '/' + zip.length } }), 'AGY_DOWNLOAD_FAILED'],
+  ]) {
+    let calls = 0;
+    const f = await fixture(t, { ...override, fetchImpl: async (...args) => { calls++; return fetchImpl(...args); } });
+    await assert.rejects(f.runtime.ensure(), { code }); assert.equal(calls, 1);
+    assert.doesNotMatch(JSON.stringify(await f.runtime.publicState()), /PRIVATE|secret|untrusted|https:/u);
+  }
+});
+
+test('overall deadline spans retry waits, caller cancellation wins, and long server cooldowns are not shortened', async t => {
+  let timeoutCalls = 0;
+  const timeout = await fixture(t, { downloadTimeoutMs: 20, fetchImpl: async () => { timeoutCalls++; throw Error('network reset'); } });
+  await assert.rejects(timeout.runtime.ensure(), { code: 'AGY_DOWNLOAD_TIMEOUT' }); assert.equal(timeoutCalls, 1);
+  assert.equal((await timeout.runtime.publicState()).error.code, 'AGY_DOWNLOAD_TIMEOUT');
+  const stalled = await fixture(t, { downloadTimeoutMs: 20, fetchImpl: () => new Promise(() => {}) });
+  await assert.rejects(stalled.runtime.ensure(), { code: 'AGY_DOWNLOAD_TIMEOUT' });
+  let cancelCalls = 0, started;
+  const first = new Promise(resolve => { started = resolve; });
+  const cancelled = await fixture(t, { downloadTimeoutMs: 2000, fetchImpl: async () => { cancelCalls++; started(); return new Response(null, { status: 429, headers: { 'retry-after': '10' } }); } });
+  const controller = new AbortController(), pending = cancelled.runtime.ensure({ signal: controller.signal });
+  const rejection = assert.rejects(pending, { name: 'AbortError', code: 'AGY_CANCELLED' });
+  await first; await new Promise(resolve => setTimeout(resolve, 10)); controller.abort(); await rejection;
+  assert.equal(cancelCalls, 1); assert.equal((await cancelled.runtime.publicState()).status, 'missing');
+  let longCalls = 0;
+  const long = await fixture(t, { fetchImpl: async () => { longCalls++; return new Response(null, { status: 429, headers: { 'retry-after': '11' } }); } });
+  await assert.rejects(long.runtime.ensure(), { code: 'AGY_DOWNLOAD_FAILED' }); assert.equal(longCalls, 1);
+});
+
+test('small download chunks update current byte counts while notifications are throttled and the final count is forced', async t => {
+  let changes = 0, offset = 0; const progress = [];
+  const f = await fixture(t, { onChange: () => { changes++; }, fetchImpl: async () => ({ ok: true, status: 200,
+    headers: new Headers({ 'content-length': String(zip.length) }), body: { getReader: () => ({ async read() {
+      return offset < zip.length ? { done: false, value: zip.subarray(offset, ++offset) } : { done: true };
+    }, cancel: async () => {}, releaseLock() {} }) } }) });
+  await f.runtime.ensure({ onProgress: value => progress.push(value) });
+  assert.equal(progress.at(-1).receivedBytes, zip.length); assert.equal(progress.at(-1).totalBytes, zip.length);
+  assert.ok(progress.length < 20 && changes < 20, 'Hundreds of chunks must not create hundreds of IPC broadcasts');
+  assert.equal((await f.runtime.publicState()).status, 'ready');
+});
+
+
+test('decoded gzip bytes are not compared with compressed HTTP Content-Length and still require the exact ZIP digest', async t => {
+  for (const corrupt of [false, true]) {
+    let calls = 0; const progress = [];
+    const decoded = Buffer.from(zip); if (corrupt) decoded[35] ^= 1;
+    const f = await fixture(t, { fetchImpl: async (_url, options) => {
+      calls++; assert.equal(options.headers['Accept-Encoding'], 'identity');
+      // Both Chromium and Fetch may return decoded bytes while retaining the
+      // gzip wire length, even if a proxy ignored Accept-Encoding: identity.
+      return streamed(decoded, { total: Math.floor(zip.length * .8), encoding: 'gzip' });
+    } });
+    if (corrupt) await assert.rejects(f.runtime.ensure({ onProgress: value => progress.push(value) }), { code: 'AGY_INTEGRITY_FAILED' });
+    else { const installed = await f.runtime.ensure({ onProgress: value => progress.push(value) }); assert.deepEqual(await fs.readFile(installed.entry), files.get('agy_acp_server.exe')); }
+    assert.equal(calls, 1); assert.equal(progress.at(-1).receivedBytes, zip.length); assert.equal(progress.at(-1).totalBytes, null);
+  }
+});
+
+test('interrupted decoded gzip transfers restart without Range and encoded partial responses are rejected', async t => {
+  let calls = 0;
+  const fresh = await fixture(t, { fetchImpl: async (_url, options) => {
+    assert.equal(options.headers.Range, undefined);
+    if (++calls === 1) return streamed(zip.subarray(0, 91), { total: 50, encoding: 'gzip', error: Error('PRIVATE interrupted gzip') });
+    return new Response(zip, { headers: { 'content-length': String(zip.length) } });
+  } });
+  await fresh.runtime.ensure(); assert.equal(calls, 2);
+  let rangeCalls = 0;
+  const partial = await fixture(t, { fetchImpl: async () => {
+    if (++rangeCalls === 1) return streamed(zip.subarray(0, 91), { total: zip.length });
+    return streamed(zip.subarray(91), { status: 206, encoding: 'gzip', contentRange: 'bytes 91-' + (zip.length - 1) + '/' + zip.length });
+  } });
+  await assert.rejects(partial.runtime.ensure(), { code: 'AGY_DOWNLOAD_FAILED' }); assert.equal(rangeCalls, 2);
+});

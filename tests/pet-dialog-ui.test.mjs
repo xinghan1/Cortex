@@ -293,16 +293,49 @@ test('scope changes reset abandoned composition flags and clear all old speech, 
   h.api.destroy(); assert.equal(h.timers.size,0); assert.equal(h.frames.size,0);
 });
 
-test('open input bubble requests measured pet clearance and reserve-induced hiding latches composer fallback without a loop', async t => {
+test('opening chat never reserves pet space and showing the pet restores its lower bubble immediately', async t => {
   const h=await fixture(t,empty()), changes=[]; h.view.addEventListener('synora:pet-chat-layout',event=>changes.push(event.detail));
+  const original={...h.pet.rect};
   h.view.fire('synora:pet-chat-open'); h.flush();
-  assert.equal(changes.at(-1).open,true); assert.equal(changes.at(-1).height,118);
+  assert.equal(changes.length,0); assert.deepEqual(h.pet.rect,original);
   const bubble=h.node('pet-dialog-input-bubble').getBoundingClientRect(); assert.ok(bubble.top>=h.pet.rect.bottom);
-  h.pet.hidden=true; h.notify(h.pet); h.flush(); assert.equal(changes.at(-1).open,false);
-  h.pet.hidden=false; h.notify(h.pet); h.flush(); assert.equal(h.node('pet-dialog-input-bubble').dataset.mode,'composer');
-  const count=changes.length; h.notify(h.pet); h.flush(); assert.equal(changes.length,count);
-  h.view.fire('resize'); h.flush(); assert.equal(h.node('pet-dialog-input-bubble').dataset.mode,'bubble'); assert.equal(changes.at(-1).open,true);
-  h.api.destroy(); assert.equal(changes.at(-1).open,false);
+  h.pet.hidden=true; h.notify(h.pet); h.flush(); assert.equal(h.node('pet-dialog-input-bubble').dataset.mode,'composer');
+  h.pet.hidden=false; h.notify(h.pet); h.flush(); assert.equal(h.node('pet-dialog-input-bubble').dataset.mode,'bubble');
+  h.notify(h.pet); h.view.fire('resize'); h.flush(); assert.equal(changes.length,0);
+  h.api.destroy(); assert.equal(changes.length,0);
+});
+
+test('bottom-edge chat stays below the pet in a compact floating bubble without changing composer flow', async t => {
+  const h=await fixture(t,empty());
+  h.pet.rect={left:900,top:650,right:1100,bottom:850,width:200,height:200};
+  const original={...h.pet.rect};
+  h.view.fire('synora:pet-chat-open'); h.notify(h.pet); h.flush();
+  const bubble=h.node('pet-dialog-input-bubble');
+  assert.equal(bubble.dataset.mode,'bubble'); assert.equal(bubble.parentElement,h.document.body);
+  assert.equal(Number.parseFloat(bubble.style.top),858); assert.equal(Number.parseFloat(bubble.style.maxHeight),34);
+  assert.equal(h.node('pet-dialog-input').style.minHeight,'32px'); assert.deepEqual(h.pet.rect,original);
+  h.view.innerHeight=1000; h.view.fire('resize'); h.flush();
+  assert.equal(bubble.dataset.mode,'bubble');
+  assert.equal(Number.parseFloat(bubble.style.top),858);
+  assert.equal(Number.parseFloat(bubble.style.maxHeight),134);
+  assert.equal(h.node('pet-dialog-input').style.minHeight,'');
+  assert.deepEqual(h.pet.rect,original);
+  h.view.innerHeight=900; h.view.fire('resize'); h.flush();
+  assert.equal(bubble.dataset.mode,'bubble'); assert.equal(bubble.parentElement,h.document.body);
+  assert.equal(Number.parseFloat(bubble.style.maxHeight),34);
+  assert.deepEqual(h.pet.rect,original);
+});
+
+test('blocking question bubbles expand without widening casual chat or overflowing a narrow viewport', async t => {
+  const h=await fixture(t,asking());
+  assert.equal(Number.parseFloat(h.node('pet-dialog').style.width),440);
+  assert.equal(Number.parseFloat(h.node('pet-dialog-input-bubble').style.width),316);
+  h.view.innerWidth=360;h.view.fire('resize');h.flush();
+  const box=h.node('pet-dialog').getBoundingClientRect();
+  assert.equal(box.width,344);assert.ok(box.left>=8);assert.ok(box.right<=352);
+  h.view.innerWidth=1200;h.view.fire('resize');h.flush();
+  h.emit(empty(2));h.emit({...asking('casual',false),revision:3});
+  assert.equal(Number.parseFloat(h.node('pet-dialog').style.width),316);
 });
 
 test('consecutive chat accepts clear only the submitted draft when launch events arrive before the IPC response', async t => {
@@ -353,7 +386,7 @@ test('hiding the pet while its welcome is active presents a queued model reply i
   h.advance(11000);h.flush();assert.equal(h.node('pet-dialog').hidden,true);
 });
 
-test('entry animation transforms do not change the layout height used to anchor or reserve bubbles', async t => {
+test('entry animation transforms do not change the layout height used to anchor bubbles', async t => {
   const h=await fixture(t,asking()), panel=h.node('pet-dialog'), inputBubble=h.node('pet-dialog-input-bubble');
   panel.offsetHeight=150; inputBubble.offsetHeight=110;
   const original=panel.getBoundingClientRect.bind(panel);

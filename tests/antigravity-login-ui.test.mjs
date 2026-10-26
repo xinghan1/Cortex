@@ -16,6 +16,19 @@ class Element{
   set innerHTML(_){throw new Error('Untrusted account state must remain text-only');}
 }
 const empty=()=>({runtime:{status:'missing',version:null,download:null},session:{status:'disconnected',sharing:false,profileId:null},error:null});
+
+test('download failures show fixed network guidance instead of raw transport or proxy details',()=>{
+  for(const [code,hint] of [
+    ['AGY_DOWNLOAD_TIMEOUT','超时'], ['AGY_DOWNLOAD_PROXY','系统代理'],
+    ['AGY_DOWNLOAD_TLS','证书'], ['AGY_DOWNLOAD_DNS','DNS'],
+  ]) {
+    const f=fixture({initial:{...empty(),runtime:{status:'error',error:{code,message:'PRIVATE_PROXY_PASSWORD https://host/?token=SECRET'}}}});f.open();
+    assert.match(f.node('antigravity-login-message').textContent,new RegExp(hint,'u'));
+    assert.doesNotMatch(f.node('antigravity-login-message').textContent,/PRIVATE|SECRET|https:/u);
+    assert.equal(f.node('antigravity-install').disabled,false);
+    assert.equal(f.calls.length,0);
+  }
+});
 function fixture({initial=empty(),role=null,methods={},descriptor}={}){
   const spec={provider:'gemini',modeId:'gemini-auth-mode',authMode:'antigravity-agent',stateKey:'antigravity',prefix:'antigravity',bridgePrefix:'antigravity',...descriptor};
   const document={nodes:new Map(),getElementById(id){return this.nodes.get(id);},createElement(){return new Element(document);}};document.body=new Element(document);
@@ -95,6 +108,17 @@ test('GLM component preparation failures preserve signed-in account controls and
   assert.equal(f.node('glm-agent-login-status').textContent,'ZCode 官方代理已连接');
   assert.equal(f.node('glm-agent-sign-in').hidden,true);assert.equal(f.node('glm-agent-install').hidden,false);
   assert.match(f.node('glm-agent-login-message').textContent,/准备组件/);assert.doesNotMatch(f.node('glm-agent-login-message').textContent,/PRIVATE_LOCAL_PATH/);
+});
+
+test('GLM account resource failures are distinguished from rate limits without requesting another login',()=>{
+  for(const [code,hint] of [['ZCODE_QUOTA_UNAVAILABLE','1113'],['ZCODE_PLAN_EXPIRED','到期'],['ZCODE_PLAN_LIMIT','用量'],['ZCODE_RATE_LIMITED','频率']]) {
+    const f=fixture({descriptor:glm,initial:{...empty(),region:'bigmodel',runtime:{status:'ready'},session:{status:'connected',sharing:true,profileId:'retained-profile'},
+      error:{code,message:'PRIVATE_AUTH_BODY https://host/?token=SECRET'}}});f.open();
+    assert.match(f.node('glm-agent-login-message').textContent,new RegExp(hint,'u'));
+    assert.doesNotMatch(f.node('glm-agent-login-message').textContent,/PRIVATE|SECRET|https:/u);
+    assert.equal(f.node('glm-agent-login-status').textContent,'ZCode 官方代理已连接');
+    assert.equal(f.node('glm-agent-sign-in').hidden,true);assert.equal(f.node('glm-agent-models').disabled,false);assert.equal(f.calls.length,0);
+  }
 });
 
 test('empty official catalogs explain the upstream account directory while keeping their connections',()=>{

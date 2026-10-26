@@ -27,16 +27,32 @@ function fixture({role=null,initial=disconnected(),methods={},settings={provider
     onState:next=>{applied.push(next);scope=next;ui.render();},onChange:()=>ui.render(),onInvalidate:value=>invalidations.push(value),
     onModeChange:()=>{modeChanges.push(document.elements.get('gemini-auth-mode').value);onModeChange();}});
   return{ui,calls,invalidations,applied,modeChanges,api:context.ForgeGeminiLogin,node:id=>document.elements.get(id),
+    // Exercise retained legacy controller diagnostics without advertising a
+    // selectable legacy option in the actual account form.
     mode(){this.node('gemini-auth-mode').value='gemini-account';this.node('gemini-auth-mode').change();},
     update(value){scope={...scope,gemini:value};ui.render();},busy(value){busy=value;ui.render();}};
 }
 
-test('Google account mode uses bundled official Gemini CLI without paths, OAuth client IDs or automatic login',()=>{
+test('Google connection selector offers API Key and Antigravity without the retired Gemini CLI entry or automatic login',()=>{
   const f=fixture();assert.equal(f.node('gemini-auth-mode-field').hidden,false);assert.equal(f.node('gemini-login-panel').hidden,true);assert.equal(f.calls.length,0);
-  f.mode();assert.equal(f.node('gemini-login-panel').hidden,false);assert.match(f.node('gemini-login-help').textContent,/个人.*Pro\/Ultra.*旧 Gemini CLI 服务已停用.*官方 Antigravity.*Gemini API Key/);
-  assert.doesNotMatch(f.node('gemini-login-help').textContent,/使用官方 Gemini CLI 账号额度/);
+  const options=f.node('gemini-auth-mode').children;
+  assert.deepEqual(options.map(option=>option.value),['apiKey','antigravity-agent']);
+  assert.ok(options.every(option=>!option.textContent.includes('旧 Gemini CLI')));
   assert.equal(f.node('gemini-cli-path'),undefined);assert.equal(f.node('gemini-client-id'),undefined);assert.equal(f.calls.length,0);
   f.node('provider-select').value='deepseek';f.ui.render();assert.equal(f.node('gemini-login-panel').hidden,true);
+});
+
+test('opening a saved legacy account uses an API draft without mutating settings or reusing Google credentials',()=>{
+  for(const role of [null,'subagent','approval','completion','sidebar','pet']){
+    const settings=Object.freeze({provider:'gemini',authMode:'gemini-account',model:'saved-model',hasApiKey:true});
+    const f=fixture({role,settings,initial:connected('saved-legacy-profile')});
+    f.ui.fill('gemini-account');
+    assert.equal(f.node('gemini-auth-mode').value,'apiKey');assert.equal(f.node('gemini-login-panel').hidden,true);
+    assert.equal(f.calls.length,0);assert.equal(f.invalidations.length,0);assert.equal(f.modeChanges.length,0);
+    assert.deepEqual(settings,{provider:'gemini',authMode:'gemini-account',model:'saved-model',hasApiKey:true});
+    f.ui.fill('antigravity-agent');assert.equal(f.node('gemini-auth-mode').value,role==null?'antigravity-agent':'apiKey');
+    f.ui.fill('apiKey');assert.equal(f.node('gemini-auth-mode').value,'apiKey');assert.equal(f.calls.length,0);
+  }
 });
 
 test('login duplicate prevention leaves native cancellation available while the official browser grants access',async()=>{
@@ -173,7 +189,7 @@ test('API Key action is restricted to unsupported-client errors and remains disa
 
 test('Google mode selector offers the complete official agent only to the main model',()=>{
   const f=fixture();const options=f.node('gemini-auth-mode').children;
-  assert.deepEqual(options.map(option=>option.value),['apiKey','antigravity-agent','gemini-account']);
+  assert.deepEqual(options.map(option=>option.value),['apiKey','antigravity-agent']);
   f.ui.fill('antigravity-agent');assert.equal(f.node('gemini-auth-mode').value,'antigravity-agent');assert.equal(f.node('gemini-login-panel').hidden,true);
   for(const role of ['subagent','approval','completion','sidebar','pet']){
     const r=fixture({role});r.ui.fill('antigravity-agent');assert.equal(r.node('gemini-auth-mode').value,'apiKey');

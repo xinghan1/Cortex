@@ -84,7 +84,7 @@ function fixture({ initial = state(), methods = {}, reduced = false, composerTop
   return { ui, document, view, motion, observers, frames, calls, notices, configured, events, gaze, node: id => document.elements.get(id),
     flushFrames() { const batch = [...frames.values()]; frames.clear(); for (const callback of batch) callback(); },
     emit(event) { for (const listener of events) listener(event); },
-    pointer(name, x, y, extra = {}) { document.elements.get('pet-overlay-video').emit(name, { button: 0, pointerId: 8, clientX: x, clientY: y, ...extra }); },
+    pointer(name, x, y, extra = {}) { document.elements.get('pet-overlay-hit').emit(name, { button: 0, pointerId: 8, clientX: x, clientY: y, ...extra }); },
   };
 }
 const settled = () => new Promise(resolve => setImmediate(resolve));
@@ -96,11 +96,40 @@ test('pet uses local transparent video with no model or plugin execution and an 
   assert.equal(overlay.hidden, false); assert.equal(overlay.style.width, '220px');
   assert.equal(overlay.style.left, '772px'); assert.equal(overlay.style.top, '572px');
   assert.equal(video.src, 'file:///D:/app/pet/idle.webm'); assert.equal(video.muted, true); assert.equal(video.playsInline, true);
-  assert.equal(video.attributes.role, 'button'); assert.match(video.attributes['aria-label'], /左键聊天，拖动移动，右键打开菜单/u);
+  assert.equal(f.node('pet-overlay-hit').tag, 'button'); assert.match(f.node('pet-overlay-hit').attributes['aria-label'], /左键聊天，拖动移动，右键打开菜单/u);
   assert.equal(video.loop, true); assert.equal(video.playCount, 1);
   f.node('pet-overlay-video').emit('error');
   assert.equal(video.hidden, true); assert.equal(f.node('pet-overlay-fallback').hidden, false);
   f.node('pet-overlay-fallback').emit('click'); assert.equal(f.configured.length, 1);
+});
+
+test('only a compact character button accepts pet interactions while the complete animation stays visible', async () => {
+  const f = fixture({ gazeEnabled: true }); await f.ui.ready;
+  const overlay = f.node('pet-overlay'), video = f.node('pet-overlay-video'), hit = f.node('pet-overlay-hit');
+  const size = parseFloat(overlay.style.width), width = parseFloat(hit.style.width), height = parseFloat(hit.style.height);
+  assert.ok(width < size * .5 && height < size * .6, 'Transparent source padding must not remain interactive');
+  assert.ok(parseFloat(hit.style.left) > size * .2 && parseFloat(hit.style.top) > size * .2);
+  assert.equal(video.tabIndex, -1); assert.equal(video.attributes['aria-hidden'], 'true');
+  assert.equal(hit.tag, 'button'); assert.equal(hit.attributes['aria-haspopup'], 'menu');
+  assert.equal(overlay.style.width, '220px'); assert.equal(overlay.style.height, '220px');
+  assert.equal(f.gaze.options.bounds().width, 220, 'Gaze and animation rendering retain the original full picture bounds');
+  let opens = 0; f.view.addEventListener('synora:pet-chat-open', () => ++opens);
+  video.emit('pointerdown', { button: 0, pointerId: 9 }); video.emit('pointerup', { button: 0, pointerId: 9 });
+  video.emit('contextmenu', { clientX: 800, clientY: 600 });
+  assert.equal(opens, 0); assert.equal(f.node('pet-overlay-menu').hidden, true);
+  hit.emit('keydown', { key: 'Enter' }); assert.equal(opens, 1);
+  f.ui.destroy();
+});
+
+test('imported pets use their own contained video bounds instead of the bundled character measurements', async () => {
+  const imported = state(); imported.packId = imported.packs[0].id = 'local-imported';
+  const f = fixture({ initial: imported }); await f.ui.ready;
+  const video = f.node('pet-overlay-video'), hit = f.node('pet-overlay-hit');
+  video.videoWidth = 400; video.videoHeight = 100; video.emit('loadedmetadata');
+  assert.ok(Math.abs(parseFloat(hit.style.width) - 220) < .001); assert.ok(Math.abs(parseFloat(hit.style.height) - 55) < .001);
+  assert.ok(Math.abs(parseFloat(hit.style.left)) < .001); assert.ok(Math.abs(parseFloat(hit.style.top) - 82.5) < .001);
+  assert.equal(f.node('pet-overlay').style.width, '220px');
+  f.ui.destroy();
 });
 
 test('late initial reads cannot replace a newer saved pet event', async () => {
@@ -112,12 +141,12 @@ test('late initial reads cannot replace a newer saved pet event', async () => {
 
 test('drag captures the pointer, plays the drag clip and clamps persisted coordinates to the window', async () => {
   const f = fixture(); await f.ui.ready; const video = f.node('pet-overlay-video');
-  f.pointer('pointerdown', 900, 700); assert.equal(video.pointer, 8);
+  f.pointer('pointerdown', 900, 700); assert.equal(f.node('pet-overlay-hit').pointer, 8);
   f.pointer('pointermove', 899, 699); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
   f.pointer('pointermove', -500, -500); assert.equal(f.node('pet-overlay').dataset.animation, 'drag');
   assert.equal(f.node('pet-overlay').style.left, '8px'); assert.equal(f.node('pet-overlay').style.top, '46px');
   f.pointer('pointerup', -500, -500); await settled();
-  assert.deepEqual(f.calls.at(-1), ['setPet', { x: 0, y: 0 }]); assert.equal(video.pointer, null);
+  assert.deepEqual(f.calls.at(-1), ['setPet', { x: 0, y: 0 }]); assert.equal(f.node('pet-overlay-hit').pointer, null);
   assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
   f.view.innerWidth = 150; f.view.innerHeight = 160; f.view.emit('resize');
   const bounds = f.node('pet-overlay').getBoundingClientRect();
@@ -165,15 +194,15 @@ test('left click and Enter or Space open chat without playing an action, while t
   const chats = [], actions = [], video = f.node('pet-overlay-video'), menu = f.node('pet-overlay-menu');
   f.view.addEventListener('synora:pet-chat-open', event => { assert.equal(menu.hidden, true); chats.push(event); });
   f.view.addEventListener('synora:pet-action', event => actions.push(event.detail));
-  video.emit('contextmenu', { clientX: 800, clientY: 600 }); assert.equal(menu.hidden, false);
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 800, clientY: 600 }); assert.equal(menu.hidden, false);
   f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600);
   assert.equal(chats.length, 1); assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(video.loop, true);
-  video.emit('contextmenu', { clientX: 800, clientY: 600 });
-  video.emit('keydown', { key: 'Enter' }); video.emit('keydown', { key: ' ' });
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 800, clientY: 600 });
+  f.node('pet-overlay-hit').emit('keydown', { key: 'Enter' }); f.node('pet-overlay-hit').emit('keydown', { key: ' ' });
   assert.equal(chats.length, 3); assert.equal(actions.length, 0);
-  video.emit('keydown', { key: 'Enter', repeat: true }); video.emit('keydown', { key: 'Enter', isComposing: true });
+  f.node('pet-overlay-hit').emit('keydown', { key: 'Enter', repeat: true }); f.node('pet-overlay-hit').emit('keydown', { key: 'Enter', isComposing: true });
   assert.equal(chats.length, 3, 'Held keys and IME confirmation do not reopen chat');
-  video.emit('contextmenu', { clientX: 800, clientY: 600 }); f.node('pet-overlay-pat').emit('click');
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 800, clientY: 600 }); f.node('pet-overlay-pat').emit('click');
   assert.equal(f.node('pet-overlay').dataset.animation, 'clicks'); assert.equal(video.loop, false);
   assert.equal(chats.length, 3); assert.deepEqual(actions.map(value => value.kind), ['clicks']);
   video.emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle');
@@ -189,7 +218,7 @@ test('dragging, pointer cancellation, another pointer and secondary clicks never
   f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600, { pointerId: 99 }); f.pointer('pointercancel', 800, 600);
   f.pointer('pointerdown', 800, 600, { button: 2 }); f.pointer('pointerup', 800, 600, { button: 2 });
   assert.equal(chats.length, 0);
-  f.ui.destroy(); f.node('pet-overlay-video').emit('keydown', { key: 'Enter' });
+  f.ui.destroy(); f.node('pet-overlay-hit').emit('keydown', { key: 'Enter' });
   assert.equal(chats.length, 0, 'A detached or hidden pet cannot reopen chat');
 });
 
@@ -225,14 +254,14 @@ test('reduced motion and a hidden window pause video without losing the pet posi
 
 test('the pet menu stays within the window and explicit actions reset, configure or hide the pet', async () => {
   const f = fixture(); await f.ui.ready;
-  f.node('pet-overlay-video').emit('contextmenu', { clientX: 999, clientY: 799 });
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 999, clientY: 799 });
   const menu = f.node('pet-overlay-menu'); assert.equal(menu.hidden, false); assert.equal(menu.style.left, '832px'); assert.equal(menu.style.top, '542px');
   f.node('pet-overlay-settings').emit('click'); assert.equal(f.configured.length, 1); assert.equal(menu.hidden, true);
-  f.node('pet-overlay-video').emit('keydown', { key: 'ContextMenu' });
+  f.node('pet-overlay-hit').emit('keydown', { key: 'ContextMenu' });
   f.node('pet-overlay-reset').emit('click'); await settled(); assert.deepEqual(f.calls.at(-1), ['setPet', { x: 1, y: 1 }]);
-  f.node('pet-overlay-video').emit('contextmenu', { clientX: 900, clientY: 600 });
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 900, clientY: 600 });
   f.document.emit('keydown', { key: 'Escape' }); assert.equal(menu.hidden, true);
-  f.node('pet-overlay-video').emit('contextmenu', { clientX: 900, clientY: 600 });
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 900, clientY: 600 });
   f.node('pet-overlay-hide').emit('click'); await settled();
   assert.deepEqual(f.calls.at(-1), ['setPet', { enabled: false }]); assert.equal(f.node('pet-overlay').hidden, true);
 });
@@ -244,7 +273,7 @@ test('ordered saves cannot be rewound by an earlier IPC result and keyboard move
   second.resolve(state({ x: .8 })); await b; first.resolve(state({ x: .2 })); await a;
   assert.equal(f.ui.snapshot().x, .8);
   const keyboard = fixture(); await keyboard.ui.ready;
-  keyboard.node('pet-overlay-video').emit('keydown', { key: 'ArrowLeft', shiftKey: true }); await settled();
+  keyboard.node('pet-overlay-hit').emit('keydown', { key: 'ArrowLeft', shiftKey: true }); await settled();
   assert.deepEqual(keyboard.calls.at(-1), ['setPet', { x: .9, y: 1 }]);
 });
 
@@ -272,7 +301,7 @@ test('idle eye following receives in-window and desktop cursor positions and pau
   f.pointer('pointerdown', 800, 600); assert.equal(f.gaze.active, false);
   f.pointer('pointercancel', 800, 600); assert.equal(f.gaze.active, true);
   f.pointer('pointerdown', 800, 600); f.pointer('pointerup', 800, 600); assert.equal(f.gaze.active, true, 'Opening chat does not play a transient animation');
-  f.node('pet-overlay-video').emit('contextmenu', { clientX: 800, clientY: 600 });
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 800, clientY: 600 });
   f.node('pet-overlay-pat').emit('click'); assert.equal(f.gaze.active, false);
   f.node('pet-overlay-video').emit('ended'); assert.equal(f.gaze.active, true);
   f.emit({ type: 'run-start' }); assert.equal(f.gaze.active, false);
@@ -311,7 +340,7 @@ test('following freezes only the bundled idle video, pointer events never play a
   const video = f.node('pet-overlay-video'); assert.equal(video.playCount, 0); assert.ok(video.pauseCount > 0);
   for (let i = 0; i < 20; i++) f.document.emit('pointermove', { pointerType: 'mouse', clientX: i * 50, clientY: 20 });
   assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(video.playCount, 0);
-  video.emit('contextmenu', { clientX: 900, clientY: 500 }); f.node('pet-overlay-turn').emit('click');
+  f.node('pet-overlay-hit').emit('contextmenu', { clientX: 900, clientY: 500 }); f.node('pet-overlay-turn').emit('click');
   assert.equal(f.node('pet-overlay').dataset.animation, 'turn'); assert.ok(video.playCount > 0); assert.equal(f.gaze.active, false);
   video.emit('ended'); assert.equal(f.node('pet-overlay').dataset.animation, 'idle'); assert.equal(f.gaze.active, true);
   const plays = video.playCount; f.emit({ type: 'pet-state', pet: state({ followCursor: false }) }); assert.ok(video.playCount > plays);
@@ -334,14 +363,18 @@ test('local action notifications happen once per actual clip start, never for po
   f.ui.destroy();
 });
 
-test('chat layout reserves the measured lower bubble once and restores normalized pet positioning after close', async () => {
+test('opening, resizing and closing chat never moves or resizes the pet', async () => {
   const f = fixture({ composerTop: 600 }); await f.ui.ready;
+  const original = { ...f.node('pet-overlay').style }, hit = { ...f.node('pet-overlay-hit').style };
   assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 592);
   f.view.emit('synora:pet-chat-layout', { detail: { open: true, height: 150 } }); f.flushFrames();
-  assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 442);
+  assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 592);
   assert.equal(f.ui.snapshot().y, 1); assert.equal(f.calls.length, 1);
   f.view.emit('synora:pet-chat-layout', { detail: { open: true, height: 150 } }); assert.equal(f.frames.size, 0);
+  f.view.emit('synora:pet-chat-layout', { detail: { open: true, height: 300 } }); f.flushFrames();
+  assert.deepEqual(f.node('pet-overlay').style, original); assert.deepEqual(f.node('pet-overlay-hit').style, hit);
   f.view.emit('synora:pet-chat-layout', { detail: { open: false, height: 0 } }); f.flushFrames();
   assert.equal(f.node('pet-overlay').getBoundingClientRect().bottom, 592);
-  f.ui.destroy(); assert.equal(f.view.listeners.get('synora:pet-chat-layout').size, 0);
+  assert.deepEqual(f.node('pet-overlay').style, original); assert.deepEqual(f.node('pet-overlay-hit').style, hit);
+  f.ui.destroy(); assert.equal(f.view.listeners.get('synora:pet-chat-layout')?.size || 0, 0);
 });

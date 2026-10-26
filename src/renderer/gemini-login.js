@@ -60,7 +60,7 @@
     };
     const modeField = el('label', 'gemini-auth-mode-field', 'form-field'); modeField.hidden = true;
     const mode = el('select', 'gemini-auth-mode'); mode.name = 'geminiAuthMode';
-    for (const [value, label] of [['apiKey', 'API Key'], ['antigravity-agent', 'Google 账号 · Antigravity 官方代理'], ['gemini-account', '旧 Gemini CLI · 兼容连接']]) {
+    for (const [value, label] of [['apiKey', 'API Key'], ['antigravity-agent', 'Google 账号 · Antigravity 官方代理']]) {
       const option = el('option', '', '', label); option.value = value; mode.append(option);
     }
     mode.value = 'apiKey'; modeField.append(el('span', '', '', '连接方式'), mode); $('openai-auth-mode-field').after(modeField);
@@ -150,7 +150,9 @@
     const changed = () => { localError = null; onModeChange(); render(); };
     mode.addEventListener('change', changed); render();
     return Object.freeze({ render, isBusy: busy, isCancelling: () => cancelling,
-      fill(value = 'apiKey') { mode.value = value === 'gemini-account' || value === 'antigravity-agent' && getRole() == null ? value : 'apiKey'; localError = null; render(); },
+      // A saved legacy connection remains on disk. Opening this form only
+      // chooses an editable draft; it never migrates credentials or signs in.
+      fill(value = 'apiKey') { mode.value = value === 'antigravity-agent' && getRole() == null ? value : 'apiKey'; localError = null; render(); },
       clearError() { localError = null; render(); },
       destroy() { if (disposed) return; disposed = true; mode.removeEventListener('change', changed); modeField.remove(); panel.remove(); },
     });

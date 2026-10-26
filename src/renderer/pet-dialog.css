@@ -1,6 +1,8 @@
 .pet-speech-bubble, .pet-input-bubble { position: fixed; z-index: 110; box-sizing: border-box; padding: 12px 14px; border: 1px solid var(--ui-border, var(--line)); border-radius: 20px; background: var(--ui-raised, var(--panel)); color: var(--ui-text, var(--text)); box-shadow: 0 5px 18px rgb(0 0 0 / 16%); font-size: 13px; line-height: 1.6; text-align: left; -webkit-app-region: no-drag; transform-origin: bottom right; }
 .pet-speech-bubble { display: flex; flex-direction: column; max-height: min(350px, calc(100vh - 76px)); overflow: visible; }
-.pet-input-bubble { padding: 10px 12px; transform-origin: top center; }
+.pet-speech-bubble[data-blocking='true'] { max-height: min(560px, calc(100vh - 76px)); }
+.pet-input-bubble { display: flex; flex-direction: column; padding: 10px 12px; transform-origin: top center; }
+.pet-input-bubble .pet-dialog-form { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .pet-speech-bubble::after, .pet-input-bubble::after { content: ''; position: absolute; width: 12px; height: 12px; background: inherit; border-right: 1px solid var(--ui-border, var(--line)); border-bottom: 1px solid var(--ui-border, var(--line)); pointer-events: none; }
 .pet-speech-bubble::after { right: 24px; bottom: -7px; transform: rotate(45deg); }
 .pet-input-bubble::after { left: calc(50% - 6px); top: -7px; transform: rotate(225deg); }
@@ -15,6 +17,8 @@ html.pet-dialog-replaces-composer #task-form { display: none !important; }
 .pet-dialog-question { flex: 0 1 auto; min-height: 0; margin: 0; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; overscroll-behavior: contain; }
 .pet-dialog-options { display: grid; flex: 1 1 auto; min-height: 0; gap: 6px; max-height: 160px; overflow: auto; margin: 10px 0 0; overscroll-behavior: contain; }
 .pet-dialog-options:empty { display: none; }
+.pet-speech-bubble[data-blocking='true'] .pet-dialog-question { max-height: 260px; }
+.pet-speech-bubble[data-blocking='true'] .pet-dialog-options { max-height: 300px; }
 .pet-dialog-choice, .pet-dialog-button { border: 1px solid var(--ui-border, var(--line)); border-radius: 14px; background: var(--ui-control, var(--panel2)); color: inherit; padding: 6px 9px; cursor: pointer; font: inherit; }
 .pet-dialog-choice { text-align: left; overflow-wrap: anywhere; }
 .pet-dialog-choice:hover, .pet-dialog-button:hover, .pet-dialog-choice[aria-pressed='true'] { background: var(--ui-hover, var(--panel2)); border-color: var(--ui-accent, var(--accent)); }
@@ -29,5 +33,6 @@ html.pet-dialog-replaces-composer #task-form { display: none !important; }
 :is(.pet-speech-bubble, .pet-input-bubble) :is(button, textarea):focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
 :is(.pet-speech-bubble, .pet-input-bubble) :disabled { opacity: .65; cursor: default; }
 @media (max-height: 650px) { .pet-dialog-question { max-height: 120px; } .pet-dialog-options { max-height: 100px; } .pet-dialog-input { max-height: 76px; } }
+@media (max-height: 650px) { .pet-speech-bubble[data-blocking='true'] :is(.pet-dialog-question, .pet-dialog-options) { max-height: 180px; } }
 @media (prefers-reduced-motion: reduce) { :is(.pet-speech-bubble, .pet-input-bubble)[data-phase] { animation: none; } }
 @media (forced-colors: active) { .pet-speech-bubble, .pet-input-bubble { border-color: CanvasText; box-shadow: none; } }

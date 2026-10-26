@@ -46,8 +46,43 @@ function waitFor(operation, signal) {
 }
 function rpcError(_method, error) {
   const code = error?.data?.code || error?.code;
-  return fail(['auth_required', 'unauthorized', 'account-connection-unavailable'].includes(code) || /\b(?:unauthenticated|login required|not logged in)\b/iu.test(String(error?.message || '').slice(0, 8192))
-    ? 'ZCODE_AUTH_REQUIRED' : 'ZCODE_REQUEST_FAILED', '官方 ZCode 账号或任务请求未完成，请检查登录状态后重试。');
+  if (['auth_required', 'unauthorized', 'account-connection-unavailable'].includes(code) || /\b(?:unauthenticated|login required|not logged in)\b/iu.test(String(error?.message || '').slice(0, 8192)))
+    return fail('ZCODE_AUTH_REQUIRED', '官方 ZCode 账号验证未完成，请检查登录状态后重试。');
+  return nativeFailure(object(error?.data) ? error.data : error, 'ZCODE_REQUEST_FAILED', '官方 ZCode 账号或任务请求未完成，请检查账号状态后重试。');
+}
+function nativeFailure(error, fallbackCode = 'ZCODE_TASK_FAILED', fallbackMessage = '官方 ZCode 任务执行失败，请检查任务流程后重试。') {
+  // The native protocol provides structured provider attribution. Never publish
+  // raw messages/details/stacks: they may contain headers, paths or user data.
+  const detail = object(error) ? error : {}, attribution = object(detail.attribution) ? detail.attribution : {};
+  const providerCode = [attribution.providerErrorCode, detail.code].find(value => typeof value === 'string' && /^\d{4}$/u.test(value));
+  const status = Number.isInteger(attribution.statusCode) ? attribution.statusCode : null;
+  if (['1000', '1001', '1003', '1005'].includes(providerCode) || status === 401)
+    return fail('ZCODE_AUTH_REQUIRED', '官方 ZCode 账号验证未通过，请重新连接账号。');
+  // 1113 is an unavailable balance/resource package, not the 1302 rate limit.
+  // Definitions: https://docs.bigmodel.cn/cn/api/api-code
+  if (providerCode === '1113')
+    return fail('ZCODE_QUOTA_UNAVAILABLE', 'GLM 官方返回余额或可用资源包不足（1113），请在官方账号页面核对当前套餐与余额。');
+  if (['1309', '1314'].includes(providerCode))
+    return fail('ZCODE_PLAN_EXPIRED', 'GLM 官方返回套餐已到期或失效，请在官方账号页面检查套餐状态。');
+  if (['1308', '1310', '1316', '1317', '1318', '1319', '1320', '1321'].includes(providerCode))
+    return fail('ZCODE_PLAN_LIMIT', 'GLM 官方返回套餐用量已达到上限，请在官方账号页面查看额度与重置时间。');
+  if (['1220', '1311', '1315'].includes(providerCode) || status === 403)
+    return fail('ZCODE_MODEL_ACCESS_REQUIRED', 'GLM 官方账号当前没有所选模型或调用方式的权限，请检查套餐权益或选择其他可用模型。');
+  if (['1302', '1305', '1313'].includes(providerCode))
+    return fail('ZCODE_RATE_LIMITED', 'GLM 官方当前限制请求频率或模型繁忙，请稍后重试；持续受限时请在官方账号页面检查限制。');
+  if (status === 429)
+    return fail('ZCODE_REQUEST_LIMITED', 'GLM 官方暂时限制了本次请求（429），请检查账号额度或稍后重试。');
+  if (['1211', '1221', '1222'].includes(providerCode))
+    return fail('ZCODE_MODEL_UNAVAILABLE', 'GLM 官方未提供所选模型或接口，请刷新模型目录后重试。');
+  if (providerCode === '1261' || detail.type === 'model_context_exceeded')
+    return fail('ZCODE_CONTEXT_EXCEEDED', '官方 ZCode 请求超过模型上下文容量，请缩短本次内容或新建会话。');
+  if (detail.type === 'model_timeout' || ['timeout', 'stream_idle_timeout'].includes(attribution.reason))
+    return fail('ZCODE_TIMEOUT', '官方 ZCode 请求超时，请检查网络后重试。');
+  if (attribution.exceptionKind === 'transport' || ['network_error', 'stale_connection'].includes(attribution.reason))
+    return fail('ZCODE_NETWORK_ERROR', '官方 ZCode 无法完成网络连接，请检查代理与网络后重试。');
+  if (status >= 500 && status <= 599)
+    return fail('ZCODE_SERVICE_UNAVAILABLE', 'GLM 官方服务暂时不可用，请稍后重试。');
+  return fail(fallbackCode, fallbackMessage);
 }
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
@@ -339,7 +374,7 @@ export class ZCodeAgent {
       if (payload.resultType === 'cancelled') active.completion.reject(cancelled());
       else if (payload.resultType !== 'success') active.completion.reject(fail('ZCODE_TASK_FAILED', '官方 ZCode 任务未完整完成。'));
       else active.completion.resolve({ sessionId: active.session.id, stopReason: 'end_turn', usage, usageReported: Boolean(usage) });
-    } else if (event.type === 'turn.failed') active.completion.reject(fail('ZCODE_TASK_FAILED', '官方 ZCode 任务执行失败，请检查任务流程后重试。'));
+    } else if (event.type === 'turn.failed') active.completion.reject(nativeFailure(payload.error));
   }
   async #reverse(method, params) {
     const active = this.#active, valid = active && !active.controller.signal.aborted && active.profile === this.#profile && params?.sessionId === active.session?.id

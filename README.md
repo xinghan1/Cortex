@@ -34,7 +34,7 @@
 
 可用模型、会员 / Coding 套餐资格、额度及地区限制以官方账号实际返回为准，API Key 计费与订阅额度不能自动互换。控制台登录按钮只打开官方页面，不代表已向 Synora 授权。官方代理模式目前仅用于主会话；使用子智能体、AI 审批、Tab 补齐、侧栏问答或宠物模型时，需在 **设置 → 模型分工** 为对应功能单独配置可用连接。
 
-Google 已于 [2026 年 6 月 18 日停止个人、AI Pro 和 Ultra 的旧 Gemini CLI 服务](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)。保留的“旧 Gemini CLI · 兼容连接”入口仅适用于 Google 服务端仍支持的账号；个人账号可选择完整 Antigravity 官方代理，其可用资格与额度仍由 Google 决定。
+Google 已于 [2026 年 6 月 18 日停止个人、AI Pro 和 Ultra 的旧 Gemini CLI 服务](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)。模型设置只提供 Gemini API Key 和 Antigravity 官方代理两种新建入口；已有旧连接的本机资料继续保留，Antigravity 的可用资格与额度仍由 Google 决定。
 
 ## 插件开发
 

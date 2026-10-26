@@ -13,9 +13,11 @@
     const overlay = el('aside', 'pet-overlay', 'pet-overlay');
     overlay.hidden = true; overlay.setAttribute('aria-label', '桌面宠物');
     const video = el('video', 'pet-overlay-video', 'pet-overlay-video');
-    video.muted = true; video.playsInline = true; video.preload = 'auto'; video.tabIndex = 0;
+    video.muted = true; video.playsInline = true; video.preload = 'auto'; video.tabIndex = -1;
     video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
-    video.setAttribute('role', 'button'); video.setAttribute('aria-haspopup', 'menu');
+    video.setAttribute('aria-hidden', 'true');
+    const hit = el('button', 'pet-overlay-hit', 'pet-overlay-hit');
+    hit.type = 'button'; hit.setAttribute('aria-haspopup', 'menu');
     const gazeCanvas = el('canvas', 'pet-overlay-gaze', 'pet-overlay-gaze');
     gazeCanvas.hidden = true; gazeCanvas.setAttribute('aria-hidden', 'true');
     const fallback = el('button', 'pet-overlay-fallback', 'pet-overlay-fallback');
@@ -23,11 +25,11 @@
     fallback.setAttribute('aria-label', '打开宠物设置');
     const menu = el('div', 'pet-overlay-menu', 'pet-overlay-menu');
     menu.hidden = true; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', '宠物操作');
-    overlay.append(video, gazeCanvas, fallback); document.body.append(overlay, menu);
+    overlay.append(video, gazeCanvas, hit, fallback); document.body.append(overlay, menu);
     let state = { enabled: false, size: 220, x: 1, y: 1, workStatus: true, followCursor: true, packId: '', packs: [] };
     let disposed = false, revision = 0, writeRevision = 0, animationIndex = 0, currentKind = '', currentURL = '', mediaFailed = false;
     let running = false, waiting = false, workspaceId = '', phase = 'idle', drag = null, selectedPack = null;
-    let transient = false, chatReserve = 0, actionSequence = 0;
+    let transient = false, actionSequence = 0;
     const tools = new Set(), approvals = new Set(), listeners = new Set();
     const motion = view.matchMedia?.('(prefers-reduced-motion: reduce)');
     const reduced = () => motion?.matches === true;
@@ -54,23 +56,34 @@
         if (style?.display === 'none' || style?.visibility === 'hidden') continue;
         bottom = Math.min(bottom, Math.max(0, bounds.top - 8));
       }
-      bottom = Math.max(0, bottom - chatReserve);
       const minY = 46, size = Math.max(0, Math.min(state.size, width - 16, bottom - minY));
       return { size, noRoom: size < 48, minX: 8, minY,
         spanX: Math.max(0, width - size - 16), spanY: Math.max(0, bottom - size - minY) };
     };
     function position() {
+      if (disposed) return;
       const { size, noRoom, minX, minY, spanX, spanY } = frame(), wasHidden = overlay.hidden;
       overlay.style.width = `${size}px`; overlay.style.height = `${size}px`;
       overlay.style.left = `${minX + state.x * spanX}px`; overlay.style.top = `${minY + state.y * spanY}px`;
+      // Keep the full animation visible while only its character accepts input.
+      // The bundled 640x360 clips have large transparent margins; imported pets
+      // use their contained picture rectangle rather than that character's data.
+      const bundled = selectedPack?.id === 'dsh-pet';
+      const width = bundled ? 640 : video.videoWidth || 1;
+      const height = bundled ? 360 : video.videoHeight || 1;
+      const scale = size / Math.max(width, height);
+      const left = (size - width * scale) / 2, top = (size - height * scale) / 2;
+      const character = bundled ? { x: 192, y: 28, width: 244, height: 324 } : { x: 0, y: 0, width, height };
+      hit.style.left = `${left + character.x * scale}px`; hit.style.top = `${top + character.y * scale}px`;
+      hit.style.width = `${character.width * scale}px`; hit.style.height = `${character.height * scale}px`;
       overlay.hidden = !state.enabled || !selectedPack || noRoom;
       if (overlay.hidden) { video.pause(); closeMenu(); }
       else if (wasHidden) playback();
       syncGaze();
     }
     function closeMenu(restore = false) {
-      menu.hidden = true; video.setAttribute('aria-expanded', 'false');
-      if (restore && !overlay.hidden) video.focus?.({ preventScroll: true });
+      menu.hidden = true; hit.setAttribute('aria-expanded', 'false');
+      if (restore && !overlay.hidden) hit.focus?.({ preventScroll: true });
     }
     function playback() {
       const following = syncGaze();
@@ -86,7 +99,7 @@
       // Only the main process supplies validated, managed local WebM files.
       if (!entry || !/^file:\/\//iu.test(entry.url || '')) return;
       currentKind = kind; transient = once; overlay.dataset.animation = kind;
-      video.loop = !once; mediaFailed = false; fallback.hidden = true; video.hidden = false;
+      video.loop = !once; mediaFailed = false; fallback.hidden = true; video.hidden = false; hit.hidden = false;
       if (currentURL !== entry.url) { currentURL = entry.url; video.src = entry.url; video.load(); }
       else if (force) { try { video.currentTime = 0; } catch {} }
       const CustomEvent = view.CustomEvent || root.CustomEvent;
@@ -97,8 +110,8 @@
       selectedPack = state.packs.find(pack => pack.id === state.packId) || state.packs[0] || null;
       overlay.dataset.packId = selectedPack?.id || '';
       overlay.hidden = !state.enabled || !selectedPack;
-      video.setAttribute('aria-label', `${text(selectedPack?.name) || '宠物'}：左键聊天，拖动移动，右键打开菜单`);
-      video.setAttribute('aria-expanded', String(!menu.hidden));
+      hit.setAttribute('aria-label', `${text(selectedPack?.name) || '宠物'}：左键聊天，拖动移动，右键打开菜单`);
+      hit.setAttribute('aria-expanded', String(!menu.hidden));
       position();
       if (overlay.hidden) { video.pause(); closeMenu(); return; }
       play(state.workStatus ? phase : 'idle');
@@ -175,7 +188,7 @@
       addMenu('重置位置', () => { state.x = state.y = 1; position(); void save({ x: 1, y: 1 }).catch(() => {}); }, 'pet-overlay-reset');
       addMenu('宠物设置', onConfigure, 'pet-overlay-settings');
       addMenu('隐藏宠物', () => void save({ enabled: false }).catch(() => {}), 'pet-overlay-hide');
-      menu.hidden = false; video.setAttribute('aria-expanded', 'true');
+      menu.hidden = false; hit.setAttribute('aria-expanded', 'true');
       const bounds = menu.getBoundingClientRect();
       menu.style.left = `${bounded(clientX, 8, Math.max(8, (view.innerWidth || 1024) - bounds.width - 8), 8)}px`;
       menu.style.top = `${bounded(clientY, 8, Math.max(8, (view.innerHeight || 768) - bounds.height - 8), 8)}px`;
@@ -192,7 +205,7 @@
       closeMenu(); event.preventDefault();
       drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.x, y: state.y, moved: false };
       syncGaze();
-      video.setPointerCapture?.(event.pointerId);
+      hit.setPointerCapture?.(event.pointerId);
     };
     const pointerMove = event => {
       if (!drag || event.pointerId !== drag.id) return;
@@ -206,7 +219,7 @@
     const pointerEnd = event => {
       if (!drag || event.pointerId !== drag.id) return;
       const moved = drag.moved; drag = null; overlay.classList.remove('dragging');
-      if (video.hasPointerCapture?.(event.pointerId)) video.releasePointerCapture(event.pointerId);
+      if (hit.hasPointerCapture?.(event.pointerId)) hit.releasePointerCapture(event.pointerId);
       if (moved) { transient = false; play(state.workStatus ? phase : 'idle', false, true); void save({ x: state.x, y: state.y }).catch(() => {}); }
       else if (event.type !== 'pointercancel') openChat();
       syncGaze();
@@ -223,7 +236,7 @@
         position(); void save({ x: state.x, y: state.y }).catch(() => {});
       }
     };
-    const outside = event => { if (!menu.contains(event.target) && event.target !== video) closeMenu(); };
+    const outside = event => { if (!menu.contains(event.target) && event.target !== hit) closeMenu(); };
     const escape = event => {
       if (!menu.hidden && event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
       else if (!menu.hidden && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
@@ -232,7 +245,7 @@
       }
     };
     const ended = () => { if (transient) { transient = false; play(state.workStatus ? phase : 'idle', false, true); } };
-    const failed = () => { mediaFailed = true; video.pause(); video.hidden = true; fallback.hidden = false; syncGaze(); };
+    const failed = () => { mediaFailed = true; video.pause(); video.hidden = true; hit.hidden = true; fallback.hidden = false; syncGaze(); };
     const resized = () => { position(); closeMenu(); };
     let layoutFrame = null;
     const scheduleLayout = () => {
@@ -245,15 +258,10 @@
     const visibility = () => playback();
     const motionChanged = () => playback();
     const cursorMoved = event => { if (event.pointerType !== 'touch') gaze?.point({ x: event.clientX, y: event.clientY }); };
-    const chatLayout = event => {
-      const detail = event.detail;
-      const next = detail?.open === true ? bounded(detail.height, 0, view.innerHeight || 768, 0) : 0;
-      if (next === chatReserve) return;
-      chatReserve = next; scheduleLayout();
-    };
-    video.addEventListener('pointerdown', pointerDown); video.addEventListener('pointermove', pointerMove);
-    video.addEventListener('pointerup', pointerEnd); video.addEventListener('pointercancel', pointerEnd);
-    video.addEventListener('contextmenu', contextMenu); video.addEventListener('keydown', keyDown);
+    hit.addEventListener('pointerdown', pointerDown); hit.addEventListener('pointermove', pointerMove);
+    hit.addEventListener('pointerup', pointerEnd); hit.addEventListener('pointercancel', pointerEnd);
+    hit.addEventListener('contextmenu', contextMenu); hit.addEventListener('keydown', keyDown);
+    video.addEventListener('loadedmetadata', position);
     video.addEventListener('ended', ended); video.addEventListener('error', failed); video.addEventListener('loadeddata', playback);
     fallback.addEventListener('click', onConfigure); fallback.addEventListener('contextmenu', contextMenu);
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
@@ -261,7 +269,6 @@
     // The main process also supplies desktop cursor coordinates. Losing focus
     // or crossing the window edge must not stop a still-visible idle pet.
     document.addEventListener('pointermove', cursorMoved, { passive: true });
-    view.addEventListener?.('synora:pet-chat-layout', chatLayout);
     motion?.addEventListener?.('change', motionChanged);
     const layoutObserver = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(scheduleLayout) : null;
     const layoutRegions = new Set([...inputRegions, document.getElementById?.('message-scroll'), document.querySelector?.('.conversation')].filter(Boolean));
@@ -279,9 +286,9 @@
         document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
         document.removeEventListener('visibilitychange', visibility); view.removeEventListener?.('resize', resized);
         document.removeEventListener('pointermove', cursorMoved); gaze?.destroy();
-        view.removeEventListener?.('synora:pet-chat-layout', chatLayout);
         motion?.removeEventListener?.('change', motionChanged); layoutObserver?.disconnect();
         if (layoutFrame !== null) { view.cancelAnimationFrame(layoutFrame); layoutFrame = null; }
+        video.removeEventListener('loadedmetadata', position);
         video.pause(); video.removeAttribute('src'); video.load();
         overlay.remove(); menu.remove();
       },

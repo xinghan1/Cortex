@@ -202,6 +202,62 @@ test('turn failures and unsupported inputs never expose official account errors 
   const before = f.fake.calls.length; await assert.rejects(f.agent.runTask(task(f, { modeId: 'yolo' })), { code: 'ZCODE_INVALID_INPUT' }); await assert.rejects(f.agent.runTask(task(f, { attachments: [{ path: 'C:\\private.png' }] })), { code: 'ZCODE_INVALID_INPUT' }); assert.equal(f.fake.calls.length, before);
   await f.agent.disconnect(); assert.equal((await f.agent.publicState()).session.sharing, false); assert.equal(f.fake.children.some(child => child.args.includes('logout')), false);
 });
+
+test('structured native provider failures distinguish balance, plan quotas, rate limits and transport errors without leaking details', async t => {
+  const rows = [
+    ['balance', { code: '1113', attribution: { statusCode: 429, providerErrorCode: '1113', exceptionKind: 'provider_business', retryable: false } }, 'ZCODE_QUOTA_UNAVAILABLE', /余额|资源包/u],
+    ['plan window', { attribution: { statusCode: 429, providerErrorCode: '1308' } }, 'ZCODE_PLAN_LIMIT', /重置时间/u],
+    ['plan expired', { attribution: { statusCode: 429, providerErrorCode: '1309' } }, 'ZCODE_PLAN_EXPIRED', /到期/u],
+    ['model entitlement', { attribution: { statusCode: 429, providerErrorCode: '1311' } }, 'ZCODE_MODEL_ACCESS_REQUIRED', /权限/u],
+    ['rate limit', { attribution: { statusCode: 429, providerErrorCode: '1302' } }, 'ZCODE_RATE_LIMITED', /频率/u],
+    ['unknown 429', { attribution: { statusCode: 429 } }, 'ZCODE_REQUEST_LIMITED', /429/u],
+    ['missing model', { code: '1211' }, 'ZCODE_MODEL_UNAVAILABLE', /模型/u],
+    ['context', { type: 'model_context_exceeded' }, 'ZCODE_CONTEXT_EXCEEDED', /上下文/u],
+    ['network', { attribution: { exceptionKind: 'transport', reason: 'network_error' } }, 'ZCODE_NETWORK_ERROR', /网络/u],
+    ['timeout', { attribution: { exceptionKind: 'transport', reason: 'stream_idle_timeout' } }, 'ZCODE_TIMEOUT', /超时/u],
+    ['service', { attribution: { statusCode: 503 } }, 'ZCODE_SERVICE_UNAVAILABLE', /暂时不可用/u],
+    // Logs and free text must never be interpreted as provider status fields.
+    ['unstructured', { attribution: { statusCode: '429', providerErrorCode: 'PRIVATE_SECRET_1113' } }, 'ZCODE_TASK_FAILED', /任务执行失败/u],
+  ];
+  for (const [label, detail, code, message] of rows) await t.test(label, async subtest => {
+    const f = await fixture(subtest, { handler: ({ child, rpc }) => {
+      if (rpc?.method !== 'session/send') return false;
+      startAndHold(child, rpc);
+      child.event(rpc.params.sessionId, 'turn.failed', { inputId: rpc.params.inputId, error: {
+        type: 'unknown_error', message: 'PRIVATE_SECRET https://oauth/?code=SECRET', detail: 'PRIVATE_DETAIL',
+        underlyingErrorMessage: 'PRIVATE_UNDERLYING', stack: 'private-file.ts:429:1113', ...detail,
+      } }); return true;
+    } });
+    const connected = await f.agent.signIn();
+    await assert.rejects(f.agent.runTask(task(f)), error => error.code === code && message.test(error.message) && !/PRIVATE|SECRET|https:|private-file/u.test(error.message));
+    const state = await f.agent.publicState();
+    assert.equal(state.error.code, code); assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true);
+    assert.equal(state.session.profileId, connected.session.profileId);
+    assert.doesNotMatch(JSON.stringify(state), /PRIVATE|SECRET|https:|private-file/u);
+    assert.equal(f.fake.calls.filter(call => call.rpc.method === 'session/send').length, 1, 'A business failure must not automatically resubmit the task');
+    assert.deepEqual((await f.agent.listModels()).map(model => model.id), ['bigmodel/glm-fixture']);
+    assert.equal(f.fake.children.filter(child => child.args.includes('login')).length, 1, 'Quota and service failures preserve the existing login');
+  });
+});
+
+test('native authentication failure alone asks to reconnect while quota RPC failures retain the account', async t => {
+  for (const [label, detail, expectedCode, expectedStatus] of [
+    ['auth event', { attribution: { statusCode: 401, providerErrorCode: '1003' } }, 'ZCODE_AUTH_REQUIRED', 'reauth_required'],
+    ['quota RPC', { attribution: { statusCode: 429, providerErrorCode: '1113' } }, 'ZCODE_QUOTA_UNAVAILABLE', 'connected'],
+  ]) await t.test(label, async subtest => {
+    const f = await fixture(subtest, { handler: ({ child, rpc }) => {
+      if (rpc?.method !== 'session/send') return false;
+      if (label === 'quota RPC') child.send({ id: rpc.id, error: { code: -32603, message: 'PRIVATE_RPC_ERROR', data: detail } });
+      else { startAndHold(child, rpc); child.event(rpc.params.sessionId, 'turn.failed', { inputId: rpc.params.inputId, error: { message: 'PRIVATE_EVENT_ERROR', ...detail } }); }
+      return true;
+    } });
+    const connected = await f.agent.signIn();
+    await assert.rejects(f.agent.runTask(task(f)), { code: expectedCode });
+    const state = await f.agent.publicState();
+    assert.equal(state.session.status, expectedStatus); assert.equal(state.session.profileId, connected.session.profileId);
+    assert.doesNotMatch(JSON.stringify(state), /PRIVATE_/u);
+  });
+});
 test('a failed independent-profile login preserves only the unchanged previous account and cleans the new home', async t => {
   let deny = false;
   const f = await fixture(t, { handler: ({ child, login }) => { if (!login || !deny) return false; child.kill(); return true; } });
