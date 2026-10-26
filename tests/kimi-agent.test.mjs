@@ -55,6 +55,48 @@ const task = (f, extra = {}) => ({ localSessionId: 'local-1', cwd: f.dir, prompt
 const permission = sessionId => ({ sessionId, toolCall: { toolCallId: 'operation-1', title: '运行检查', kind: 'execute' }, options: [
   { optionId: 'allow', kind: 'allow_once', name: '允许一次' }, { optionId: 'reject', kind: 'reject_once', name: '拒绝' } ] });
 
+test('official reasoning labels and arbitrary values are scoped to the selected model and sent through ACP unchanged', async t => {
+  const state = new Map(); let next = 0;
+  const config = (model, effort = model === 'native-kimi' ? 'auto/8k' : 'off') => [
+    { id: 'official.model', category: 'model', type: 'select', currentValue: model, options: [{ value: 'native-kimi', name: 'Kimi' }, { value: 'other', name: 'Other' }] },
+    { id: 'official.thinking-budget', category: 'thought_level', type: 'select', currentValue: effort, defaultValue: model === 'native-kimi' ? 'auto/8k' : 'off',
+      options: model === 'native-kimi' ? [{ value: 'auto/8k', name: '自动 · 8K' }, { value: 'deep:32k', name: '深度 · 32K' }] : [{ value: 'off', name: '关闭' }] },
+  ];
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method === 'session/new') { const id = 'reasoning-' + ++next; state.set(id, 'native-kimi'); child.reply(rpc, { sessionId: id, configOptions: config('native-kimi') }); return true; }
+    if (rpc.method !== 'session/set_config_option') return false;
+    const { sessionId, configId, value } = rpc.params;
+    if (configId === 'official.model') { state.set(sessionId, value); child.reply(rpc, { configOptions: config(value) }); }
+    else { assert.equal(configId, 'official.thinking-budget'); child.reply(rpc, { configOptions: config(state.get(sessionId), value) }); }
+    return true;
+  } });
+  await f.agent.signIn(); const models = await f.agent.listModels();
+  assert.deepEqual(models[0].reasoningOptions, [{ value: 'auto/8k', label: '自动 · 8K' }, { value: 'deep:32k', label: '深度 · 32K' }]);
+  assert.equal(models[0].defaultReasoningEffort, 'auto/8k'); assert.equal(models[0].currentReasoningEffort, 'auto/8k'); assert.deepEqual(models[1].reasoningEfforts, []);
+  const other = await f.agent.listModels({ modelId: 'other' }); assert.deepEqual(other.find(model => model.id === 'other').reasoningEfforts, ['off']);
+  assert.equal(f.fake.calls.some(({ rpc }) => rpc.method === 'session/prompt'), false);
+  const first = await f.agent.runTask(task(f, { modelId: 'native-kimi', reasoningEffort: 'deep:32k' }));
+  const second = await f.agent.runTask(task(f, { modelId: 'native-kimi', reasoningEffort: 'default' })); assert.equal(second.sessionId, first.sessionId);
+  assert.deepEqual(f.fake.calls.filter(({ rpc }) => rpc.params?.configId === 'official.thinking-budget').map(({ rpc }) => rpc.params.value), ['deep:32k', 'auto/8k']);
+  await assert.rejects(f.agent.runTask(task(f, { modelId: 'other', reasoningEffort: 'deep:32k' })), { code: 'KIMI_REASONING_UNAVAILABLE' });
+  assert.equal(f.fake.calls.filter(({ rpc }) => rpc.method === 'session/prompt').length, 2);
+});
+
+test('returning to official management without a declared default starts a fresh native session with visible context', async t => {
+  let next = 0;
+  const config = value => [{ ...modelInfo.configOptions[0], currentValue: 'native-kimi' }, { id: 'thinking', category: 'thought_level', type: 'select', currentValue: value,
+    options: [{ value: 'off', name: 'Off' }, { value: 'on', name: 'On' }] }];
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method === 'session/new') { child.reply(rpc, { sessionId: 'managed-' + ++next, configOptions: config('off') }); return true; }
+    if (rpc.method === 'session/set_config_option') { child.reply(rpc, { configOptions: config(rpc.params.value) }); return true; } return false;
+  } }); await f.agent.signIn();
+  const first = await f.agent.runTask(task(f, { reasoningEffort: 'on' }));
+  const second = await f.agent.runTask(task(f, { reasoningEffort: 'default', contextMessages: [{ role: 'user', content: 'AUTHORIZED_VISIBLE_HISTORY' }] }));
+  assert.notEqual(second.sessionId, first.sessionId);
+  assert.match(f.fake.calls.filter(({ rpc }) => rpc.method === 'session/prompt').at(-1).rpc.params.prompt[0].text, /AUTHORIZED_VISIBLE_HISTORY/);
+  assert.equal(f.fake.calls.filter(({ rpc }) => rpc.params?.configId === 'thinking').length, 1);
+});
+
 test('official terminal login runs in a fresh isolated profile and exposes only documented public URL and code', async t => {
   const states = []; let f; f = await fixture(t, { onChange: async () => { if (f) states.push(await f.agent.publicState()); }, getProxyEnv: () => ({ HTTPS_PROXY: 'http://127.0.0.1:9911', KIMI_CODE_OAUTH_HOST: 'https://evil.example', KIMI_API_KEY: 'PRIVATE' }) });
   assert.equal((await f.agent.publicState()).session.status, 'disconnected'); assert.equal(f.fake.children.length, 0);

@@ -59,6 +59,41 @@ const permission = sessionId => ({ sessionId, toolCall: { toolCallId: 'operation
 const modelOptions = ids => [{ id: 'model', name: 'Model', type: 'select', currentValue: ids[0],
   options: [{ group: 'official', name: 'Official', options: ids.map(value => ({ value, name: value })) }] }];
 
+test('ACP reasoning uses official option ids, values and labels and discards stale model capabilities', async t => {
+  let next = 0;
+  const config = (model, value = 'budget/8192') => [{ ...modelOptions(['first', 'second'])[0], currentValue: model },
+    ...(model === 'first' ? [{ id: 'agy.native-budget', category: 'thought_level', type: 'select', currentValue: value,
+      options: [{ group: 'native', name: 'Official', options: [{ value: 'budget/8192', name: 'Balanced · 8K' }, { value: 'budget/65536', name: 'Deep · 64K' }] }] }] : [])];
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method === 'session/new') { child.reply(rpc, { sessionId: 'reasoning-' + ++next, configOptions: config('first') }); return true; }
+    if (rpc.method !== 'session/set_config_option') return false;
+    if (rpc.params.configId === 'model') {
+      child.update('foreign-session', { sessionUpdate: 'config_option_update', configOptions: config('first') });
+      child.update(rpc.params.sessionId, { sessionUpdate: 'config_option_update', configOptions: config(rpc.params.value) }); child.reply(rpc, {});
+    } else { assert.equal(rpc.params.configId, 'agy.native-budget'); child.reply(rpc, { configOptions: config('first', rpc.params.value) }); }
+    return true;
+  } }); await f.agent.signIn();
+  const models = await f.agent.listModels(); assert.deepEqual(models[0].reasoningOptions, [{ value: 'budget/8192', label: 'Balanced · 8K' }, { value: 'budget/65536', label: 'Deep · 64K' }]);
+  assert.deepEqual(models[1].reasoningEfforts, []); assert.equal(models[0].defaultReasoningEffort, undefined);
+  const selected = await f.agent.listModels({ modelId: 'second' }); assert.ok(selected.every(model => !model.reasoningEfforts.length));
+  assert.equal(f.fake.calls.some(({ rpc }) => rpc.method === 'session/prompt'), false);
+  const first = await f.agent.runTask(task(f, { modelId: 'first', reasoningEffort: 'budget/65536' }));
+  const managed = await f.agent.runTask(task(f, { modelId: 'first', reasoningEffort: 'default', contextMessages: [{ role: 'user', content: 'VISIBLE_CONTEXT' }] }));
+  assert.notEqual(managed.sessionId, first.sessionId);
+  assert.match(f.fake.calls.filter(({ rpc }) => rpc.method === 'session/prompt').at(-1).rpc.params.prompt[0].text, /VISIBLE_CONTEXT/);
+  await assert.rejects(f.agent.runTask(task(f, { modelId: 'second', reasoningEffort: 'budget/65536' })), { code: 'AGY_REASONING_UNAVAILABLE' });
+  assert.equal(f.fake.calls.filter(({ rpc }) => rpc.method === 'session/prompt').length, 2);
+});
+
+test('a model change without fresh configuration cannot reuse the previous model reasoning menu', async t => {
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc.method !== 'session/new') return false;
+    child.reply(rpc, { sessionId: 'legacy-reasoning', configOptions: [...modelOptions(['first', 'second']), { id: 'budget', category: 'thought_level', type: 'select', currentValue: 'huge', options: [{ value: 'huge', name: 'Huge' }] }] }); return true;
+  } }); await f.agent.signIn();
+  await assert.rejects(f.agent.runTask(task(f, { modelId: 'second', reasoningEffort: 'huge' })), { code: 'AGY_REASONING_UNAVAILABLE' });
+  assert.equal(f.fake.calls.some(({ rpc }) => rpc.method === 'session/prompt'), false);
+});
+
 test('a current-turn plain Google region denial cannot finish as a completed task and does not revoke login', async t => {
   let denied = true;
   const f = await fixture(t, { handler: ({ child, rpc }) => {

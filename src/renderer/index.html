@@ -315,10 +315,12 @@
     <form id="settings-form">
       <div class="dialog-header"><h2 id="settings-title">主模型设置</h2><button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button></div>
       <p id="settings-scope-hint" class="settings-scope-hint" hidden></p>
-      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="gemini">Google · Gemini</option><option value="kimi">Kimi · Moonshot</option><option value="glm">GLM · 智谱 / Z.AI</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
-      <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">ChatGPT 账号 · 个人本机预览</option></select></label>
-      <label id="kimi-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="kimi-auth-mode"><option value="apiKey">API Key</option><option value="kimi-agent">Kimi 官方代理账号登录</option></select></label>
-      <label id="glm-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="glm-auth-mode"><option value="apiKey">API Key</option><option value="glm-agent">ZCode 官方代理账号登录</option></select></label>
+      <label class="form-field"><span>模型服务商</span><select id="provider-select" name="provider"><option value="openai">OpenAI · GPT</option><option value="deepseek">DeepSeek</option><option value="gemini">Google · Gemini</option><option value="kimi">Kimi · Moonshot</option><option value="glm">GLM · 智谱 / Z.AI</option><option value="doubao">豆包 · 火山方舟</option><option value="anthropic">Anthropic · Claude</option><option value="relay">中转站</option><option value="ollama">Ollama · 本机 / 自建服务</option></select></label>
+      <label id="openai-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="openai-auth-mode" name="authMode"><option value="apiKey">API Key</option><option value="chatgpt">账号登录</option></select></label>
+      <label id="kimi-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="kimi-auth-mode"><option value="apiKey">API Key</option><option value="kimi-agent">账号登录</option></select></label>
+      <label id="glm-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="glm-auth-mode"><option value="apiKey">API Key</option><option value="glm-agent">账号登录</option></select></label>
+      <label id="anthropic-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="anthropic-auth-mode"><option value="apiKey">API Key</option><option value="claude-agent">账号登录</option></select></label>
+      <label id="doubao-auth-mode-field" class="form-field" hidden><span>连接方式</span><select id="doubao-auth-mode"><option value="apiKey">API Key</option><option value="ark-account">账号登录</option></select></label>
       <label id="api-protocol-field" class="form-field" hidden><span>接口协议</span><select id="api-protocol-select" name="apiProtocol"><option value="chat-completions">Chat Completions · 兼容接口</option><option value="responses">Responses</option></select><small id="api-protocol-help">按服务商文档选择调用协议。</small></label>
       <section id="chatgpt-panel" class="chatgpt-panel" aria-label="ChatGPT 账号授权" hidden>
         <div class="chatgpt-status-row"><strong id="chatgpt-status">未连接</strong><span id="chatgpt-identity"></span></div>
@@ -332,7 +334,7 @@
           <button id="chatgpt-disconnect" class="button" type="button" disabled>退出账号</button>
         </div>
         <div class="chatgpt-secondary-actions"><button id="chatgpt-open-usage" class="text-button" type="button">管理套餐用量 ↗</button><button id="chatgpt-refresh-models" class="text-button" type="button" disabled>刷新模型目录</button></div>
-        <p class="chatgpt-help">在官方页面登录并授权套餐，无需 API Key。需要符合条件的 Plus / Pro 账号；此模式供个人本机预览。</p>
+        <p class="chatgpt-help">在官方页面登录并授权，无需 API Key。可用模型与额度以账号实际权限为准。</p>
         <p id="chatgpt-message" class="chatgpt-message" role="status" hidden></p>
       </section>
       <label id="base-url-field" class="form-field"><span id="base-url-label">Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"></label>

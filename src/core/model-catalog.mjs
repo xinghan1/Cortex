@@ -1,3 +1,4 @@
+import { DOUBAO_BASE_URL, DOUBAO_DOC_MODELS, DOUBAO_MODELS_SOURCE, officialDoubao } from './doubao-contracts.mjs';
 import { createHash } from 'node:crypto';
 import { ollamaEndpoint } from './ollama-endpoint.mjs';
 import { officialVendor, documentedEfforts, GLM_DOC_MODELS } from './kimi-glm-contracts.mjs';
@@ -8,7 +9,7 @@ import { officialVendor, documentedEfforts, GLM_DOC_MODELS } from './kimi-glm-co
 // https://platform.claude.com/docs/en/api/models/list
 // https://ai.google.dev/api/models
 const DEFAULTS = { openai: 'https://api.openai.com/v1', deepseek: 'https://api.deepseek.com', gemini: 'https://generativelanguage.googleapis.com/v1beta',
-  kimi: 'https://api.moonshot.cn/v1', glm: 'https://open.bigmodel.cn/api/paas/v4', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
+  doubao: DOUBAO_BASE_URL, kimi: 'https://api.moonshot.cn/v1', glm: 'https://open.bigmodel.cn/api/paas/v4', anthropic: 'https://api.anthropic.com/v1', relay: '', ollama: 'http://localhost:11434' };
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const CAPACITY_ORIGINS = new Set(['provider', 'account', 'official-default']);
 // Verified against each exact official model page on 2026-10-24. Account
@@ -114,8 +115,9 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
       // Re-deriving a sanitized API catalog need not carry officialSource.
       // Preserving provenance grants no new capacity or model capability.
       result.contextWindowOrigin = origin === 'account' && provider === 'openai' ? 'account'
-        : origin === 'official-default' && provider === 'openai' && result.contextWindowKind === 'total'
-          && OFFICIAL_OPENAI_CONTEXT_WINDOWS[id] === capacity ? 'official-default' : 'provider';
+        : origin === 'official-default' && result.contextWindowKind === 'total'
+          && (provider === 'openai' && OFFICIAL_OPENAI_CONTEXT_WINDOWS[id] === capacity
+            || provider === 'doubao' && DOUBAO_DOC_MODELS.some(value => value.id === id && value.contextWindow === capacity)) ? 'official-default' : 'provider';
       break;
     }
   }
@@ -124,6 +126,16 @@ export function deriveModelCapabilities(provider, id, metadata = {}) {
   // native/CLI Gemini at its own default until exact supported levels have
   // been verified; never translate another provider's effort aliases.
   if (provider === 'gemini') { supported = []; defaultLevel = undefined; }
+  if (metadata.officialSource === true && provider === 'doubao') {
+    const documented = DOUBAO_DOC_MODELS.find(value => value.id === id);
+    if (documented) {
+      if (supported === undefined) supported = [...documented.reasoningEfforts];
+      if (defaultLevel === undefined) defaultLevel = documented.defaultReasoningEffort;
+      for (const key of ['contextWindow', 'maxOutputTokens', 'supportsImages', 'supportsTools', 'textCompatible', 'compatible'])
+        if (metadata[key] === undefined && result[key] === undefined) result[key] = documented[key];
+      if (result.contextWindow !== undefined) { result.contextWindowKind ||= 'total'; result.contextWindowOrigin ||= 'official-default'; }
+    }
+  }
   if (metadata.officialSource === true && supported === undefined && ['kimi', 'glm'].includes(provider))
     supported = documentedEfforts(provider, id);
   if (typeof metadata.supportsTools === 'boolean') result.supportsTools = metadata.supportsTools;
@@ -248,7 +260,7 @@ function officialEndpoint(provider, url) {
     || (provider === 'deepseek' && url.origin === 'https://api.deepseek.com' && ['/models', '/v1/models'].includes(url.pathname))
     || (provider === 'anthropic' && url.origin === 'https://api.anthropic.com' && url.pathname === '/v1/models')
     || (provider === 'gemini' && url.origin === 'https://generativelanguage.googleapis.com' && ['/v1/models', '/v1beta/models'].includes(url.pathname))
-    || officialVendor(provider, url.href);
+    || officialVendor(provider, url.href) || provider === 'doubao' && officialDoubao(url.href);
 }
 
 function credentialForms(key) {
@@ -269,7 +281,7 @@ function containsCredential(value, secrets) {
   return false;
 }
 
-function normalizeModel(provider, item, officialSource, secrets) {
+function normalizeModel(provider, item, officialSource, secrets, contextWindowOrigin = 'provider') {
   if (provider === 'kimi' && object(item)) item = { ...item,
     ...(typeof item.supports_image_in === 'boolean' ? { supportsImages: item.supports_image_in } : {}) };
   if (provider === 'gemini' && object(item)) {
@@ -293,7 +305,7 @@ function normalizeModel(provider, item, officialSource, secrets) {
   const name = (provider === 'gemini' ? [item.displayName, item.display_name, item.name] : [item.display_name, item.name, item.displayName])
     .find(value => typeof value === 'string' && value.trim() && value.length <= 300 && !/[\u0000-\u001f\u007f]/.test(value));
   const model = { id: item.id, displayName: name || item.id,
-    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource, contextWindowOrigin: 'provider',
+    ...deriveModelCapabilities(provider, item.id, { ...item, officialSource, contextWindowOrigin,
       // Raw server `compatible:false` is an explicit protocol denial. Only our
       // previously normalized text-only result may carry that flag alongside
       // textCompatible:true; contradictory raw advertisements cannot override it.
@@ -376,6 +388,12 @@ export class ModelCatalog {
     const cacheKey = `${provider}\0${endpoint.href}\0${createHash('sha256').update(key).digest('hex')}${provider === 'ollama' ? `\0${contextWindowTokens}` : ''}`;
     const cached = this.#cache.get(cacheKey);
     if (!force && cached && cached.expiresAt > this.#clock()) return clone(cached.result);
+    if (provider === 'doubao' && officialDoubao(endpoint.href)) {
+      const result = { models: DOUBAO_DOC_MODELS.map(model => normalizeModel('doubao', model, true, secrets, 'official-default')),
+        fetchedAt: new Date(this.#clock()).toISOString(), source: 'official-docs', sourceUrl: DOUBAO_MODELS_SOURCE };
+      this.#cache.set(cacheKey, { result, expiresAt: this.#clock() + this.#ttlMs });
+      return clone(result);
+    }
     if (provider === 'glm' && officialVendor('glm', endpoint.href)) {
       const result = { models: GLM_DOC_MODELS.map(model => normalizeModel('glm', model, true, secrets)),
         fetchedAt: new Date(this.#clock()).toISOString(), source: 'official-docs',

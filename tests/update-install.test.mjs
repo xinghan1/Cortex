@@ -16,6 +16,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const officialComponents = ['antigravity', 'kimiAgent', 'glmAgent', 'claudeAgent', 'arkAccount', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime', 'claudeRuntime'];
 const verifiedPath = 'C:\\Users\\测试\\updates & safe\\Synora-code-Setup-0.18.4-x64.exe';
 function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches = 0, componentFlushes = {} } = {}) {
   const calls = [], spawns = [], windows = new Map();
@@ -31,7 +32,7 @@ function fixture({ completions = [], restoreFlush, capacityFlush, failLaunches =
     };
     windows.set(index, host);
   }
-  const agents = Object.fromEntries(['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime'].map(name => [name, {
+  const agents = Object.fromEntries(officialComponents.map(name => [name, {
     cancelSignIn: () => calls.push(`cancel-signin:${name}`), cancel: () => calls.push(`cancel-runtime:${name}`),
     dispose: async () => { calls.push(`dispose:${name}`); await componentFlushes[name]; calls.push(`disposed:${name}`); },
   }]));
@@ -106,13 +107,21 @@ test('installer launch receives only the verified path and NSIS flags with shell
 });
 
 test('restart installation waits for native Agent and runtime disposal before bypassing the ordinary quit handler', async () => {
-  const agent = deferred(), runtime = deferred(), f = fixture({ componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise } });
+  const agent = deferred(), runtime = deferred(), claude = deferred(), claudeRuntime = deferred(), ark = deferred();
+  const f = fixture({ componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise,
+    claudeAgent: claude.promise, claudeRuntime: claudeRuntime.promise, arkAccount: ark.promise } });
   const installing = f.install(); await tick();
-  for (const name of ['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime']) assert.ok(f.calls.includes(`dispose:${name}`), name);
+  for (const name of officialComponents) assert.ok(f.calls.includes(`dispose:${name}`), name);
+  assert.ok(f.calls.includes('cancel-signin:claudeAgent') && f.calls.includes('cancel-runtime:claudeRuntime') && f.calls.includes('cancel-signin:arkAccount'));
   assert.equal(f.calls.includes('quit'), false); assert.equal(f.context.quitting, false);
   agent.resolve(); await tick(); assert.ok(f.calls.includes('disposed:kimiAgent')); assert.equal(f.calls.includes('quit'), false);
-  runtime.resolve(); await installing; assert.equal(f.calls.filter(call => call === 'quit').length, 1);
-  assert.ok(f.calls.indexOf('disposed:glmRuntime') < f.calls.indexOf('quit'));
+  runtime.resolve(); await tick(); assert.equal(f.calls.includes('quit'), false);
+  claude.resolve(); await tick(); assert.ok(f.calls.includes('disposed:claudeAgent')); assert.equal(f.calls.includes('quit'), false);
+  claudeRuntime.resolve(); await tick(); assert.ok(f.calls.includes('disposed:claudeRuntime')); assert.equal(f.calls.includes('quit'), false);
+  ark.resolve(); await installing; assert.equal(f.calls.filter(call => call === 'quit').length, 1);
+  for (const name of ['glmRuntime', 'claudeAgent', 'claudeRuntime', 'arkAccount']) {
+    assert.ok(f.calls.indexOf(`disposed:${name}`) < f.calls.indexOf('quit'));
+  }
 });
 
 test('spawn failure keeps the app open, restores each original window state and permits an explicit retry', async () => {

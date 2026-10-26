@@ -15,6 +15,7 @@ assert.ok(beforeQuitSource.startsWith("app.on('before-quit',"));
 assert.ok(shutdownSource.startsWith('async function shutdown()'));
 assert.ok(traySource.startsWith('backgroundTray = createBackgroundTray({'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const officialComponents = ['antigravity', 'kimiAgent', 'glmAgent', 'claudeAgent', 'arkAccount', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime', 'claudeRuntime'];
 const deferred = () => {
   let resolve, reject;
   const promise = new Promise((pass, fail) => { resolve = pass; reject = fail; });
@@ -62,7 +63,7 @@ function fixture({ runtimes = [{}], restoreFlush = Promise.resolve(), capacityFl
     if (!next.prevented) calls.push('app:exit');
   } };
   const account = name => ({ cancelSignIn: () => calls.push(`cancel-signin:${name}`) });
-  const agents = Object.fromEntries(['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime'].map(name => [name, {
+  const agents = Object.fromEntries(officialComponents.map(name => [name, {
     cancelSignIn: () => calls.push(`cancel-signin:${name}`), cancel: () => calls.push(`cancel-runtime:${name}`),
     dispose: async () => { calls.push(`dispose:${name}`); await componentFlushes[name]; calls.push(`disposed:${name}`); },
   }]));
@@ -145,14 +146,20 @@ test('idle explicit quit flushes pending shared storage and rejects duplicate qu
 
 test('both busy and idle explicit exits wait for every native Agent and runtime process tree before allowing app exit', async () => {
   for (const busy of [false, true]) {
-    const agent = deferred(), runtime = deferred(), f = fixture({ runtimes: [{ busy }], componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise } });
+    const agent = deferred(), runtime = deferred(), claude = deferred(), claudeRuntime = deferred(), ark = deferred();
+    const f = fixture({ runtimes: [{ busy }], componentFlushes: { kimiAgent: agent.promise, glmRuntime: runtime.promise,
+      claudeAgent: claude.promise, claudeRuntime: claudeRuntime.promise, arkAccount: ark.promise } });
     f.requestQuit(); await tick();
-    for (const name of ['antigravity', 'kimiAgent', 'glmAgent', 'antigravityRuntime', 'kimiRuntime', 'glmRuntime']) assert.ok(f.calls.includes(`dispose:${name}`), name);
+    for (const name of officialComponents) assert.ok(f.calls.includes(`dispose:${name}`), name);
     assert.ok(f.calls.includes('cancel-signin:kimiAgent') && f.calls.includes('cancel-runtime:glmRuntime'));
+    assert.ok(f.calls.includes('cancel-signin:claudeAgent') && f.calls.includes('cancel-runtime:claudeRuntime') && f.calls.includes('cancel-signin:arkAccount'));
     assert.equal(f.context.quitting, 'pending'); assert.equal(f.calls.includes('app:exit'), false);
     agent.resolve(); await tick(); assert.ok(f.calls.includes('disposed:kimiAgent')); assert.equal(f.calls.includes('app:exit'), false);
-    runtime.resolve(); await tick(); assert.equal(f.calls.filter(call => call === 'app:exit').length, 1);
-    assert.ok(f.calls.indexOf('disposed:glmRuntime') < f.calls.indexOf('app:exit'));
+    runtime.resolve(); await tick(); assert.equal(f.calls.includes('app:exit'), false);
+    claude.resolve(); await tick(); assert.ok(f.calls.includes('disposed:claudeAgent')); assert.equal(f.calls.includes('app:exit'), false);
+    claudeRuntime.resolve(); await tick(); assert.ok(f.calls.includes('disposed:claudeRuntime')); assert.equal(f.calls.includes('app:exit'), false);
+    ark.resolve(); await tick(); assert.equal(f.calls.filter(call => call === 'app:exit').length, 1);
+    for (const name of ['glmRuntime', 'claudeAgent', 'claudeRuntime', 'arkAccount']) assert.ok(f.calls.indexOf(`disposed:${name}`) < f.calls.indexOf('app:exit'));
   }
 });
 

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { ExternalAcpClient, killAntigravityProcessTree } from './antigravity-agent.mjs';
 import { externalAgentPrompt } from './external-agent-context.mjs';
+import { officialReasoningValue, acpModelOption, acpModelsWithReasoning, updateAcpConfig, requestAcpConfig, needsAcpReasoningReset, setAcpReasoning } from './official-agent-reasoning.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value, max = 512) => typeof value === 'string' && value.length <= max && !/[\x00-\x1f\x7f]/u.test(value);
@@ -43,9 +44,10 @@ function rpcError(method, error) {
 }
 function sessionMetadata(session, supportsImages) {
   const configOptions = Array.isArray(session?.configOptions) ? session.configOptions : [];
+  if (configOptions.length > 256 || JSON.stringify(configOptions).length > 1024 * 1024) throw invalid();
   let rows = session?.models?.availableModels;
   if (!Array.isArray(rows)) {
-    const option = configOptions.find(row => row?.category === 'model' && row?.type === 'select');
+    const option = acpModelOption({ configOptions });
     rows = option?.options?.flatMap(row => Array.isArray(row?.options) ? row.options : [row])?.map(row => ({ modelId: row?.value, name: row?.name }));
   }
   if (!Array.isArray(rows) || rows.length > 256) rows = [];
@@ -57,7 +59,8 @@ function sessionMetadata(session, supportsImages) {
   }
   const modes = (Array.isArray(session?.modes?.availableModes) ? session.modes.availableModes : []).slice(0, 64)
     .filter(row => identifier(row?.id)).map(row => ({ id: row.id, name: text(row.name, 256) ? row.name : row.id }));
-  return { models, modes, configOptions: structuredClone(configOptions) };
+  const currentModelId = acpModelOption({ configOptions })?.currentValue ?? session?.models?.currentModelId;
+  return { models: acpModelsWithReasoning(models, { configOptions, currentModelId }), modes, currentModelId, configOptions: structuredClone(configOptions) };
 }
 function promptBlocks(prompt, attachments, capabilities) {
   if (typeof prompt !== 'string' || !prompt.trim() || Buffer.byteLength(prompt) > 4 * 1024 * 1024 || !Array.isArray(attachments) || attachments.length > 20)
@@ -92,7 +95,7 @@ export function kimiLoginPublicLine(line) {
 // reads its credentials, invokes a model API, or supplies Synora tool schemas.
 export class KimiAgent {
   #dir; #profiles; #work; #file; #runtime; #spawn; #kill; #proxy; #onChange; #onEvent; #permission; #version; #platform;
-  #client = null; #starting = null; #startup = null; #closing = new Set(); #capabilities = {};
+  #client = null; #starting = null; #startup = null; #closing = new Set(); #capabilities = {}; #catalogCollectors = new Set();
   #profile = null; #region = 'mainland-cn'; #models = []; #modes = []; #sessions = new Map(); #active = null; #attempt = null;
   #epoch = 0; #closed = false; #state = 'idle'; #error = null; #storageError = false; #initialized = null; #writes = Promise.resolve();
   #timeout; #startTimeout; #loginTimeout; #stopGrace;
@@ -257,31 +260,46 @@ export class KimiAgent {
   async cancelSignIn() { ++this.#epoch; this.#attempt?.controller.abort(); this.#startup?.abort(); await this.#attempt?.done.catch(() => {}); return this.publicState(); }
   #usable() { if (this.#closed) throw fail('KIMI_CLOSED', 'Kimi 代理已关闭。'); if (!this.#profile || this.#storageError || this.#error?.code === 'KIMI_AUTH_REQUIRED') throw fail('KIMI_AUTH_REQUIRED', '请先连接官方 Kimi 账号。'); if (this.#attempt) throw fail('KIMI_BUSY', '请等待 Kimi 登录完成。'); return this.#profile; }
   async #session(client, cwd, signal, existing) {
-    let response;
-    if (existing) {
-      try { response = await client.request('session/resume', { sessionId: existing.id, cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout }); }
-      catch (error) { if (error?.code !== 'KIMI_SESSION_FAILED' || signal?.aborted) throw error; existing = null; }
-    }
-    if (!existing) response = await client.request('session/new', { cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout });
-    const id = existing?.id || response?.sessionId; if (!identifier(id)) throw invalid();
-    return { id, cwd, profile: this.#profile, live: true, fresh: !existing, ...sessionMetadata(response, this.#capabilities?.promptCapabilities?.image) };
+    let response; const updates = new Map();
+    const collect = params => { if (identifier(params?.sessionId) && params.update?.sessionUpdate === 'config_option_update' && (updates.has(params.sessionId) || updates.size < 8)) updates.set(params.sessionId, params.update.configOptions); };
+    this.#catalogCollectors.add(collect);
+    try {
+      if (existing) {
+        try { response = await client.request('session/resume', { sessionId: existing.id, cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout }); }
+        catch (error) { if (error?.code !== 'KIMI_SESSION_FAILED' || signal?.aborted) throw error; existing = null; }
+      }
+      if (!existing) response = await client.request('session/new', { cwd, mcpServers: [] }, { signal, timeoutMs: this.#startTimeout });
+      const id = existing?.id || response?.sessionId; if (!identifier(id)) throw invalid();
+      if (updates.has(id)) response = { ...response, configOptions: updates.get(id) };
+      return { id, cwd, profile: this.#profile, live: true, fresh: !existing, resumed: Boolean(existing), ...sessionMetadata(response, this.#capabilities?.promptCapabilities?.image) };
+    } finally { this.#catalogCollectors.delete(collect); }
   }
-  async listModels({ cwd = this.#work, signal } = {}) {
+  async #selectModel(client, session, modelId, signal) {
+    if (!session.models.some(model => model.id === modelId)) throw fail('KIMI_MODEL_UNAVAILABLE', 'Kimi 账号未提供所选模型，请刷新目录。');
+    const option = acpModelOption(session);
+    await requestAcpConfig({ client, session, method: option?.id ? 'session/set_config_option' : 'session/set_model',
+      params: option?.id ? { sessionId: session.id, configId: option.id, value: modelId } : { sessionId: session.id, modelId },
+      options: { signal, timeoutMs: this.#startTimeout }, collectors: this.#catalogCollectors, modelId });
+  }
+  async listModels({ cwd = this.#work, modelId, signal } = {}) {
     await this.init(); const profile = this.#usable(), epoch = this.#epoch; check(signal);
     if (this.#active) return structuredClone(this.#models);
-    if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd)) throw fail('KIMI_INVALID_INPUT', 'Kimi 工作目录无效。');
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd) || modelId !== undefined && !identifier(modelId)) throw fail('KIMI_INVALID_INPUT', 'Kimi 工作目录或模型无效。');
     let session, client;
     try {
       client = await this.initialize({ signal }); await client.request('authenticate', { methodId: 'login' }, { signal, timeoutMs: this.#startTimeout });
-      session = await this.#session(client, cwd, signal); check(signal); if (profile !== this.#profile || epoch !== this.#epoch) throw cancelled();
+      session = await this.#session(client, cwd, signal); if (modelId) await this.#selectModel(client, session, modelId, signal);
+      check(signal); if (profile !== this.#profile || epoch !== this.#epoch) throw cancelled();
       this.#models = session.models; this.#modes = session.modes; this.#error = null; this.#changed(); return structuredClone(this.#models);
     } catch (error) { const safe = safeError(error); if (safe.name !== 'AbortError') this.#setError(safe, 'model-list'); throw safe; }
     finally { if (session && client?.alive) await client.request('session/close', { sessionId: session.id }, { timeoutMs: this.#startTimeout }).catch(() => {}); }
   }
   #update(params) {
+    for (const collect of this.#catalogCollectors) collect(params);
     const active = this.#active;
     if (!active || active.controller.signal.aborted || active.profile !== this.#profile || params?.sessionId !== active.session?.id || !object(params.update)) return;
     if (!identifier(params.update.sessionUpdate)) throw invalid();
+    if (params.update.sessionUpdate === 'config_option_update') { updateAcpConfig(active.session, params.update.configOptions); this.#models = active.session.models; this.#changed(); }
     const event = { localSessionId: active.localSessionId, sessionId: active.session.id, update: structuredClone(params.update) };
     for (const callback of [active.onUpdate, this.#onEvent]) if (callback) {
       try { Promise.resolve(callback(event)).catch(() => this.#client?.fail(fail('KIMI_CALLBACK_FAILED', 'Kimi 会话显示失败，已停止。'))); }
@@ -303,10 +321,10 @@ export class KimiAgent {
       return { result: { outcome: { outcome: 'selected', optionId: selected } } };
     } catch { return denied; }
   }
-  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, modeId, signal, onUpdate, onPermission } = {}) {
+  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, reasoningEffort = 'default', modeId, signal, onUpdate, onPermission } = {}) {
     await this.init(); const profile = this.#usable(); check(signal);
     if (this.#active) throw fail('KIMI_BUSY', 'Kimi 代理已有任务正在运行。');
-    if (!identifier(localSessionId) || typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd) || modelId !== undefined && !identifier(modelId)
+    if (!identifier(localSessionId) || typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd) || modelId !== undefined && !identifier(modelId) || !officialReasoningValue(reasoningEffort)
         || modeId !== undefined && !identifier(modeId) || onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw fail('KIMI_INVALID_INPUT', 'Kimi 任务配置无效。');
     promptBlocks(prompt, attachments, { promptCapabilities: { image: true } });
     const controller = new AbortController(), active = { profile, controller, localSessionId, onUpdate, onPermission, session: null, done: null, stopping: null };
@@ -320,13 +338,16 @@ export class KimiAgent {
         let session = this.#sessions.get(localSessionId), fresh = false;
         if (session && (session.profile !== profile || session.cwd !== cwd)) throw fail('KIMI_SESSION_CHANGED', 'Kimi 会话所属账号或项目已改变，请开始新会话。');
         if (!session?.live) { session = await this.#session(client, cwd, controller.signal, session); fresh = session.fresh; check(controller.signal); if (profile !== this.#profile) throw cancelled(); this.#sessions.set(localSessionId, session); if (this.#sessions.size > 256) this.#sessions.delete(this.#sessions.keys().next().value); await this.#save(); }
-        active.session = session; this.#models = session.models; this.#modes = session.modes;
-        if (modelId) {
-          if (!session.models.some(model => model.id === modelId)) throw fail('KIMI_MODEL_UNAVAILABLE', 'Kimi 账号未提供所选模型，请刷新目录。');
-          const option = session.configOptions.find(row => row?.category === 'model' && row?.type === 'select');
-          await client.request(option?.id ? 'session/set_config_option' : 'session/set_model', option?.id ? { sessionId: session.id, configId: option.id, value: modelId } : { sessionId: session.id, modelId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
+        if (needsAcpReasoningReset(session, reasoningEffort)) {
+          await client.request('session/close', { sessionId: session.id }, { signal: controller.signal, timeoutMs: this.#startTimeout });
+          session = await this.#session(client, cwd, controller.signal); fresh = true; this.#sessions.set(localSessionId, session); await this.#save();
         }
+        active.session = session; this.#models = session.models; this.#modes = session.modes;
+        if (modelId) await this.#selectModel(client, session, modelId, controller.signal);
         if (modeId) { if (!session.modes.some(mode => mode.id === modeId)) throw fail('KIMI_MODE_UNAVAILABLE', 'Kimi 代理未提供所选执行模式。'); await client.request('session/set_mode', { sessionId: session.id, modeId }, { signal: controller.signal, timeoutMs: this.#startTimeout }); }
+        await setAcpReasoning({ client, session, effort: reasoningEffort, options: { signal: controller.signal, timeoutMs: this.#startTimeout }, collectors: this.#catalogCollectors,
+          unavailable: () => fail('KIMI_REASONING_UNAVAILABLE', '官方 Kimi 未提供或未接受所选推理档位，请刷新模型目录。') });
+        this.#models = session.models; this.#changed();
         const blocks = promptBlocks(fresh ? externalAgentPrompt(prompt, contextMessages) : prompt, attachments, this.#capabilities); check(controller.signal); client.resetTurnLimit();
         const result = await client.request('session/prompt', { sessionId: session.id, prompt: blocks }, { timeoutMs: this.#timeout });
         check(controller.signal); if (active !== this.#active || profile !== this.#profile) throw cancelled();

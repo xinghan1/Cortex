@@ -20,10 +20,10 @@ test('full-agent turns delegate prompt, model, attachments and permission select
   const handler=async value=>{asks.push(value);return 'allow-native-once';},questions=async()=>({action:'accept',content:{answers:{'选择方式':'local'}}}),attachments=[{name:'example.png',mediaType:'image/png',dataUrl:'data:image/png;base64,AA=='}];
   const f=fixture(async options=>{
     assert.equal(options.localSessionId,'local-session');assert.equal(options.cwd,'C:/disposable-project');assert.equal(options.prompt,'完成本地测试');assert.equal(options.modelId,'official-model');
-    assert.equal(options.attachments,attachments);assert.equal(options.onPermission,handler);assert.equal(await options.onPermission(permission),'allow-native-once');
+    assert.equal(options.attachments,attachments);assert.equal(options.reasoningEffort,'native:deep');assert.equal(options.onPermission,handler);assert.equal(await options.onPermission(permission),'allow-native-once');
     assert.equal(options.onUserInput,questions);assert.equal((await options.onUserInput()).content.answers['选择方式'],'local');
     text(options,'由官方代理完成。');return{stopReason:'end_turn',usage:{inputTokens:40,outputTokens:7},usageReported:true};
-  },{attachments,onPermission:handler,onUserInput:questions,provider:'kimi'});
+  },{attachments,reasoningEffort:'native:deep',onPermission:handler,onUserInput:questions,provider:'kimi'});
   const result=await f.run();assert.equal(result.toolCount,0);assert.deepEqual(asks,[permission]);assert.equal(f.session.messages[0].source,'official-agent');
   assert.equal(f.usage.length,1);assert.equal(f.usage[0].provider,'kimi');assert.equal(f.usage[0].status,'completed');assert.equal(f.usage[0].inputTokens,40);
 });

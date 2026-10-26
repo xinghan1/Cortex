@@ -20,13 +20,13 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
  * and account identifiers never leave the digest or enter the preference file. */
 function modelCapacityConnectionKey(context, apiKey = '') {
   const provider = context?.provider, authMode = context?.authMode;
-  if (!['openai', 'deepseek', 'gemini', 'kimi', 'glm', 'anthropic', 'relay', 'ollama'].includes(provider)
-      || !['apiKey', 'chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent'].includes(authMode))
+  if (!['openai', 'deepseek', 'gemini', 'kimi', 'glm', 'anthropic', 'doubao', 'relay', 'ollama'].includes(provider)
+      || !['apiKey', 'chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(authMode))
     throw failure('MODEL_CAPACITY_INVALID_CONNECTION', '模型容量连接无效。');
   let connection;
-  if (['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent'].includes(authMode)) {
+  if (['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(authMode)) {
     const profileId = context.account?.session?.profileId;
-    if (provider !== (authMode === 'chatgpt' ? 'openai' : ['gemini-account', 'antigravity-agent'].includes(authMode) ? 'gemini' : authMode === 'kimi-agent' ? 'kimi' : authMode === 'glm-agent' ? 'glm' : 'deepseek') || typeof profileId !== 'string'
+    if (provider !== (authMode === 'chatgpt' ? 'openai' : ['gemini-account', 'antigravity-agent'].includes(authMode) ? 'gemini' : authMode === 'kimi-agent' ? 'kimi' : authMode === 'glm-agent' ? 'glm' : authMode === 'claude-agent' ? 'anthropic' : authMode === 'ark-account' ? 'doubao' : 'deepseek') || typeof profileId !== 'string'
         || !profileId || profileId.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(profileId))
       throw failure('MODEL_CAPACITY_INVALID_CONNECTION', '请先连接模型账号，再设置模型容量。');
     connection = [provider, authMode, profileId];
@@ -40,7 +40,7 @@ function modelCapacityConnectionKey(context, apiKey = '') {
       throw failure('MODEL_CAPACITY_INVALID_CONNECTION', '模型容量连接地址无效。');
     endpoint.pathname = endpoint.pathname.replace(/\/+$/u, '') || '/';
     const protocol = ['openai', 'relay', 'kimi'].includes(provider) ? context.config?.apiProtocol || (provider === 'relay' ? 'chat-completions' : 'responses')
-      : provider === 'deepseek' || provider === 'glm' ? 'chat-completions' : provider === 'gemini' ? 'generate-content' : provider === 'anthropic' ? 'messages' : 'ollama';
+      : ['deepseek', 'glm', 'doubao'].includes(provider) ? 'chat-completions' : provider === 'gemini' ? 'generate-content' : provider === 'anthropic' ? 'messages' : 'ollama';
     if (!['responses', 'chat-completions', 'generate-content', 'messages', 'ollama'].includes(protocol))
       throw failure('MODEL_CAPACITY_INVALID_CONNECTION', '模型容量连接协议无效。');
     connection = [provider, authMode, endpoint.href, protocol, apiKey];

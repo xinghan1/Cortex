@@ -12,10 +12,16 @@ const EFFORTS = {
   glm: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['default', 'none', 'low', 'high', 'max'],
+  doubao: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
   relay: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   ollama: ['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
 };
+const AUTH_PROVIDERS = ['openai', 'deepseek', 'gemini', 'kimi', 'glm', 'anthropic', 'doubao'];
+const AGENT_AUTH = { gemini: ['antigravity-agent'], kimi: ['kimi-agent'], glm: ['glm-agent'], anthropic: ['claude-agent'] };
+const validEffort = (provider, authMode, effort) => EFFORTS[provider].includes(effort)
+  || AGENT_AUTH[provider]?.includes(authMode) && typeof effort === 'string' && effort.length > 0 && effort.length <= 128
+    && effort.trim() === effort && !/[\u0000-\u001f\u007f]/u.test(effort);
 const API_PROTOCOLS = ['responses', 'chat-completions'];
 const validTokens = value => Number.isSafeInteger(value) && value >= 0;
 const isoDate = value => typeof value === 'string'
@@ -92,7 +98,8 @@ const DEFAULTS = {
     gemini: { model: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'gemini-account': '', 'antigravity-agent': '' } },
     kimi: { model: '', baseUrl: 'https://api.moonshot.cn/v1', reasoningEffort: 'default', apiProtocol: 'responses', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'kimi-agent': '' }, region: 'mainland-cn' },
     glm: { model: '', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', reasoningEffort: 'default', apiProtocol: 'chat-completions', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'glm-agent': '' }, region: 'bigmodel' },
-    anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default' },
+    anthropic: { model: '', baseUrl: 'https://api.anthropic.com/v1', reasoningEffort: 'default', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'claude-agent': '' } },
+    doubao: { model: '', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', reasoningEffort: 'default', apiProtocol: 'chat-completions', authMode: 'apiKey', modelsByAuth: { apiKey: '', 'ark-account': '' } },
     relay: { model: '', baseUrl: '', reasoningEffort: 'default', apiProtocol: 'chat-completions' },
     ollama: { model: '', baseUrl: 'http://localhost:11434', reasoningEffort: 'default', contextWindowTokens: 32768 },
   }
@@ -121,11 +128,11 @@ class Store {
       let migrated = false;
       for (const name of Object.keys(DEFAULTS.providers)) {
         Object.assign(this.settings.providers[name], saved.providers?.[name] || {});
-        if (!EFFORTS[name].includes(saved.providers?.[name]?.reasoningEffort)) {
+        if (!validEffort(name, this.settings.providers[name].authMode, saved.providers?.[name]?.reasoningEffort)) {
           this.settings.providers[name].reasoningEffort = 'default'; migrated = true;
         }
-        if (['openai', 'relay', 'kimi', 'glm'].includes(name) && (!API_PROTOCOLS.includes(saved.providers?.[name]?.apiProtocol)
-            || name === 'glm' && saved.providers?.[name]?.apiProtocol !== 'chat-completions')) {
+        if (['openai', 'relay', 'kimi', 'glm', 'doubao'].includes(name) && (!API_PROTOCOLS.includes(saved.providers?.[name]?.apiProtocol)
+            || ['glm', 'doubao'].includes(name) && saved.providers?.[name]?.apiProtocol !== 'chat-completions')) {
           this.settings.providers[name].apiProtocol = DEFAULTS.providers[name].apiProtocol; migrated = true;
         }
       }
@@ -139,6 +146,13 @@ class Store {
       const deepseek = this.settings.providers.deepseek;
       if (!['apiKey', 'deepseek-account'].includes(deepseek.authMode)) deepseek.authMode = 'apiKey';
       deepseek.modelsByAuth = { apiKey: '', 'deepseek-account': '', ...deepseek.modelsByAuth, [deepseek.authMode]: deepseek.model };
+      const doubao = this.settings.providers.doubao;
+      if (!['apiKey', 'ark-account'].includes(doubao.authMode)) { doubao.authMode = 'apiKey'; migrated = true; }
+      doubao.modelsByAuth = { apiKey: '', 'ark-account': '', ...doubao.modelsByAuth, [doubao.authMode]: doubao.model };
+      const anthropic = this.settings.providers.anthropic;
+      if (!['apiKey', 'claude-agent'].includes(anthropic.authMode)) { anthropic.authMode = 'apiKey'; migrated = true; }
+      if (!saved.providers?.anthropic?.modelsByAuth) migrated = true;
+      anthropic.modelsByAuth = { apiKey: '', 'claude-agent': '', ...anthropic.modelsByAuth, [anthropic.authMode]: anthropic.model };
       const gemini = this.settings.providers.gemini;
       if (!['apiKey', 'gemini-account', 'antigravity-agent'].includes(gemini.authMode)) gemini.authMode = 'apiKey';
       gemini.modelsByAuth = { apiKey: '', 'gemini-account': '', 'antigravity-agent': '', ...gemini.modelsByAuth, [gemini.authMode]: gemini.model };
@@ -155,17 +169,17 @@ class Store {
   }
   publicSettings() {
     const providers = {};
-    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: ['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['kimi', 'glm'].includes(name) ? { region: value.region } : {}), ...(['openai', 'relay', 'kimi', 'glm'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
+    for (const [name, value] of Object.entries(this.settings.providers)) providers[name] = { model: value.model, baseUrl: value.baseUrl, reasoningEffort: value.reasoningEffort, authMode: AUTH_PROVIDERS.includes(name) ? value.authMode || 'apiKey' : 'apiKey', ...(AUTH_PROVIDERS.includes(name) ? { modelsByAuth: { ...value.modelsByAuth } } : {}), ...(['kimi', 'glm'].includes(name) ? { region: value.region } : {}), ...(['openai', 'relay', 'kimi', 'glm', 'doubao'].includes(name) ? { apiProtocol: value.apiProtocol } : {}), ...(name === 'ollama' ? { contextWindowTokens: value.contextWindowTokens } : {}), hasKey: Boolean(value.encryptedKey) };
     return { provider: this.settings.provider, ...providers[this.settings.provider], providers };
   }
   async saveSettings(input) {
     if (!input || !Object.hasOwn(DEFAULTS.providers, input.provider)) throw new Error('请选择有效的模型供应商。');
     if (input.apiProtocol !== undefined && (!API_PROTOCOLS.includes(input.apiProtocol)
-        || input.provider === 'glm' && input.apiProtocol !== 'chat-completions'
-        || (!['openai', 'relay', 'kimi', 'glm'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
+        || ['glm', 'doubao'].includes(input.provider) && input.apiProtocol !== 'chat-completions'
+        || (!['openai', 'relay', 'kimi', 'glm', 'doubao'].includes(input.provider) && input.apiProtocol !== 'responses'))) throw new Error('此服务商不支持所选的 API 协议。');
     const previous = this.settings.providers[input.provider];
-    const authMode = ['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
-    const model = String(input.model ?? (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
+    const authMode = AUTH_PROVIDERS.includes(input.provider) ? input.authMode ?? previous.authMode : 'apiKey';
+    const model = String(input.model ?? (AUTH_PROVIDERS.includes(input.provider) ? previous.modelsByAuth?.[authMode] : previous.model) ?? '').trim();
     const baseUrl = String(input.baseUrl === undefined ? previous.baseUrl : input.baseUrl || DEFAULTS.providers[input.provider].baseUrl).trim();
     if (model.length > 200 || /[\r\n]/.test(model)) throw new Error('模型 ID 格式不正确。');
     let parsed;
@@ -184,17 +198,20 @@ class Store {
         || input.provider === 'deepseek' && input.authMode === 'deepseek-account'
         || input.provider === 'gemini' && ['gemini-account', 'antigravity-agent'].includes(input.authMode)
         || input.provider === 'kimi' && input.authMode === 'kimi-agent'
-        || input.provider === 'glm' && input.authMode === 'glm-agent')) throw new Error('此服务商不支持所选的登录方式。');
+        || input.provider === 'glm' && input.authMode === 'glm-agent'
+        || input.provider === 'anthropic' && input.authMode === 'claude-agent'
+        || input.provider === 'doubao' && input.authMode === 'ark-account')) throw new Error('此服务商不支持所选的登录方式。');
     if (input.region !== undefined && !(input.provider === 'kimi' && ['mainland-cn', 'global'].includes(input.region)
         || input.provider === 'glm' && ['bigmodel', 'zai'].includes(input.region))) throw new Error('此服务商不支持所选的账号区域。');
     if (['kimi', 'glm'].includes(input.provider) && input.region !== undefined) value.region = input.region;
-    if (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
-    if (['openai', 'relay', 'kimi', 'glm'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
-    const reasoningEffort = input.reasoningEffort === undefined ? value.reasoningEffort || 'default' : input.reasoningEffort;
-    if (!EFFORTS[input.provider].includes(reasoningEffort)) throw new Error('此供应商不支持所选的思考强度。');
+    if (AUTH_PROVIDERS.includes(input.provider) && input.authMode !== undefined) value.authMode = input.authMode;
+    if (['openai', 'relay', 'kimi', 'glm', 'doubao'].includes(input.provider) && input.apiProtocol !== undefined) value.apiProtocol = input.apiProtocol;
+    const reasoningEffort = input.reasoningEffort === undefined
+      ? validEffort(input.provider, value.authMode, value.reasoningEffort) ? value.reasoningEffort : 'default' : input.reasoningEffort;
+    if (!validEffort(input.provider, value.authMode, reasoningEffort)) throw new Error('此供应商不支持所选的思考强度。');
     value.reasoningEffort = reasoningEffort;
     value.model = model; value.baseUrl = baseUrl;
-    if (['openai', 'deepseek', 'gemini', 'kimi', 'glm'].includes(input.provider)) value.modelsByAuth[value.authMode] = model;
+    if (AUTH_PROVIDERS.includes(input.provider)) value.modelsByAuth[value.authMode] = model;
     if (input.clearKey === true) delete value.encryptedKey;
     const key = String(input.apiKey || '').trim();
     if (key) {

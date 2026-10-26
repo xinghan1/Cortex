@@ -6,7 +6,7 @@ const count = value => Number.isSafeInteger(value) && value >= 0;
 const toolNames = { read: 'read_file', edit: 'apply_patch', delete: 'delete_file', move: 'move_file',
   search: 'search_files', execute: 'run_command', fetch: 'read_url', think: 'agent_task' };
 const maxText = 512 * 1024;
-const officialModes = { gemini: 'antigravity-agent', kimi: 'kimi-agent', glm: 'glm-agent' };
+const officialModes = { gemini: 'antigravity-agent', kimi: 'kimi-agent', glm: 'glm-agent', anthropic: 'claude-agent' };
 const maxImageSources = 64, maxImageSourceBytes = 16 * 1024 * 1024;
 const nativeImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const imageBytes = image => {
@@ -67,7 +67,7 @@ function appendImageSources(session, additions) {
 // An external ACP agent owns inference and tools. This adapter only records
 // its public updates; it never executes a tool or feeds its tokens into the
 // application's model request loop.
-export async function runExternalAgentTurn({ agent, session, cwd, prompt, attachments = [], modelId,
+export async function runExternalAgentTurn({ agent, session, cwd, prompt, attachments = [], modelId, reasoningEffort = 'default',
   runId, signal, emit, onPermission, onUserInput = async () => ({ action: 'cancel' }), provider = 'gemini', onUsage = async () => {}, redact = value => value }) {
   if (!agent || typeof agent.runTask !== 'function' || !session?.id || !Array.isArray(session.messages)
       || typeof emit !== 'function' || typeof onPermission !== 'function') throw new Error('官方代理会话配置无效。');
@@ -149,7 +149,7 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
         && typeof message.content === 'string' && message.localOnly !== true && message.hidden !== true && message.private !== true)
         .map(message => ({ role: message.role, content: clean(message.content) }));
     }
-    result = await agent.runTask({ localSessionId: session.id, cwd, prompt, contextMessages, attachments, modelId, signal, onPermission, onUserInput,
+    result = await agent.runTask({ localSessionId: session.id, cwd, prompt, contextMessages, attachments, modelId, reasoningEffort, signal, onPermission, onUserInput,
       onUpdate: event => {
         signal?.throwIfAborted();
         if (event?.localSessionId !== session.id) throw new Error('官方代理返回了其他会话的更新。');

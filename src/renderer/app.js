@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const bridge = window.forge;
-const providerNames = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi', glm: 'GLM', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
+const providerNames = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi', glm: 'GLM', doubao: '豆包', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
 const reasoningOptions = {
   openai: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['none', 'low', 'high', 'max'],
@@ -10,6 +10,7 @@ const reasoningOptions = {
   gemini: [],
   kimi: [],
   glm: [],
+  doubao: [],
   relay: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   ollama: []
 };
@@ -905,6 +906,8 @@ function currentAuthMode(settings = appState?.settings || {}) {
     : settings.provider === 'deepseek' && mode === 'deepseek-account' ? 'deepseek-account'
     : settings.provider === 'kimi' && mode === 'kimi-agent' ? 'kimi-agent'
     : settings.provider === 'glm' && mode === 'glm-agent' ? 'glm-agent'
+    : settings.provider === 'anthropic' && mode === 'claude-agent' ? 'claude-agent'
+    : settings.provider === 'doubao' && mode === 'ark-account' ? 'ark-account'
     : settings.provider === 'gemini' && ['gemini-account', 'antigravity-agent'].includes(mode) ? mode : 'apiKey';
 }
 
@@ -921,7 +924,7 @@ function renderModelSettingsScope() {
   $('settings-scope-hint').hidden = !role;
   $('settings-scope-hint').textContent = role ? entry.enabled
     ? `当前使用独立配置，仅用于${role.name}。账号和密钥独立保存。`
-    : ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(currentAuthMode()) ? '官方代理仅用于主会话；此功能请单独配置 API 模型。'
+    : ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(currentAuthMode()) ? '官方代理仅用于主会话；此功能请单独配置 API 模型。'
     : legacy ? `当前连接使用审批模型 ${legacy}。保存下方配置后，审批将使用独立连接。`
     : `当前跟随主模型。保存下方配置后，${role.name}将独立使用所选模型和账号。` : '';
   $('settings-role-reset').hidden = !role;
@@ -935,11 +938,13 @@ function catalogIdentity(provider, authMode, state = appState) {
     : provider === 'gemini' && authMode === 'gemini-account' ? state?.gemini
     : provider === 'gemini' && authMode === 'antigravity-agent' ? state?.antigravity
     : provider === 'kimi' && authMode === 'kimi-agent' ? state?.kimiAgent
-    : provider === 'glm' && authMode === 'glm-agent' ? state?.glmAgent : null;
+    : provider === 'glm' && authMode === 'glm-agent' ? state?.glmAgent
+    : provider === 'anthropic' && authMode === 'claude-agent' ? state?.claudeAgent
+    : provider === 'doubao' && authMode === 'ark-account' ? state?.ark : null;
   const identity = [provider, authMode, account ? '' : config.baseUrl || '', account ? account.session?.profileId || '' : !!config.hasKey,
     account ? account.session?.status || '' : '', account ? account.session?.sharing === true : false];
   if (provider === 'ollama') identity.push(config.contextWindowTokens ?? 32768);
-  if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(authMode)) identity.push(account?.runtime?.status || '', account?.runtime?.version || '', account?.region || '');
+  if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(authMode)) identity.push(account?.runtime?.status || '', account?.runtime?.version || '', account?.region || '');
   return JSON.stringify(identity);
 }
 
@@ -975,9 +980,12 @@ function savedConnectionReady(provider, authMode, state = appState) {
   if (provider === 'deepseek' && authMode === 'deepseek-account') return state?.deepseek?.session?.status === 'connected' && state?.deepseek?.session?.sharing === true;
   if (provider === 'gemini' && authMode === 'gemini-account') return state?.gemini?.session?.status === 'connected' && state?.gemini?.session?.sharing === true;
   const agent = provider === 'gemini' && authMode === 'antigravity-agent' ? state?.antigravity
-    : provider === 'kimi' && authMode === 'kimi-agent' ? state?.kimiAgent : provider === 'glm' && authMode === 'glm-agent' ? state?.glmAgent : null;
-  if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(authMode)) return agent?.runtime?.status === 'ready'
+    : provider === 'kimi' && authMode === 'kimi-agent' ? state?.kimiAgent : provider === 'glm' && authMode === 'glm-agent' ? state?.glmAgent
+    : provider === 'anthropic' && authMode === 'claude-agent' ? state?.claudeAgent
+    : provider === 'doubao' && authMode === 'ark-account' ? state?.ark : null;
+  if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(authMode)) return agent?.runtime?.status === 'ready'
     && agent?.session?.status === 'connected' && agent?.session?.sharing === true && !!agent?.session?.profileId;
+  if (authMode === 'ark-account') return state?.ark?.session?.status === 'connected' && state?.ark?.session?.sharing === true && !!state?.ark?.session?.profileId;
   if (provider === 'ollama') return true;
   return state?.settings?.providers?.[provider]?.hasKey === true;
 }
@@ -1001,9 +1009,10 @@ function modelSettingsDraft() {
 
 function modelSettingsDraftSnapshot() {
   const draft = modelSettingsDraft();
-  const account = ['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent'].includes(draft.authMode);
+  const account = ['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(draft.authMode);
   const agent = draft.authMode === 'antigravity-agent' ? modelSettingsScope().antigravity
-    : draft.authMode === 'kimi-agent' ? modelSettingsScope().kimiAgent : draft.authMode === 'glm-agent' ? modelSettingsScope().glmAgent : null;
+    : draft.authMode === 'kimi-agent' ? modelSettingsScope().kimiAgent : draft.authMode === 'glm-agent' ? modelSettingsScope().glmAgent
+    : draft.authMode === 'claude-agent' ? modelSettingsScope().claudeAgent : draft.authMode === 'ark-account' ? modelSettingsScope().ark : null;
   const session = agent ? agent.session
     : draft.authMode === 'gemini-account' ? modelSettingsScope().gemini?.session
     : draft.authMode === 'deepseek-account' ? modelSettingsScope().deepseek?.session : modelSettingsChatGPT().session;
@@ -1030,6 +1039,15 @@ function selectedModelMetadata() {
 
 function reasoningSpec(range, provider) {
   const model = selectedModelMetadata();
+  if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(currentAuthMode())) {
+    const choices = model?.compatible !== false && Array.isArray(model?.reasoningOptions) ? model.reasoningOptions.filter(option => option
+      && typeof option.value === 'string' && option.value.length > 0 && option.value.length <= 128
+      && !/[\u0000-\u001f\u007f]/u.test(option.value) && typeof option.label === 'string'
+      && option.label.length > 0 && option.label.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(option.label)) : [];
+    const options = [...new Set(choices.map(option => option.value))];
+    return { options, known: true, labels: Object.fromEntries(choices.map(option => [option.value, option.label])),
+      defaultEffort: model?.defaultReasoningEffort, currentEffort: model?.currentReasoningEffort };
+  }
   const order = ['none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const known = Array.isArray(model?.reasoningEfforts);
   const options = known ? [...new Set(model.reasoningEfforts.filter((effort) => order.includes(effort)))].sort((a, b) => order.indexOf(a) - order.indexOf(b)) : reasoningOptions[provider] || reasoningOptions.openai;
@@ -1042,7 +1060,14 @@ function rangeOptions(range) {
 }
 
 function officialAgentReasoning(range) {
-  return range.id === 'reasoning-effort' && ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(currentAuthMode());
+  return range.id === 'reasoning-effort' && ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(currentAuthMode())
+    && reasoningSpec(range, range.dataset.provider).options.length === 0;
+}
+
+function reasoningLabel(range, effort) {
+  if (effort === 'default') return '默认';
+  try { const labels = JSON.parse(range.dataset.labels || '{}'); if (Object.hasOwn(labels, effort)) return labels[effort]; } catch {}
+  return reasoningLabels[effort] || effort;
 }
 
 function reasoningAvailable(range) {
@@ -1060,7 +1085,7 @@ function renderComposerModel() {
   $('popup-model-button').title = id || '打开模型目录';
   const effort = $('reasoning-effort').dataset.effort || 'default';
   const officialAgent = officialAgentReasoning($('reasoning-effort')) && metadata?.compatible !== false;
-  $('composer-reasoning-label').textContent = officialAgent ? '官方代理' : reasoningAvailable($('reasoning-effort')) ? reasoningLabels[effort] || '默认' : settings.provider === 'ollama' ? '默认' : '不可用';
+  $('composer-reasoning-label').textContent = officialAgent ? '由官方代理管理' : reasoningAvailable($('reasoning-effort')) ? reasoningLabel($('reasoning-effort'), effort) : settings.provider === 'ollama' ? '默认' : '不可用';
   $('composer-reasoning-label').title = officialAgent ? '推理与工具由官方代理管理' : '';
   $('composer-reasoning-label').classList.toggle('is-unavailable', !officialAgent && !reasoningAvailable($('reasoning-effort')));
   $('composer-reasoning-label').classList.toggle('is-max', $('reasoning-effort').classList.contains('is-max'));
@@ -1124,7 +1149,7 @@ function renderSettingsCatalog() {
   if (settingsCatalogLoading) message = ollama ? '正在读取 Ollama 服务中已安装的模型…' : '正在获取当前连接配置的模型目录…';
   else if (settingsCatalogError) message = settingsCatalogError;
   else if (catalog && !catalog.models.length) message = ollama ? 'Ollama 服务中没有已安装的模型，请准备模型后刷新。' : '目录中没有可选择的模型，请检查连接配置后重新获取。';
-  else if (catalog) message = ollama && window.ForgeRoleModels.requiresTools(settingsRole) ? `已读取 ${catalog.models.length} 个已安装模型；不支持编程工具的模型不可选作任务模型。` : `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
+  else if (catalog) message = catalog.source === 'official-docs' ? `官方文档列出 ${catalog.models.length} 个型号；可用性以账号实际权限为准。` : ollama && window.ForgeRoleModels.requiresTools(settingsRole) ? `已读取 ${catalog.models.length} 个已安装模型；不支持编程工具的模型不可选作任务模型。` : `已获取 ${catalog.models.length} 个模型；目录不等于实际访问权限。`;
   $('settings-model-catalog-message').textContent = message;
   $('settings-model-catalog-message').hidden = !message;
   $('settings-model-refresh').disabled = contextBusy() || settingsSaving || settingsCatalogLoading || isChatGPTBusy();
@@ -1143,7 +1168,7 @@ async function fetchCurrentCatalog(force = false) {
     if (!savedConnectionReady(provider, authMode)) throw new Error(authMode === 'chatgpt' ? '请先在模型设置中连接并授权 ChatGPT。'
       : authMode === 'deepseek-account' ? '请先在模型设置中登录并授权 DeepSeek。'
       : authMode === 'gemini-account' ? '请先在模型设置中连接 Gemini 的 Google 账号。'
-      : ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(authMode) ? '请先在模型设置中连接官方代理账号。' : '请先在模型设置中保存 API Key。');
+      : ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(authMode) ? '请先在模型设置中连接官方代理账号。' : '请先在模型设置中保存 API Key。');
     if (typeof bridge.listModels !== 'function') throw new Error('当前版本不支持模型目录，请更新软件后重试。');
     const result = await bridge.listModels({ provider, authMode, force });
     if (request !== catalogRequest || key !== activeCatalogIdentity()) return;
@@ -1248,10 +1273,12 @@ function fillReasoningOptions(range, provider, value = 'default') {
   range.step = '1';
   range.dataset.provider = provider;
   range.dataset.options = JSON.stringify(options);
+  range.dataset.labels = JSON.stringify(spec.labels || {});
   range.dataset.support = spec.known ? options.length ? 'known' : 'none' : 'unknown';
   range.dataset.defaultEffort = spec.defaultEffort || '';
   range.dataset.effort = options.includes(value) ? value : 'default';
-  range.value = String(range.dataset.effort === 'default' ? Math.max(0, Math.floor((options.length - 1) / 2)) : options.indexOf(value));
+  range.value = String(range.dataset.effort === 'default' ? Math.max(0, options.indexOf(spec.defaultEffort || spec.currentEffort) >= 0
+    ? options.indexOf(spec.defaultEffort || spec.currentEffort) : Math.floor((options.length - 1) / 2)) : options.indexOf(value));
   updateReasoningControl(range);
 }
 
@@ -1273,7 +1300,7 @@ function updateReasoningControl(range, fromInput = false) {
   const maximum = available && effort !== 'default' && index === options.length - 1;
   const ollamaDefault = !available && range.dataset.provider === 'ollama';
   const officialAgent = officialAgentReasoning(range) && selectedModelMetadata()?.compatible !== false;
-  label.textContent = officialAgent ? '官方代理' : available ? reasoningLabels[effort] || '默认' : ollamaDefault ? '默认' : '不可用';
+  label.textContent = officialAgent ? '由官方代理管理' : available ? reasoningLabel(range, effort) : ollamaDefault ? '默认' : '不可用';
   label.classList.toggle('is-max', maximum);
   label.classList.toggle('is-unavailable', !officialAgent && !available);
   range.classList.toggle('is-max', maximum);
@@ -1285,7 +1312,7 @@ function updateReasoningControl(range, fromInput = false) {
     visual.classList.toggle('is-unavailable', !available);
     if (!available) visual.classList.remove('is-dragging');
   }
-  range.setAttribute('aria-valuetext', officialAgent ? '官方代理，推理与工具由官方代理管理' : ollamaDefault ? '默认，使用 Ollama 模型设置' : !available ? '不可用，使用服务商默认设置' : effort === 'default' ? '默认，遵从模型默认设置' : reasoningLabels[effort]);
+  range.setAttribute('aria-valuetext', officialAgent ? '由官方代理管理' : ollamaDefault ? '默认，使用 Ollama 模型设置' : !available ? '不可用，使用服务商默认设置' : effort === 'default' ? '默认，遵从模型默认设置' : reasoningLabel(range, effort));
   range.title = officialAgent ? '推理与工具由官方代理管理' : available ? `推理强度：${label.textContent}` : '模型默认推理设置';
   label.title = officialAgent ? range.title : '';
   reset.classList.toggle('active', available && effort === 'default');
@@ -1324,10 +1351,10 @@ function count(value) {
 
 function isChatGPTBusy() {
   return chatgptBusy || window.synoraDeepSeekLogin?.isBusy() || window.synoraGeminiLogin?.isBusy() || window.synoraAntigravityLogin?.isBusy()
-    || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy() || appState?.chatgpt?.session?.status === 'connecting'
+    || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy() || window.synoraClaudeAgentLogin?.isBusy() || window.synoraArkLogin?.isBusy() || appState?.chatgpt?.session?.status === 'connecting'
     || appState?.antigravity?.session?.status === 'connecting' || appState?.antigravity?.runtime?.status === 'downloading'
     || appState?.kimiAgent?.session?.status === 'connecting' || appState?.kimiAgent?.runtime?.status === 'downloading'
-    || appState?.glmAgent?.session?.status === 'connecting' || appState?.glmAgent?.runtime?.status === 'downloading'
+    || appState?.glmAgent?.session?.status === 'connecting' || appState?.glmAgent?.runtime?.status === 'downloading' || appState?.claudeAgent?.session?.status === 'connecting' || appState?.ark?.session?.status === 'connecting'
     || appState?.deepseek?.session?.status === 'connecting' || appState?.gemini?.session?.status === 'connecting' || !!settingsRole && (modelSettingsChatGPT().session?.status === 'connecting'
       || modelSettingsScope().deepseek?.session?.status === 'connecting' || modelSettingsScope().gemini?.session?.status === 'connecting');
 }
@@ -1338,6 +1365,8 @@ function selectedAuthMode() {
     : provider === 'deepseek' && $('deepseek-auth-mode')?.value === 'deepseek-account' ? 'deepseek-account'
     : provider === 'kimi' && !settingsRole && $('kimi-auth-mode')?.value === 'kimi-agent' ? 'kimi-agent'
     : provider === 'glm' && !settingsRole && $('glm-auth-mode')?.value === 'glm-agent' ? 'glm-agent'
+    : provider === 'anthropic' && !settingsRole && $('anthropic-auth-mode')?.value === 'claude-agent' ? 'claude-agent'
+    : provider === 'doubao' && !settingsRole && $('doubao-auth-mode')?.value === 'ark-account' ? 'ark-account'
     : provider === 'gemini' && $('gemini-auth-mode')?.value === 'gemini-account' ? 'gemini-account'
     : provider === 'gemini' && !settingsRole && $('gemini-auth-mode')?.value === 'antigravity-agent' ? 'antigravity-agent' : 'apiKey';
 }
@@ -1378,7 +1407,7 @@ function refreshControlLocks() {
   $('attachment-input').disabled = $('attach-images').disabled;
   refreshFileLocks();
   const settingsLocked = busy || settingsSaving;
-  ['provider-select', 'openai-auth-mode', 'deepseek-auth-mode', 'gemini-auth-mode', 'kimi-auth-mode', 'glm-auth-mode'].forEach((id) => { if ($(id)) $(id).disabled = settingsLocked; });
+  ['provider-select', 'openai-auth-mode', 'deepseek-auth-mode', 'gemini-auth-mode', 'kimi-auth-mode', 'glm-auth-mode', 'anthropic-auth-mode', 'doubao-auth-mode'].forEach((id) => { if ($(id)) $(id).disabled = settingsLocked; });
   $('chatgpt-model-select').disabled = settingsLocked || settingsCatalogLoading || !settingsCatalogMatches();
   $('save-settings').disabled = settingsLocked || settingsCatalogLoading || !selectedSettingsModel();
   $('base-url-input').disabled = settingsLocked || selectedAuthMode() !== 'apiKey';
@@ -1391,7 +1420,7 @@ function refreshControlLocks() {
   renderModelSettingsScope();
   if (isChatGPTBusy()) {
     document.querySelectorAll('button,input,select,textarea').forEach((control) => {
-      if (['chatgpt-cancel-sign-in', 'deepseek-login-cancel', 'gemini-login-cancel', 'antigravity-cancel-sign-in', 'kimi-agent-cancel-sign-in', 'glm-agent-cancel-sign-in'].includes(control.id)) return;
+      if (['chatgpt-cancel-sign-in', 'deepseek-login-cancel', 'gemini-login-cancel', 'antigravity-cancel-sign-in', 'kimi-agent-cancel-sign-in', 'glm-agent-cancel-sign-in', 'claude-agent-cancel-sign-in', 'ark-cancel-sign-in', 'ark-profile-select', 'ark-profile-confirm'].includes(control.id)) return;
       if (!chatgptDisabledControls.has(control)) chatgptDisabledControls.set(control, control.disabled);
       control.disabled = true;
     });
@@ -1402,6 +1431,8 @@ function refreshControlLocks() {
   window.synoraAntigravityLogin?.render();
   window.synoraKimiAgentLogin?.render();
   window.synoraGlmAgentLogin?.render();
+  window.synoraClaudeAgentLogin?.render();
+  window.synoraArkLogin?.render();
   renderPendingPrompts();
   notifyMenuState();
 }
@@ -1413,29 +1444,31 @@ function syncAuthModeVisibility() {
   const gemini = $('provider-select').value === 'gemini';
   const kimi = $('provider-select').value === 'kimi';
   const glm = $('provider-select').value === 'glm';
+  const doubao = $('provider-select').value === 'doubao';
+  const ark = doubao && selectedAuthMode() === 'ark-account';
   const account = openai && selectedAuthMode() === 'chatgpt';
   const deepseekAccount = $('provider-select').value === 'deepseek' && selectedAuthMode() === 'deepseek-account';
   const geminiAccount = gemini && selectedAuthMode() === 'gemini-account';
-  const antigravity = ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(selectedAuthMode());
+  const antigravity = ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(selectedAuthMode());
   $('openai-auth-mode-field').hidden = !openai;
   $('api-protocol-field').hidden = !(openai || relay) || account;
   $('api-protocol-help').textContent = $('api-protocol-select').value === 'chat-completions'
     ? '使用 /chat/completions；适用于提供 OpenAI 兼容接口的中转站。'
     : '使用 /responses；请确认服务商支持 Responses 协议。';
   $('base-url-input').placeholder = ollama ? 'http://localhost:11434' : gemini ? 'https://generativelanguage.googleapis.com/v1beta'
-    : kimi ? 'https://api.moonshot.cn/v1' : glm ? 'https://open.bigmodel.cn/api/paas/v4' : relay ? '例如 https://你的中转地址/v1' : '使用服务商默认 API 地址';
+    : kimi ? 'https://api.moonshot.cn/v1' : glm ? 'https://open.bigmodel.cn/api/paas/v4' : doubao ? 'https://ark.cn-beijing.volces.com/api/v3' : relay ? '例如 https://你的中转地址/v1' : '使用服务商默认 API 地址';
   $('base-url-label').textContent = ollama ? 'Ollama 服务地址' : 'Base URL';
   $('api-key-label').textContent = ollama ? 'API Key（可选）' : 'API Key';
   $('ollama-context-window-field').hidden = !ollama;
   $('ollama-context-window-input').required = ollama;
   $('chatgpt-panel').hidden = !account;
   $('chatgpt-model-field').hidden = false;
-  $('base-url-field').hidden = account || deepseekAccount || geminiAccount || antigravity;
-  $('api-key-field').hidden = account || deepseekAccount || geminiAccount || antigravity;
+  $('base-url-field').hidden = account || deepseekAccount || geminiAccount || antigravity || ark;
+  $('api-key-field').hidden = account || deepseekAccount || geminiAccount || antigravity || ark;
   $('provider-account-panel').hidden = !(kimi || glm) || antigravity;
   $('provider-account-open').textContent = kimi ? '登录 Kimi 官方控制台' : '登录智谱 / Z.AI 官方控制台';
-  $('settings-footer-hint').textContent = ollama ? '本机服务无需密钥 · 支持自建地址' : account ? '个人本机预览 · 额度取决于账号'
-    : deepseekAccount ? 'DeepSeek 官方账号连接' : antigravity ? `${kimi ? 'Kimi Code' : glm ? 'ZCode' : 'Antigravity'} 官方代理 · 主会话`
+  $('settings-footer-hint').textContent = ollama ? '本机服务无需密钥 · 支持自建地址' : account ? '账号登录 · 额度以账号实际权限为准'
+    : deepseekAccount ? 'DeepSeek 账号登录' : ark ? '火山方舟账号登录' : antigravity ? '账号登录 · 主会话'
       : geminiAccount ? 'Google 账号 · 旧 Gemini CLI' : gemini ? 'Gemini 原生接口' : '支持自定义 API 地址';
   $('settings-dialog').classList.toggle('chatgpt-mode', account);
   window.synoraDeepSeekLogin?.render();
@@ -1443,6 +1476,8 @@ function syncAuthModeVisibility() {
   window.synoraAntigravityLogin?.render();
   window.synoraKimiAgentLogin?.render();
   window.synoraGlmAgentLogin?.render();
+  window.synoraClaudeAgentLogin?.render();
+  window.synoraArkLogin?.render();
 }
 
 async function openProviderAccount() {
@@ -2421,8 +2456,9 @@ function updateState(state, { syncActiveTask = true, syncPendingQueue = true, al
   const account = currentAuthMode(settings);
   $('provider-hint').textContent = account === 'chatgpt' ? `ChatGPT 账号 · ${model || '尚未选择模型'}`
     : account === 'deepseek-account' ? `DeepSeek 账号 · ${model || '尚未选择模型'}`
+    : account === 'ark-account' ? `火山方舟账号 · ${model || '尚未选择模型'}`
     : account === 'gemini-account' ? `Google 账号 · ${model || '尚未选择模型'}`
-      : ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(account) ? `${provider === 'kimi' ? 'Kimi Code' : provider === 'glm' ? 'ZCode' : 'Antigravity'} 官方代理 · ${model || '尚未选择模型'}` : model ? `${providerNames[provider] || provider} · ${model}` : '尚未配置模型';
+      : ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(account) ? `${providerNames[provider] || provider} 账号 · ${model || '尚未选择模型'}` : model ? `${providerNames[provider] || provider} · ${model}` : '尚未配置模型';
   fillReasoningOptions($('reasoning-effort'), provider, settings.reasoningEffort || settings.providers?.[provider]?.reasoningEffort || 'default');
   setReasoningDisabled(modelControlBusy() || reasoningSaving);
   renderUsageStats(state.usageStats);
@@ -3980,7 +4016,7 @@ async function runTask(demo = false, mode = 'queue') {
   }
   if (!demo && !account && !savedConnectionReady(provider, currentAuthMode(settings))) {
     notice(currentAuthMode(settings) === 'gemini-account' ? '请先连接 Gemini 的 Google 账号，再发送任务。'
-      : ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(currentAuthMode(settings)) ? '请先连接官方代理账号，再发送任务。' : '请先配置当前服务商的 API Key，再发送任务。');
+      : ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(currentAuthMode(settings)) ? '请先连接官方代理账号，再发送任务。' : '请先配置当前服务商的 API Key，再发送任务。');
     openSettings();
     return;
   }
@@ -4250,10 +4286,12 @@ function fillProvider(provider) {
   window.synoraAntigravityLogin?.clearError();
   window.synoraKimiAgentLogin?.fill(provider === 'kimi' ? config.authMode || (current ? settings.authMode : '') : 'apiKey', config.region);
   window.synoraGlmAgentLogin?.fill(provider === 'glm' ? config.authMode || (current ? settings.authMode : '') : 'apiKey', config.region);
-  $('api-protocol-select').value = config.apiProtocol || (provider === 'relay' ? 'chat-completions' : 'responses');
+  window.synoraClaudeAgentLogin?.fill(provider === 'anthropic' ? config.authMode || (current ? settings.authMode : '') : 'apiKey');
+  window.synoraArkLogin?.fill(provider === 'doubao' ? config.authMode || (current ? settings.authMode : '') : 'apiKey');
+  $('api-protocol-select').value = config.apiProtocol || (['relay','doubao'].includes(provider) ? 'chat-completions' : 'responses');
   $('base-url-input').value = config.baseUrl || (current ? settings.baseUrl : '') || (provider === 'ollama' ? 'http://localhost:11434'
     : provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta' : provider === 'kimi' ? 'https://api.moonshot.cn/v1'
-      : provider === 'glm' ? 'https://open.bigmodel.cn/api/paas/v4' : '');
+      : provider === 'glm' ? 'https://open.bigmodel.cn/api/paas/v4' : provider === 'doubao' ? 'https://ark.cn-beijing.volces.com/api/v3' : '');
   $('ollama-context-window-input').value = String(config.contextWindowTokens ?? 32768);
   $('api-key-input').value = '';
   $('api-key-input').disabled = false;
@@ -4454,7 +4492,7 @@ function bindUI() {
   $('settings-model-refresh').addEventListener('click', () => fetchSettingsCatalog(true));
   $('settings-dialog').addEventListener('close', () => {
     if ($('settings-dialog').open) return;
-    invalidateSettingsCatalog(); $('api-key-input').value = ''; settingsRole = null; chatgptLocalError = ''; window.synoraDeepSeekLogin?.clearError(); window.synoraGeminiLogin?.clearError(); window.synoraAntigravityLogin?.clearError(); window.synoraKimiAgentLogin?.clearError(); window.synoraGlmAgentLogin?.clearError(); ++catalogRequest; catalogLoading = false;
+    invalidateSettingsCatalog(); $('api-key-input').value = ''; settingsRole = null; chatgptLocalError = ''; window.synoraDeepSeekLogin?.clearError(); window.synoraGeminiLogin?.clearError(); window.synoraAntigravityLogin?.clearError(); window.synoraKimiAgentLogin?.clearError(); window.synoraGlmAgentLogin?.clearError(); window.synoraClaudeAgentLogin?.clearError(); window.synoraArkLogin?.clearError(); ++catalogRequest; catalogLoading = false;
   });
   $('settings-role-reset').addEventListener('click', async () => {
     const role = settingsRole;
@@ -4559,7 +4597,7 @@ async function initialize() {
     canSuggest: () => !contextBusy() && !restoringWorkspace && !reasoningSaving && draftAttachments.length === 0,
     getContext: () => appState?.workspace && sessionId && appState?.settings?.model && !projectSwitching && !promptSubmitting
       && !modelSaving && !settingsSaving && !isChatGPTBusy() && !approvals.size
-      && (!['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(currentAuthMode()) || appState.roleModels?.completion?.enabled) ? {
+      && (!['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(currentAuthMode()) || appState.roleModels?.completion?.enabled) ? {
         sessionId, workspaceId: currentWorkspaceId(), model: appState.settings.model, provider: appState.settings.provider,
         authMode: appState.settings.authMode, catalog: currentCatalogKey, reasoning: appState.settings.reasoningEffort,
         account: activeCatalogIdentity(appState),
@@ -4573,7 +4611,7 @@ async function initialize() {
   if (window.ForgeDeepSeekLogin && bridge) window.synoraDeepSeekLogin = window.ForgeDeepSeekLogin.create({ document, bridge,
     getScope: modelSettingsScope, getRole: () => settingsRole,
     isBusy: () => contextBusy() || settingsSaving || reasoningSaving || chatgptBusy || window.synoraGeminiLogin?.isBusy()
-      || window.synoraAntigravityLogin?.isBusy() || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy(),
+      || window.synoraAntigravityLogin?.isBusy() || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy() || window.synoraClaudeAgentLogin?.isBusy() || window.synoraArkLogin?.isBusy(),
     onState: updateState, onChange: renderChatGPTState,
     onInvalidate: role => { if (role) invalidateSettingsCatalog(); else invalidateCatalogs(); promptCompletion?.cancel(); },
     onModeChange: () => { invalidateSettingsCatalog(); $('api-key-input').value = ''; $('settings-error').hidden = true; renderChatGPTState(); },
@@ -4581,7 +4619,7 @@ async function initialize() {
   if (window.ForgeGeminiLogin && bridge) window.synoraGeminiLogin = window.ForgeGeminiLogin.create({ document, bridge,
     getScope: modelSettingsScope, getRole: () => settingsRole,
     isBusy: () => contextBusy() || settingsSaving || reasoningSaving || chatgptBusy || window.synoraDeepSeekLogin?.isBusy() || window.synoraAntigravityLogin?.isBusy()
-      || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy(),
+      || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy() || window.synoraClaudeAgentLogin?.isBusy() || window.synoraArkLogin?.isBusy(),
     onState: updateState, onChange: renderChatGPTState,
     onInvalidate: role => { if (role) invalidateSettingsCatalog(); else invalidateCatalogs(); promptCompletion?.cancel(); },
     onModeChange: () => { invalidateSettingsCatalog(); $('api-key-input').value = ''; $('settings-error').hidden = true; renderChatGPTState(); },
@@ -4589,7 +4627,7 @@ async function initialize() {
   if (window.ForgeAntigravityLogin && bridge) window.synoraAntigravityLogin = window.ForgeAntigravityLogin.create({ document, bridge,
     getScope: () => appState || {}, getRole: () => settingsRole,
     isBusy: () => contextBusy() || settingsSaving || reasoningSaving || chatgptBusy || window.synoraDeepSeekLogin?.isBusy() || window.synoraGeminiLogin?.isBusy()
-      || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy(),
+      || window.synoraKimiAgentLogin?.isBusy() || window.synoraGlmAgentLogin?.isBusy() || window.synoraClaudeAgentLogin?.isBusy() || window.synoraArkLogin?.isBusy(),
     onState: updateState, onChange: renderChatGPTState,
     onInvalidate: () => { invalidateCatalogs(); promptCompletion?.cancel(); }, onRefreshModels: refreshChatGPTModels });
   if (window.ForgeAntigravityLogin && bridge) for (const descriptor of [
@@ -4597,14 +4635,18 @@ async function initialize() {
       regions: [['mainland-cn', '中国大陆'], ['global', '国际']], allowDeviceCode: true, verificationHosts: ['kimi.com', 'moonshot.cn', 'moonshot.ai'] },
     { provider: 'glm', authMode: 'glm-agent', stateKey: 'glmAgent', prefix: 'glm-agent', name: 'ZCode', modeId: 'glm-auth-mode', bridgePrefix: 'glmAgent', errorPrefix: 'ZCODE_',
       regions: [['bigmodel', '智谱 · 中国大陆'], ['zai', 'Z.AI · 国际']] },
+    { provider: 'anthropic', authMode: 'claude-agent', stateKey: 'claudeAgent', prefix: 'claude-agent', name: 'Claude Code', modeId: 'anthropic-auth-mode', bridgePrefix: 'claudeAgent', errorPrefix: 'CLAUDE_', controllerKey: 'synoraClaudeAgentLogin',
+      help: '通过本机官方 Claude Code 登录并执行主会话任务。可用模型与额度以官方账号实际权限为准。' },
+    { provider: 'doubao', authMode: 'ark-account', stateKey: 'ark', prefix: 'ark', name: '火山方舟', modeId: 'doubao-auth-mode', bridgePrefix: 'ark', errorPrefix: 'ARK_', controllerKey: 'synoraArkLogin',
+      help: '在官方页面登录火山方舟，使用当前账号的 API、Agent Plan 或 Coding Plan 配置。', installLabel: '准备登录组件' },
   ]) {
     const controller = window.ForgeAntigravityLogin.create({ document, bridge, descriptor, getScope: () => appState || {}, getRole: () => settingsRole,
       isBusy: () => contextBusy() || settingsSaving || reasoningSaving || chatgptBusy || window.synoraDeepSeekLogin?.isBusy() || window.synoraGeminiLogin?.isBusy()
-        || window.synoraAntigravityLogin?.isBusy() || (descriptor.provider === 'kimi' ? window.synoraGlmAgentLogin?.isBusy() : window.synoraKimiAgentLogin?.isBusy()),
+        || window.synoraAntigravityLogin?.isBusy() || (descriptor.provider === 'kimi' ? window.synoraGlmAgentLogin?.isBusy() || window.synoraClaudeAgentLogin?.isBusy() || window.synoraArkLogin?.isBusy() : window.synoraKimiAgentLogin?.isBusy()),
       onState: updateState, onChange: renderChatGPTState,
       onInvalidate: () => { if (settingsRole) invalidateSettingsCatalog(); else invalidateCatalogs(); promptCompletion?.cancel(); },
       onModeChange: () => { $('api-key-input').value = ''; $('settings-error').hidden = true; renderChatGPTState(); }, onRefreshModels: refreshChatGPTModels });
-    if (descriptor.provider === 'kimi') window.synoraKimiAgentLogin = controller; else window.synoraGlmAgentLogin = controller;
+    window[descriptor.controllerKey || (descriptor.provider === 'kimi' ? 'synoraKimiAgentLogin' : 'synoraGlmAgentLogin')] = controller;
   }
   bindUI();
   if (!bridge) {

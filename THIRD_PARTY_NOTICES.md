@@ -65,3 +65,16 @@ Google 官方 Gemini CLI 0.65.0 以原版程序随软件分发，采用 Apache L
 应用的 npm 依赖及精确版本见 `package.json` 与 `package-lock.json`。安装后各依赖目录内保留其许可文件。Windows 便携构建复制 Electron 运行时随附的 `LICENSE`、`LICENSES.chromium.html` 及运行依赖的许可文件。
 
 本说明不改变各第三方组件的许可证，也不将它们重新许可为 MIT 或其他许可证。
+
+
+### Claude Agent SDK 与官方 Claude Code
+
+采用官方 npm `@anthropic-ai/claude-agent-sdk` 0.3.310 及其 Windows x64 平台包，内含 Claude Code 2.1.310。SDK 和原生程序保持原版，来源、完整性锁定在 `package-lock.json`，原生程序大小与 SHA-256 固定在 `src/core/claude-runtime.mjs`。组件的版权归 Anthropic PBC，适用包内 `LICENSE.md` 指向的 [官方法律协议](https://code.claude.com/docs/en/legal-and-compliance)，不改用本项目许可。
+
+登录由原生 `claude auth login --claudeai` 完成，账号状态由原生 `auth status` 验证；完整代理负责模型和工具执行，Synora 仅通过官方 SDK 转交任务、审批和停止。Synora 不实现、冒用或修改 OAuth 客户端，不读取或重放 OAuth Token，不保证第三方工具具备某套餐的使用资格。第三方产品提供账号登录须遵循 [官方 SDK 的授权要求](https://code.claude.com/docs/en/agent-sdk/overview)，模型和计费最终由官方服务判定。
+
+### 火山方舟 Ark CLI
+
+来源：[volcengine / ark-cli](https://github.com/volcengine/ark-cli)，官方 npm `@volcengine/ark-cli` 1.0.42，Apache License 2.0。原生 Windows x64 组件由官方安装脚本从官方发布渠道取得并按包内 `manifest.json` 校验 SHA-256；构建时使用 CI 模式，只准备二进制，不安装附带技能到其他软件。组件未修改。
+
+Synora 使用公开的浏览器登录、账号状态、Profile、资源目录和 `profile apikey get --plain` 命令。用户明确选择账号配置后，将该配置的运行时 Key 交给本机系统加密存储，用于同一官方 Profile 的 API 调用；不提取 SSO Token、不读取浏览器 Cookie，也不会把豆包 App 个人聊天账号冒充方舟 API 授权。

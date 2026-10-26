@@ -16,11 +16,13 @@ import { randomUUID } from 'node:crypto';
 import { ollamaEndpoint } from './ollama-endpoint.mjs';
 import { retryAfterMilliseconds } from './request-retry.mjs';
 import { requestGeminiModel } from './gemini-provider.mjs';
+import { DOUBAO_BASE_URL, doubaoRequest } from './doubao-contracts.mjs';
 import { isKimiGlm, vendorBinding, vendorMessages, vendorRequest, vendorResult } from './kimi-glm-contracts.mjs';
 
 const DEFAULT_URLS = Object.freeze({
   openai: 'https://api.openai.com/v1',
   deepseek: 'https://api.deepseek.com',
+  doubao: DOUBAO_BASE_URL,
   kimi: 'https://api.moonshot.cn/v1',
   glm: 'https://open.bigmodel.cn/api/paas/v4',
   anthropic: 'https://api.anthropic.com/v1',
@@ -30,6 +32,7 @@ const DEFAULT_URLS = Object.freeze({
 const RESOURCES = Object.freeze({
   openai: '/responses',
   deepseek: '/chat/completions',
+  doubao: '/chat/completions',
   kimi: '/responses',
   glm: '/chat/completions',
   anthropic: '/messages',
@@ -46,6 +49,7 @@ const CHATGPT_NAMESPACE = 'forge';
 const REASONING_LEVELS = Object.freeze({
   openai: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   deepseek: ['default', 'none', 'low', 'high', 'max'],
+  doubao: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   kimi: ['default', 'none', 'low', 'high', 'max'],
   glm: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   anthropic: ['default', 'low', 'medium', 'high', 'xhigh', 'max'],
@@ -168,6 +172,7 @@ function protocolName(provider, apiProtocol) {
   if (provider === 'relay') return apiProtocol === 'chat-completions' ? '中转站 Chat Completions' : '中转站 Responses';
   if (provider === 'openai' || provider === 'kimi') return `${provider === 'kimi' ? 'Kimi' : 'OpenAI'} ${apiProtocol === 'chat-completions' ? 'Chat Completions' : 'Responses'}`;
   if (provider === 'glm') return 'GLM Chat Completions';
+  if (provider === 'doubao') return '豆包 / 火山方舟 Chat Completions';
   return provider === 'deepseek' ? 'DeepSeek Chat Completions' : 'Claude Messages';
 }
 
@@ -668,6 +673,14 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
   let nativeOutput;
   let deepSeekReasoning = '';
   let deepSeekReasoningSeen = false;
+  let doubaoEncrypted = '', doubaoEncryptedSeen = false;
+  function encryptedContent(value, snapshot = false) {
+    if (sourceProvider !== 'doubao' || value === undefined || value === null) return;
+    if (typeof value !== 'string') fail('豆包加密思考内容格式无效。');
+    doubaoEncryptedSeen = true;
+    doubaoEncrypted = snapshot ? value : doubaoEncrypted + value;
+    payload.full('doubao-encrypted-content', doubaoEncrypted);
+  }
   const estimateParts = new Map();
   let estimateUnits = 0;
   let phase;
@@ -906,6 +919,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
 
   function chatMessage(message) {
     if (!isObject(message)) fail('模型 Chat Completions 响应缺少 message。');
+    encryptedContent(message.encrypted_content, true);
     if (typeof message.reasoning_content === 'string') {
       if (!chatCompatible) {
         deepSeekReasoningSeen = true;
@@ -981,6 +995,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       const choice = value.choices?.find(item => item.index === 0) ?? value.choices?.[0];
       if (!choice) return;
       const delta = choice.delta ?? {};
+      encryptedContent(delta.encrypted_content);
       if (typeof delta.reasoning_content === 'string') {
         if (!chatCompatible) {
           deepSeekReasoningSeen = true;
@@ -1120,6 +1135,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       const nativeMessage = {
         role: 'assistant', content: message.content,
         ...(deepSeekReasoningSeen ? { reasoning_content: deepSeekReasoning } : {}),
+        ...(doubaoEncryptedSeen ? { encrypted_content: doubaoEncrypted } : {}),
         ...(toolCalls.length ? { tool_calls: toolCalls.map(call => ({
           id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) },
         })) } : {}),
@@ -1463,7 +1479,7 @@ export async function requestModel(options = {}) {
 
 async function requestStandardModel({
   provider, apiKey, baseUrl, model, messages, tools = [], signal, onTextDelta, onProgress, reasoningEffort = 'default',
-  authMode = 'apiKey', apiProtocol = ['relay', 'glm'].includes(provider) ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
+  authMode = 'apiKey', apiProtocol = ['relay', 'glm', 'doubao'].includes(provider) ? 'chat-completions' : 'responses', fetchImpl = globalThis.fetch, modelCapabilities,
   connectionKey, sessionId, promptCacheKey, appVersion = 'unknown',
   timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes, maxOutputTokens, contextWindowTokens,
   maxEventBytes = DEFAULT_EVENT_LIMIT, maxModelPayloadBytes = DEFAULT_MODEL_PAYLOAD_LIMIT,
@@ -1474,11 +1490,11 @@ async function requestStandardModel({
     fail('此供应商不支持所选的登录方式。', 'INVALID_AUTH_MODE');
   }
   const transportProvider = authMode === 'deepseek-account' ? 'anthropic' : provider === 'relay' ? 'openai'
-    : isKimiGlm(provider) ? provider === 'kimi' && apiProtocol === 'responses' ? 'openai' : 'deepseek' : provider;
+    : provider === 'doubao' ? 'deepseek' : isKimiGlm(provider) ? provider === 'kimi' && apiProtocol === 'responses' ? 'openai' : 'deepseek' : provider;
   // A persisted API Key preference must never select a different OAuth route.
   const effectiveProtocol = authMode === 'chatgpt' ? 'responses' : apiProtocol;
   if (['openai', 'relay', 'kimi'].includes(provider) && !['responses', 'chat-completions'].includes(effectiveProtocol)
-      || provider === 'glm' && effectiveProtocol !== 'chat-completions') {
+      || ['glm', 'doubao'].includes(provider) && effectiveProtocol !== 'chat-completions') {
     fail('API 协议无效，请选择 Responses 或 Chat Completions。', 'INVALID_API_PROTOCOL');
   }
   if (provider === 'ollama') {
@@ -1513,7 +1529,7 @@ async function requestStandardModel({
     ? messages.filter(message => !(message?.role === 'assistant' && message.localOnly === true)) : messages;
   validateInput(filteredMessages, tools);
   let modelMessages = normalizeMessageImages(filteredMessages);
-  const vendor = isKimiGlm(provider) ? { provider, model, endpoint, apiProtocol: effectiveProtocol,
+  const vendor = (isKimiGlm(provider) || provider === 'doubao') ? { provider, model, endpoint, apiProtocol: effectiveProtocol,
     reasoningEffort, sessionId, promptCacheKey, messages: modelMessages,
     binding: vendorBinding({ provider, model, endpoint, apiProtocol: effectiveProtocol, apiKey, connectionKey }) } : null;
   if (vendor) modelMessages = vendorMessages(modelMessages, vendor);
@@ -1528,7 +1544,7 @@ async function requestStandardModel({
   try {
     const value = makeRequest(transportProvider, model, modelMessages, tools, maxOutputTokens, endpoint,
       vendor ? 'default' : effectiveReasoningEffort, authMode, effectiveProtocol, modelCapabilities, contextWindowTokens);
-    if (vendor) vendorRequest(value, vendor);
+    if (vendor) (provider === 'doubao' ? doubaoRequest : vendorRequest)(value, vendor);
     body = JSON.stringify(value);
   }
   catch (error) {

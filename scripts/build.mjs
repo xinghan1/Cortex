@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const electronExe = require('electron');
 if (process.platform !== 'win32') throw new Error('请在 Windows 上构建此便携版本。');
 const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+await import('./prepare-accounts.mjs');
 await fs.access(path.join(root, 'src', 'vendor', 'siwc', 'index.js')).catch(() => { throw new Error('请先运行 npm run prepare:sdk 构建官方登录组件。'); });
 await fs.access(path.join(root, 'src', 'vendor', 'gemini-cli', 'provenance.json')).catch(() => { throw new Error('请先运行 npm run prepare:gemini 准备官方 Gemini CLI。'); });
 await fs.access(path.join(root, 'src', 'vendor', 'zcode-agent', 'provenance.json')).catch(() => { throw new Error('请先运行 npm run prepare:zcode 准备 ZCode 账号代理。'); });

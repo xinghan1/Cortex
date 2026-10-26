@@ -13,11 +13,11 @@ const identity = (root, connection) => JSON.stringify([permissionProjectKey(root
 // Only this digest is persisted. Connection state, tokens, encrypted-key bytes,
 // model selections and context-window sizes must not invalidate a saved choice.
 function approvalReviewerConnectionKey(context, apiKey = '') {
-  if (!context || !['openai', 'deepseek', 'gemini', 'kimi', 'glm', 'anthropic', 'relay', 'ollama'].includes(context.provider)
-      || !['apiKey', 'chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent'].includes(context.authMode)) throw new Error('审批模型连接无效。');
+  if (!context || !['openai', 'deepseek', 'gemini', 'kimi', 'glm', 'anthropic', 'doubao', 'relay', 'ollama'].includes(context.provider)
+      || !['apiKey', 'chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(context.authMode)) throw new Error('审批模型连接无效。');
   let parts;
-  if (['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent'].includes(context.authMode)) {
-    if (context.provider !== (context.authMode === 'chatgpt' ? 'openai' : ['gemini-account', 'antigravity-agent'].includes(context.authMode) ? 'gemini' : context.authMode === 'kimi-agent' ? 'kimi' : context.authMode === 'glm-agent' ? 'glm' : 'deepseek')) throw new Error('审批模型连接无效。');
+  if (['chatgpt', 'deepseek-account', 'gemini-account', 'antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(context.authMode)) {
+    if (context.provider !== (context.authMode === 'chatgpt' ? 'openai' : ['gemini-account', 'antigravity-agent'].includes(context.authMode) ? 'gemini' : context.authMode === 'kimi-agent' ? 'kimi' : context.authMode === 'glm-agent' ? 'glm' : context.authMode === 'claude-agent' ? 'anthropic' : context.authMode === 'ark-account' ? 'doubao' : 'deepseek')) throw new Error('审批模型连接无效。');
     const profileId = context.account?.session?.profileId || null;
     if (profileId !== null && (typeof profileId !== 'string' || profileId.length > 1000)) throw new Error('审批模型账号无效。');
     parts = [context.provider, context.authMode, profileId];
@@ -26,7 +26,7 @@ function approvalReviewerConnectionKey(context, apiKey = '') {
     const endpoint = new URL(context.config?.baseUrl);
     endpoint.hash = '';
     endpoint.pathname = endpoint.pathname.replace(/\/+$/u, '') || '/';
-    parts = [context.provider, context.authMode, endpoint.href, context.config?.apiProtocol || 'responses', apiKey];
+    parts = [context.provider, context.authMode, endpoint.href, context.config?.apiProtocol || (context.provider === 'doubao' ? 'chat-completions' : 'responses'), apiKey];
   }
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }

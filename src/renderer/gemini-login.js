@@ -60,7 +60,7 @@
     };
     const modeField = el('label', 'gemini-auth-mode-field', 'form-field'); modeField.hidden = true;
     const mode = el('select', 'gemini-auth-mode'); mode.name = 'geminiAuthMode';
-    for (const [value, label] of [['apiKey', 'API Key'], ['antigravity-agent', 'Google 账号 · Antigravity 官方代理']]) {
+    for (const [value, label] of [['apiKey', 'API Key'], ['antigravity-agent', '账号登录']]) {
       const option = el('option', '', '', label); option.value = value; mode.append(option);
     }
     mode.value = 'apiKey'; modeField.append(el('span', '', '', '连接方式'), mode); $('openai-auth-mode-field').after(modeField);

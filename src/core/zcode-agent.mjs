@@ -6,6 +6,7 @@ import { Transform } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { ExternalAcpClient, killAntigravityProcessTree } from './antigravity-agent.mjs';
 import { externalAgentPrompt } from './external-agent-context.mjs';
+import { officialReasoningMetadata, officialReasoningValue } from './official-agent-reasoning.mjs';
 
 // Official ZCode app-server protocol, pinned source contract:
 // https://github.com/zai-org/ZCode/tree/3c5b227649371507ddc4eb46ac5133afe6db1cab
@@ -138,11 +139,14 @@ function readCatalog(snapshot, providerId) {
     if (!object(ref) || !id(ref.providerId) || !id(ref.modelId) || ref.providerId !== providerId || row.disabledReason) continue;
     const executionRef = executableModelRef(row, snapshot.settings.model.current); if (!executionRef) continue;
     const key = selectionId(ref); if (!id(key) || result.has(key)) throw invalid();
+    let reasoning;
+    try { reasoning = officialReasoningMetadata(row.reasoning?.levels || [], { defaultValue: ref.options?.reasoningLevel ?? row.reasoning?.defaultLevel, currentValue: executionRef.options?.reasoningLevel }); }
+    catch { throw invalid(); }
     result.set(key, { ref: executionRef, model: { id: key, displayName: id(row.label) ? row.label : key,
       compatible: true, textCompatible: true, supportsTools: true,
       // This first app-server bridge accepts text content only. Do not advertise
       // the native model's image ability before attachment transport is wired.
-      supportsImages: false, reasoningEfforts: [],
+      supportsImages: false, ...reasoning,
       ...(Number.isSafeInteger(row.contextWindow) && row.contextWindow > 0 ? { contextWindow: row.contextWindow } : {}),
       ...(Number.isSafeInteger(row.maxOutputTokens) && row.maxOutputTokens > 0 ? { maxOutputTokens: row.maxOutputTokens } : {}) } });
   }
@@ -332,7 +336,7 @@ export class ZCodeAgent {
     const snapshot = await client.request('session/create', { workspace, mode: 'guarded', persistence: 'deferred', titleGenerationEnabled: false }, { signal, timeoutMs: this.#startTimeout });
     if (snapshot?.protocol?.name !== 'ZCode Protocol' || snapshot.protocol.version !== 1 || !id(snapshot.session?.sessionId)) throw invalid();
     const providerId = this.#providerId || snapshot.settings?.model?.current?.providerId;
-    const session = { id: snapshot.session.sessionId, cwd, profile: this.#profile, models: readCatalog(snapshot, providerId), mode: 'guarded', seq: 0 };
+    const session = { id: snapshot.session.sessionId, cwd, profile: this.#profile, models: readCatalog(snapshot, providerId), currentModel: snapshot.settings?.model?.current, mode: 'guarded', seq: 0 };
     if (!session.models.size) { this.#models.clear(); throw fail('ZCODE_CATALOG_EMPTY', 'ZCode 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。'); }
     const subscribed = await client.request('session/subscribe', { sessionId: session.id, deliveryKind: 'desktop-continuous', includeSnapshot: false }, { signal, timeoutMs: this.#startTimeout });
     if (subscribed?.sessionId !== session.id || !Array.isArray(subscribed.events) || !Number.isSafeInteger(subscribed.eventSeq)) throw invalid();
@@ -406,11 +410,11 @@ export class ZCodeAgent {
     // Synora. The complete standalone official agent must own its own account.
     return { error: { code: -32601, message: 'Client capability unavailable' } };
   }
-  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, modeId = 'guarded', signal, onUpdate, onPermission, onUserInput } = {}) {
+  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, reasoningEffort = 'default', modeId = 'guarded', signal, onUpdate, onPermission, onUserInput } = {}) {
     await this.init(); const profile = this.#usable(); check(signal);
     if (this.#active) throw fail('ZCODE_BUSY', 'ZCode 代理已有任务正在运行。');
     if (!id(localSessionId) || typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd) || typeof prompt !== 'string' || !prompt.trim() || Buffer.byteLength(prompt) > 4 * 1024 * 1024
-        || !Array.isArray(attachments) || attachments.length || !['guarded', 'build', 'edit', 'plan'].includes(modeId)
+        || !Array.isArray(attachments) || attachments.length || !officialReasoningValue(reasoningEffort) || !['guarded', 'build', 'edit', 'plan'].includes(modeId)
         || [onUpdate, onPermission, onUserInput].some(value => value !== undefined && typeof value !== 'function')) throw fail('ZCODE_INVALID_INPUT', 'ZCode 任务或附件配置无效；当前官方代理仅支持文字任务。');
     const controller = new AbortController(), completion = deferred(); completion.promise.catch(() => {});
     const active = { localSessionId, profile, controller, completion, inputId: randomUUID(), onUpdate, onPermission, onUserInput, session: null, text: '', sent: false, turnId: null, done: null, stopping: null };
@@ -420,17 +424,32 @@ export class ZCodeAgent {
       try {
         const client = await this.initialize({ signal: controller.signal }); check(controller.signal);
         let session = this.#sessions.get(localSessionId);
-        const fresh = !session || session.cwd !== cwd || session.profile !== profile;
+        let fresh = !session || session.cwd !== cwd || session.profile !== profile;
         if (fresh) { session = await this.#newSession(client, cwd, controller.signal); this.#sessions.set(localSessionId, session); }
-        check(controller.signal); if (profile !== this.#profile) throw cancelled(); active.session = session;
+        const targetId = modelId || (session.currentModel ? selectionId(session.currentModel) : undefined);
+        if (reasoningEffort === 'default' && session.reasoningOverridden && !session.models.get(targetId)?.model.defaultReasoningEffort) {
+          session = await this.#newSession(client, cwd, controller.signal); this.#sessions.set(localSessionId, session); fresh = true;
+        }
+        check(controller.signal); if (profile !== this.#profile) throw cancelled(); active.session = session; this.#models = session.models;
         if (modeId !== session.mode) { await client.request('session/setMode', { sessionId: session.id, mode: modeId }, { signal: controller.signal, timeoutMs: this.#startTimeout }); session.mode = modeId; }
-        let selected; if (modelId) { selected = session.models.get(modelId)?.ref; if (!selected) throw fail('ZCODE_MODEL_UNAVAILABLE', '当前 ZCode 账号未提供所选模型，请刷新目录。'); }
+        let selected, entry;
+        if (modelId) { entry = session.models.get(modelId); if (!entry) throw fail('ZCODE_MODEL_UNAVAILABLE', '当前 ZCode 账号未提供所选模型，请刷新目录。'); selected = structuredClone(entry.ref); }
+        else if (reasoningEffort !== 'default' || session.reasoningOverridden) {
+          entry = session.models.get(targetId) || [...session.models.values()].find(row => row.ref.providerId === session.currentModel?.providerId && row.ref.modelId === session.currentModel?.modelId);
+          if (entry) selected = structuredClone(entry.ref);
+        }
+        if (reasoningEffort !== 'default') {
+          if (!entry?.model.reasoningEfforts.includes(reasoningEffort)) throw fail('ZCODE_REASONING_UNAVAILABLE', '官方 ZCode 未提供所选推理档位，请刷新模型目录。');
+          selected.options = { reasoningLevel: reasoningEffort };
+        } else if (selected && entry.model.defaultReasoningEffort) selected.options = { reasoningLevel: entry.model.defaultReasoningEffort };
         client.resetTurnLimit(); active.sent = true;
         timer = setTimeout(() => { completion.reject(fail('ZCODE_TIMEOUT', '官方 ZCode 任务超时，已停止。')); client.fail(fail('ZCODE_TIMEOUT', '官方 ZCode 任务超时，已停止。')); }, this.#timeout);
         const maxContextChars = Math.min(131072, Math.floor((4 * 1024 * 1024 - Buffer.byteLength(prompt)) / 3));
         const continuedPrompt = fresh && maxContextChars >= 512 ? externalAgentPrompt(prompt, contextMessages, { maxContextChars }) : prompt;
         const accepted = await client.request('session/send', { sessionId: session.id, inputId: active.inputId, content: continuedPrompt, ...(selected ? { modelSelection: selected } : {}) }, { timeoutMs: this.#startTimeout });
         if (accepted?.accepted !== true || accepted.sessionId !== session.id) throw invalid();
+        session.reasoningOverridden = reasoningEffort !== 'default'; if (selected) session.currentModel = selected;
+        if (entry && selected?.options?.reasoningLevel) entry.model.currentReasoningEffort = selected.options.reasoningLevel;
         const result = await completion.promise; check(controller.signal); return result;
       } catch (error) { if (!controller.signal.aborted && error.name !== 'AbortError') this.#publishError(error, 'task'); throw controller.signal.aborted ? cancelled() : safeError(error); }
       finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); if (this.#active === active) this.#active = null; this.#changed(); }

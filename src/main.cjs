@@ -51,7 +51,7 @@ let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
   if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
   const previousVersions = ['Synora-code-0.16.7-win32-x64', 'Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
-  previousVersions.unshift('Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
+  previousVersions.unshift('Synora-code-0.23.5-win32-x64', 'Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
@@ -59,13 +59,13 @@ function preparePortableMigration() {
 
 let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, createPetTaskHandoff, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
-let deepseek, gemini, antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime, runExternalAgentTurn;
+let deepseek, gemini, antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime, claudeAgent, claudeRuntime, arkAccount, runExternalAgentTurn;
 const roleDeepseekAccounts = new Map(), roleGeminiAccounts = new Map();
-const isExternalAgentMode = mode => ['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(mode);
-const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account'].includes(mode) || isExternalAgentMode(mode);
-const accountLabel = mode => mode === 'antigravity-agent' ? 'Antigravity 官方代理' : mode === 'kimi-agent' ? 'Kimi 官方代理' : mode === 'glm-agent' ? 'GLM / ZCode 官方代理' : mode === 'gemini-account' ? 'Google / Gemini CLI' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
-const accountController = mode => mode === 'antigravity-agent' ? antigravity : mode === 'kimi-agent' ? kimiAgent : mode === 'glm-agent' ? glmAgent : mode === 'gemini-account' ? gemini : mode === 'deepseek-account' ? deepseek : chatgpt;
-const accountBaseUrl = mode => ['gemini-account', 'antigravity-agent'].includes(mode) ? 'https://generativelanguage.googleapis.com/v1beta' : mode === 'kimi-agent' ? 'https://api.moonshot.cn/v1' : mode === 'glm-agent' ? 'https://open.bigmodel.cn/api/paas/v4' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1';
+const isExternalAgentMode = mode => ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(mode);
+const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account', 'ark-account'].includes(mode) || isExternalAgentMode(mode);
+const accountLabel = mode => mode === 'antigravity-agent' ? 'Gemini' : mode === 'kimi-agent' ? 'Kimi' : mode === 'glm-agent' ? 'GLM' : mode === 'claude-agent' ? 'Claude' : mode === 'ark-account' ? '火山方舟' : mode === 'gemini-account' ? 'Google / Gemini CLI' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT';
+const accountController = mode => mode === 'antigravity-agent' ? antigravity : mode === 'kimi-agent' ? kimiAgent : mode === 'glm-agent' ? glmAgent : mode === 'claude-agent' ? claudeAgent : mode === 'ark-account' ? arkAccount : mode === 'gemini-account' ? gemini : mode === 'deepseek-account' ? deepseek : chatgpt;
+const accountBaseUrl = mode => ['gemini-account', 'antigravity-agent'].includes(mode) ? 'https://generativelanguage.googleapis.com/v1beta' : mode === 'kimi-agent' ? 'https://api.moonshot.cn/v1' : mode === 'glm-agent' ? 'https://open.bigmodel.cn/api/paas/v4' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : mode === 'ark-account' ? 'https://ark.cn-beijing.volces.com/api/v3' : mode === 'claude-agent' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1';
 const roleAccountIdentities = new Map();
 let modelCatalog, deriveModelCapabilities, settingsCatalogSelections, uiPreferences, modelCapacityPreferences, permissionPreferences, approvalReviewerPreferences, appearance, recentProjects, primaryContext;
 let setWorkspace, createSession, broadcastState;
@@ -131,7 +131,7 @@ function installAppUpdate() {
       requireUpdateIdle();
       await launchInstaller(filename);
       cancelAccountSignIns();
-      await Promise.allSettled([antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose()));
+      await Promise.allSettled([antigravity, kimiAgent, glmAgent, claudeAgent, arkAccount, antigravityRuntime, kimiRuntime, glmRuntime, claudeRuntime].map(component => component?.dispose()));
       quitForUpdate();
       return appUpdateSnapshot();
     } finally {
@@ -195,6 +195,7 @@ function redact(value) {
   if (chatgpt) clean = chatgpt.redact(clean);
   if (deepseek) clean = deepseek.redact(clean);
   if (gemini) clean = gemini.redact(clean);
+  if (arkAccount) clean = arkAccount.redact(clean);
   if (roleModels) clean = roleModels.redact(clean);
   for (const account of roleAccounts.values()) clean = account.redact(clean);
   for (const account of roleDeepseekAccounts.values()) clean = account.redact(clean);
@@ -218,6 +219,8 @@ function cancelAccountSignIns() {
   antigravityRuntime?.cancel();
   void kimiAgent?.cancelSignIn(); kimiRuntime?.cancel();
   void glmAgent?.cancelSignIn(); glmRuntime?.cancel();
+  void claudeAgent?.cancelSignIn(); claudeRuntime?.cancel();
+  void arkAccount?.cancelSignIn();
   for (const account of roleAccounts.values()) account.cancelSignIn();
   for (const account of roleDeepseekAccounts.values()) account.cancelSignIn();
   for (const account of roleGeminiAccounts.values()) account.cancelSignIn();
@@ -244,10 +247,11 @@ async function officialProxyEnvironment(target) {
   return {};
 }
 async function initializeOfficialAgents() {
-  const [{ AntigravityRuntime }, { AntigravityAgent }, { KimiRuntime }, { KimiAgent }, { ZCodeRuntime }, { ZCodeAgent }, turn] = await Promise.all([
+  const [{ AntigravityRuntime }, { AntigravityAgent }, { KimiRuntime }, { KimiAgent }, { ZCodeRuntime }, { ZCodeAgent }, turn, { ClaudeRuntime }, { ClaudeAgent }, { ArkAccount }] = await Promise.all([
     import('./core/antigravity-runtime.mjs'), import('./core/antigravity-agent.mjs'),
     import('./core/kimi-runtime.mjs'), import('./core/kimi-agent.mjs'),
     import('./core/zcode-runtime.mjs'), import('./core/zcode-agent.mjs'), import('./core/external-agent-turn.mjs'),
+    import('./core/claude-runtime.mjs'), import('./core/claude-agent.mjs'), import('./core/ark-account.mjs'),
   ]);
   runExternalAgentTurn = turn.runExternalAgentTurn;
   const onChange = () => { broadcastAllStates().catch(() => {}); };
@@ -271,7 +275,12 @@ async function initializeOfficialAgents() {
   glmAgent = new ZCodeAgent({ dataDir: path.join(root, 'glm'), runtime: glmRuntime, version: app.getVersion(), onChange,
     openExternal: url => shell.openExternal(url),
     getProxyEnv: async () => officialProxyEnvironment((await glmAgent.publicState()).region === 'zai' ? 'https://z.ai' : 'https://bigmodel.cn') });
-  await Promise.all([antigravity.init(), kimiAgent.init(), glmAgent.init()]);
+  claudeRuntime = new ClaudeRuntime({ dataDir: path.join(root, 'claude'), onChange });
+  claudeAgent = new ClaudeAgent({ dataDir: path.join(root, 'claude'), runtime: claudeRuntime, version: app.getVersion(), onChange,
+    getProxyEnv: () => officialProxyEnvironment('https://claude.ai') });
+  arkAccount = new ArkAccount({ dataDir: path.join(root, 'ark'), safeStorage, version: app.getVersion(), onChange,
+    getProxyEnv: () => officialProxyEnvironment('https://ark.cn-beijing.volces.com') });
+  await Promise.all([antigravity.init(), kimiAgent.init(), glmAgent.init(), claudeAgent.init(), arkAccount.init()]);
 }
 async function publishRoleAccount(role, provider = 'openai') {
   const state = await roleAccount(role, provider).publicState();
@@ -440,13 +449,14 @@ const promptCompletion = createPromptCompletionController({
     if (shuttingDown || quitting || win?.isDestroyed() || host.active !== context || localOperation || promptPreflights)
       throw new Error('会话正在切换或关闭，请稍后补全提示词。');
     return { sessionId: currentSession?.id, workspaceId, messages: currentSession?.messages,
-      chatgptProfileId: currentSession?.chatgptProfileId || null, deepseekProfileId: currentSession?.deepseekProfileId || null, geminiProfileId: currentSession?.geminiProfileId || null, configRevision };
+      chatgptProfileId: currentSession?.chatgptProfileId || null, deepseekProfileId: currentSession?.deepseekProfileId || null, geminiProfileId: currentSession?.geminiProfileId || null, arkProfileId: currentSession?.arkProfileId || null, configRevision };
   },
   isCurrent: snapshot => !shuttingDown && !quitting && !win?.isDestroyed() && host.active === context
     && currentSession?.id === snapshot.sessionId && configRevision === snapshot.configRevision
     && (currentSession?.chatgptProfileId || null) === snapshot.chatgptProfileId
     && (currentSession?.deepseekProfileId || null) === snapshot.deepseekProfileId
-    && (currentSession?.geminiProfileId || null) === (snapshot.geminiProfileId || null),
+    && (currentSession?.geminiProfileId || null) === (snapshot.geminiProfileId || null)
+    && (currentSession?.arkProfileId || null) === (snapshot.arkProfileId || null),
   async getConfig(snapshot, signal) {
     signal.throwIfAborted();
     if (roleModels.isEnabled('completion')) return roleRequestConfig('completion', { controller: { signal } });
@@ -455,15 +465,18 @@ const promptCompletion = createPromptCompletionController({
     const profileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
     const geminiProfileId = connection.authMode === 'gemini-account' ? connection.account?.session?.profileId || null : null;
-    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId || (snapshot.geminiProfileId || null) !== geminiProfileId))
+    const arkProfileId = connection.authMode === 'ark-account' ? connection.account?.session?.profileId || null : null;
+    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId || (snapshot.geminiProfileId || null) !== geminiProfileId || (snapshot.arkProfileId || null) !== arkProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
     const config = await currentRequestConfig({ controller: { signal }, connectionKey: connection.key,
       chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null,
       deepseekProfileId: snapshot.hasConversation ? snapshot.deepseekProfileId : null,
-      geminiProfileId: snapshot.hasConversation ? snapshot.geminiProfileId : null }, publicSettings().model);
+      geminiProfileId: snapshot.hasConversation ? snapshot.geminiProfileId : null,
+      arkProfileId: snapshot.hasConversation ? snapshot.arkProfileId : null }, publicSettings().model);
     return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null,
       deepseekProfileId: config.authMode === 'deepseek-account' ? deepseekProfileId : null,
-      geminiProfileId: config.authMode === 'gemini-account' ? geminiProfileId : null };
+      geminiProfileId: config.authMode === 'gemini-account' ? geminiProfileId : null,
+      arkProfileId: config.authMode === 'ark-account' ? arkProfileId : null };
   },
   async validateConfig(config, snapshot, signal) {
     signal.throwIfAborted();
@@ -481,7 +494,8 @@ const promptCompletion = createPromptCompletionController({
           || connection.account.session.profileId !== config.chatgptProfileId)
         || config.authMode === 'deepseek-account' && (!connection.account?.session?.profileId
           || connection.account.session.profileId !== config.deepseekProfileId)
-        || config.authMode === 'gemini-account' && (!connection.account?.session?.profileId || connection.account.session.profileId !== config.geminiProfileId))
+        || config.authMode === 'gemini-account' && (!connection.account?.session?.profileId || connection.account.session.profileId !== config.geminiProfileId)
+        || config.authMode === 'ark-account' && (!connection.account?.session?.profileId || connection.account.session.profileId !== config.arkProfileId))
       throw new DOMException('模型连接已变化，提示词补全已取消。', 'AbortError');
   },
   requestModel: dispatchModelRequest, onUsage: recordRunUsage, redact,
@@ -508,15 +522,16 @@ const petDialog = createPetDialogController({
     const chatgptProfileId = connection.authMode === 'chatgpt' ? connection.account?.session?.profileId || null : null;
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
     const geminiProfileId = connection.authMode === 'gemini-account' ? connection.account?.session?.profileId || null : null;
+    const arkProfileId = connection.authMode === 'ark-account' ? connection.account?.session?.profileId || null : null;
     if (!roleModels.isEnabled('pet') && currentSession.messages.length
-        && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId))
+        && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId || (currentSession.arkProfileId || null) !== arkProfileId))
       throw new Error('会话模型账号已变化，请新建会话后再与宠物聊天。');
     const config = await roleRequestConfig('pet', { controller: { signal }, connectionKey: connection.key,
-      chatgptProfileId, deepseekProfileId, geminiProfileId }, publicSettings().model);
+      chatgptProfileId, deepseekProfileId, geminiProfileId, arkProfileId }, publicSettings().model);
     signal.throwIfAborted();
     if (shuttingDown || quitting || sessionId !== currentSession?.id || revision !== configRevision)
       throw new DOMException('宠物聊天的会话或模型已变化。', 'AbortError');
-    return { ...config, ...(config.modelRole ? {} : { chatgptProfileId, deepseekProfileId, geminiProfileId }),
+    return { ...config, ...(config.modelRole ? {} : { chatgptProfileId, deepseekProfileId, geminiProfileId, arkProfileId }),
       petSessionId: sessionId, petConfigRevision: revision };
   },
   isConfigCurrent: currentPetConfig,
@@ -1037,8 +1052,8 @@ async function currentRequestConfig(run, modelOverride) {
   if (run.connectionKey && run.connectionKey !== context.key) throw new Error('模型连接已变更，请停止后重新开始任务。');
   const account = isAccountMode(settings.authMode);
   if (account && (context.account?.session?.status !== 'connected' || !context.account.session.sharing || !context.account.session.profileId
-      || (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : run.deepseekProfileId)
-        && (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : run.deepseekProfileId) !== context.account.session.profileId)) throw new Error(`${accountLabel(settings.authMode)} 授权已变更，请停止后重新开始任务。`);
+      || (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : settings.authMode === 'ark-account' ? run.arkProfileId : run.deepseekProfileId)
+        && (settings.authMode === 'chatgpt' ? run.chatgptProfileId : settings.authMode === 'gemini-account' ? run.geminiProfileId : settings.authMode === 'ark-account' ? run.arkProfileId : run.deepseekProfileId) !== context.account.session.profileId)) throw new Error(`${accountLabel(settings.authMode)} 授权已变更，请停止后重新开始任务。`);
   const apiKey = account ? '' : store.key(settings.provider);
   if (!account && settings.provider !== 'ollama' && !apiKey) throw new Error('请先配置模型连接，才能使用 AI。');
   const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
@@ -1048,6 +1063,7 @@ async function currentRequestConfig(run, modelOverride) {
   return { provider: settings.provider, apiKey, authMode: account ? settings.authMode : 'apiKey',
     baseUrl: account ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: account ? settings.authMode === 'chatgpt' ? 'responses' : 'chat-completions' : settings.apiProtocol,
     ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
+    ...(settings.authMode === 'ark-account' ? { arkProfileId: context.account.session.profileId } : {}),
     ...(settings.authMode === 'gemini-account' ? { geminiProfileId: context.account.session.profileId } : {}),
     model, modelCapabilities, reasoningEffort: resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort),
     permissionMode, connectionKey: context.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession?.id,
@@ -1082,9 +1098,11 @@ async function state() {
   const antigravityAccount = antigravity ? await antigravity.publicState() : null;
   const kimiAccount = kimiAgent ? await kimiAgent.publicState() : null;
   const glmAccount = glmAgent ? await glmAgent.publicState() : null;
+  const claudeAccount = claudeAgent ? await claudeAgent.publicState() : null;
+  const arkState = arkAccount ? await arkAccount.publicState() : null;
   const roleState = await roleRuntime.publicState(publicSettings());
   const context = await catalogContext({}, { chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount,
-    antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount });
+    antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount, claudeAgent: claudeAccount, ark: arkState });
   restoreApprovalReviewer(context);
   if (!roleState.approval.enabled && approvalReviewerModel) roleState.approval.effective.model = approvalReviewerModel;
   metricsConnectionKey = context.key;
@@ -1101,7 +1119,7 @@ async function state() {
     ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
-  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
+  return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount, claudeAgent: claudeAccount, ark: arkState, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
 }
 async function catalogContext(arg = {}, account) {
   if (!arg || typeof arg !== 'object' || Array.isArray(arg)) throw new Error('模型目录参数无效。');
@@ -1110,8 +1128,8 @@ async function catalogContext(arg = {}, account) {
   if (!Object.hasOwn(settings.providers, provider)) throw new Error('请选择有效的模型供应商。');
   const config = settings.providers[provider];
   const authMode = arg.authMode ?? config.authMode;
-  if (!['apiKey','chatgpt','deepseek-account','gemini-account','antigravity-agent','kimi-agent','glm-agent'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek') || (['gemini-account','antigravity-agent'].includes(authMode) && provider !== 'gemini') || (authMode === 'kimi-agent' && provider !== 'kimi') || (authMode === 'glm-agent' && provider !== 'glm')) throw new Error('此服务商不支持所选的连接方式。');
-  const keyName = { chatgpt: 'chatgpt', 'gemini-account': 'gemini', 'deepseek-account': 'deepseek', 'antigravity-agent': 'antigravity', 'kimi-agent': 'kimiAgent', 'glm-agent': 'glmAgent' }[authMode];
+  if (!['apiKey','chatgpt','deepseek-account','gemini-account','antigravity-agent','kimi-agent','glm-agent','claude-agent','ark-account'].includes(authMode) || (authMode === 'chatgpt' && provider !== 'openai') || (authMode === 'deepseek-account' && provider !== 'deepseek') || (['gemini-account','antigravity-agent'].includes(authMode) && provider !== 'gemini') || (authMode === 'kimi-agent' && provider !== 'kimi') || (authMode === 'glm-agent' && provider !== 'glm') || (authMode === 'claude-agent' && provider !== 'anthropic') || (authMode === 'ark-account' && provider !== 'doubao')) throw new Error('此服务商不支持所选的连接方式。');
+  const keyName = { chatgpt: 'chatgpt', 'gemini-account': 'gemini', 'deepseek-account': 'deepseek', 'antigravity-agent': 'antigravity', 'kimi-agent': 'kimiAgent', 'glm-agent': 'glmAgent', 'claude-agent': 'claudeAgent', 'ark-account': 'ark' }[authMode];
   const chatgptState = isAccountMode(authMode) ? account?.[keyName] ?? await accountController(authMode).publicState() : null;
   const key = catalogConnectionKey(provider, authMode, config, chatgptState);
   return { provider, authMode, config, account: chatgptState, key };
@@ -1151,6 +1169,14 @@ function capabilitiesFor(context, model) {
 function capacityFor(context, model) {
   const metadata = catalogSnapshots.get(context.key)?.models.find(item => item.id === model);
   const capabilities = deriveModelCapabilities(context.provider, model, { ...metadata, ...(context.provider === 'ollama' ? { contextWindowTokens: context.config.contextWindowTokens } : {}), ...(context.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
+  if (isExternalAgentMode(context.authMode)) {
+    // Only native controllers can supply arbitrary official option values.
+    // HTTP catalog entries do not gain this trusted execution capability.
+    capabilities.reasoningEfforts = metadata?.reasoningEfforts || [];
+    capabilities.reasoningOptions = metadata?.reasoningOptions || [];
+    capabilities.defaultReasoningEffort = metadata?.defaultReasoningEffort;
+    capabilities.currentReasoningEffort = metadata?.currentReasoningEffort;
+  }
   let connection = null, scope = null, manualTokens = null;
   try {
     connection = modelCapacityConnectionKey(context, isAccountMode(context.authMode) ? '' : store.key(context.provider));
@@ -1210,7 +1236,9 @@ async function previewModelSettingsCatalog(arg) {
     const models = (await chatgpt.listModels({ force: true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
     result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
   } else if (isExternalAgentMode(draft.authMode)) {
-    result = { models: await accountController(draft.authMode).listModels({ cwd: tools?.root }), fetchedAt: new Date().toISOString(), source: draft.authMode };
+    result = { models: await accountController(draft.authMode).listModels({ cwd: tools?.root, modelId: arg?.model || publicSettings().providers[draft.provider]?.model }), fetchedAt: new Date().toISOString(), source: draft.authMode };
+  } else if (draft.authMode === 'ark-account') {
+    result = { models: await arkAccount.listModels(), fetchedAt: new Date().toISOString(), source: 'ark-account' };
   } else if (draft.authMode === 'gemini-account') {
     result = { models: await gemini.listModels({ force: true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
   } else if (draft.authMode === 'deepseek-account') {
@@ -1254,7 +1282,9 @@ async function fetchModelCatalog(arg = {}) {
       const models = (await chatgpt.listModels({ force: arg.force === true })).map(model => ({ id: model.slug, displayName: model.displayName, ...deriveModelCapabilities('openai', model.slug, { ...model, officialSource: true }) }));
       result = { models, fetchedAt: new Date().toISOString(), source: 'chatgpt' };
     } else if (isExternalAgentMode(context.authMode)) {
-      result = { models: await accountController(context.authMode).listModels({ cwd: tools?.root }), fetchedAt: new Date().toISOString(), source: context.authMode };
+      result = { models: await accountController(context.authMode).listModels({ cwd: tools?.root, modelId: context.config.model }), fetchedAt: new Date().toISOString(), source: context.authMode };
+    } else if (context.authMode === 'ark-account') {
+      result = { models: await arkAccount.listModels(), fetchedAt: new Date().toISOString(), source: 'ark-account' };
     } else if (context.authMode === 'gemini-account') {
       result = { models: await gemini.listModels({ force: arg.force === true }), fetchedAt: new Date().toISOString(), source: 'gemini-account' };
     } else if (context.authMode === 'deepseek-account') {
@@ -1355,10 +1385,11 @@ async function startTask(input) {
   const useChatGPT = provider === 'openai' && settings.authMode === 'chatgpt';
   const useDeepSeekAccount = provider === 'deepseek' && settings.authMode === 'deepseek-account';
   const useGeminiAccount = provider === 'gemini' && settings.authMode === 'gemini-account';
+  const useArkAccount = provider === 'doubao' && settings.authMode === 'ark-account';
   const useExternalAgent = isExternalAgentMode(settings.authMode);
   const modelContext = await catalogContext();
   if (!demo && provider === 'ollama' && !catalogSnapshots.has(modelContext.key)) await fetchModelCatalog();
-  if (!demo && (useChatGPT || useGeminiAccount || useExternalAgent) && !catalogSnapshots.has(modelContext.key)) {
+  if (!demo && (useChatGPT || useGeminiAccount || useArkAccount || useExternalAgent) && !catalogSnapshots.has(modelContext.key)) {
     try { await fetchModelCatalog(); } catch { /* Missing catalog capacity stays conservative until discovery succeeds. */ }
     if ((await catalogContext()).key !== modelContext.key) throw new Error('模型连接已变更，请重新开始任务。');
   }
@@ -1369,10 +1400,11 @@ async function startTask(input) {
   const modelCapabilities = capabilitiesFor(modelContext, settings.model);
   // Unknown models accept the user's generic choice. Advertised capabilities
   // narrow those choices, including an explicit empty list for no adjustment.
-  const reasoningEffort = resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort);
+  const reasoningEffort = useExternalAgent ? settings.reasoningEffort || 'default' : resolvedReasoningEffort(modelCapabilities, settings.reasoningEffort);
   let chatgptProfileId = null;
   let deepseekProfileId = null;
   let geminiProfileId = null;
+  let arkProfileId = null;
   let officialAgentProfileId = null;
   let apiKey = '';
   if (!demo) {
@@ -1395,6 +1427,10 @@ async function startTask(input) {
       const account = await gemini.publicState();
       if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先通过官方 Gemini CLI 登录 Google 账号。');
       geminiProfileId = account.session.profileId;
+    } else if (useArkAccount) {
+      const account = await arkAccount.publicState();
+      if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先登录火山方舟并连接可用的 API 或 Plan 配置。');
+      arkProfileId = account.session.profileId;
     } else if (useDeepSeekAccount) {
       const account = await deepseek.publicState();
       if (account.session.status !== 'connected' || !account.session.sharing || !account.session.profileId) throw new Error('请先在模型设置中登录并授权 DeepSeek 账号。');
@@ -1406,11 +1442,13 @@ async function startTask(input) {
   }
   if (!demo) {
     if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId
+        || (currentSession.arkProfileId || null) !== arkProfileId
         || (currentSession.officialAgentProfileId || null) !== officialAgentProfileId
         || (currentSession.officialAgentMode || null) !== (useExternalAgent ? settings.authMode : null))) await createSession({ temporary: currentSession.temporary === true });
     currentSession.chatgptProfileId = chatgptProfileId;
     currentSession.deepseekProfileId = deepseekProfileId;
     currentSession.geminiProfileId = geminiProfileId;
+    currentSession.arkProfileId = arkProfileId;
     currentSession.officialAgentProfileId = officialAgentProfileId;
     currentSession.officialAgentMode = useExternalAgent ? settings.authMode : null;
   }
@@ -1443,6 +1481,7 @@ async function startTask(input) {
   run.chatgptProfileId = chatgptProfileId;
   run.deepseekProfileId = deepseekProfileId;
   run.geminiProfileId = geminiProfileId;
+  run.arkProfileId = arkProfileId;
   run.externalAgent = useExternalAgent;
   run.officialAgentProfileId = officialAgentProfileId;
   run.demo = demo;
@@ -1475,12 +1514,12 @@ async function startTask(input) {
         const controller = accountController(settings.authMode), connection = await controller.publicState();
         if (connection.session.profileId !== officialAgentProfileId) throw new Error('官方代理账号已变化，请重新开始任务。');
         await runExternalAgentTurn({ agent: controller, session: currentSession, cwd: tools.root, prompt: userText, attachments,
-          modelId: settings.model, provider, runId: run.id, signal: run.controller.signal, emit,
+          modelId: settings.model, reasoningEffort, provider, runId: run.id, signal: run.controller.signal, emit,
           onPermission: officialAgentPermission, onUserInput: officialAgentUserInput,
           onUsage: record => recordRunUsage(record).catch(() => {}), redact });
         emit({ type: 'files-changed', operation: 'official-agent', path: '' });
       } else {
-        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : 'apiKey', deepseekProfileId, geminiProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+        await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : useArkAccount ? 'ark-account' : 'apiKey', deepseekProfileId, geminiProfileId, arkProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount || useArkAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
           if (name === PET_QUESTION_TOOL.name)
             return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(value => JSON.stringify(value));
           if (name === 'read_url' || name.startsWith('browser_')) {
@@ -1833,6 +1872,7 @@ function buildHandlers() {
       const capabilities = capabilitiesFor(context, model.id);
       const reasoningEffort = resolvedReasoningEffort(capabilities, previous.reasoningEffort);
       await saveProjectSettings({ provider: context.provider, authMode: context.authMode, model: model.id, reasoningEffort });
+      if (isExternalAgentMode(context.authMode) && !activeRun) await fetchModelCatalog({ force: true });
       await broadcastState(); return state();
     },
     saveSettings: async arg => { await saveProjectSettings(arg); await broadcastAllStates(); return state(); },
@@ -1915,6 +1955,17 @@ function buildHandlers() {
     kimiAgentCancelSignIn: () => { kimiRuntime.cancel(); void kimiAgent.cancelSignIn().catch(() => {}); return null; },
     kimiAgentDisconnect: () => mutateShared(async () => { await kimiAgent.disconnect(); await broadcastAllStates(); return state(); }),
     kimiAgentRetryStorage: () => mutateShared(async () => { await kimiAgent.retryLocalRead(); await broadcastAllStates(); return state(); }),
+    claudeAgentInstall: () => mutateShared(async () => { await claudeRuntime.ensure(); await broadcastAllStates(); return state(); }),
+    claudeAgentSignIn: () => mutateShared(async () => { await claudeAgent.signIn(); await broadcastAllStates(); return state(); }),
+    claudeAgentCancelSignIn: () => { claudeRuntime.cancel(); void claudeAgent.cancelSignIn().catch(() => {}); return null; },
+    claudeAgentDisconnect: () => mutateShared(async () => { await claudeAgent.disconnect(); await broadcastAllStates(); return state(); }),
+    claudeAgentRetryStorage: () => mutateShared(async () => { await claudeAgent.retryLocalRead(); await broadcastAllStates(); return state(); }),
+    arkInstall: () => mutateShared(async () => { await arkAccount.ensure(); await broadcastAllStates(); return state(); }),
+    arkSignIn: () => mutateShared(async () => { await arkAccount.signIn(); await broadcastAllStates(); return state(); }),
+    arkSelectProfile: async arg => { await arkAccount.selectProfile(arg?.profileName); await broadcastAllStates(); return state(); },
+    arkCancelSignIn: () => { void arkAccount.cancelSignIn().catch(() => {}); return null; },
+    arkDisconnect: () => mutateShared(async () => { await arkAccount.disconnect(); await broadcastAllStates(); return state(); }),
+    arkRetryStorage: () => mutateShared(async () => { await arkAccount.retryLocalRead(); await broadcastAllStates(); return state(); }),
     glmAgentInstall: () => mutateShared(async () => { await glmRuntime.ensure(); await broadcastAllStates(); return state(); }),
     glmAgentSignIn: arg => mutateShared(async () => { await glmAgent.signIn({ region: arg?.region }); await broadcastAllStates(); return state(); }),
     glmAgentCancelSignIn: () => { glmRuntime.cancel(); void glmAgent.cancelSignIn().catch(() => {}); return null; },
@@ -2588,6 +2639,14 @@ async function boot() {
 async function smokeTest() {
   const output = process.env.FORGEDESK_ARTIFACT_DIR || path.join(projectDir, 'artifacts');
   await fs.mkdir(output, { recursive: true });
+  if (process.env.FORGEDESK_SMOKE_ONLY === 'account-models') {
+    const result = { version: app.getVersion(), packaged: app.isPackaged,
+      ...await require('./core/smoke-account-models.cjs')({ win, output, dataDir }),
+      runtime: await require('./core/smoke-account-runtime.cjs')({ claudeRuntime, arkAccount, dataDir }) };
+    await fs.writeFile(path.join(output, 'smoke-result.json'), JSON.stringify(result, null, 2));
+    console.log('FORGEDESK_ACCOUNT_MODELS_SMOKE_OK ' + JSON.stringify(result));
+    win.destroy(); quitting = true; app.quit(); return;
+  }
   if (process.env.FORGEDESK_SMOKE_ONLY === 'official-agent-runtime') {
     const result = { version: app.getVersion(), packaged: app.isPackaged,
       ...await require('./core/smoke-official-runtime.cjs')({ runtime: glmRuntime, dataDir }) };
@@ -3035,7 +3094,7 @@ app.on('will-quit', () => {
   backgroundTray?.dispose();
   void deepseek?.dispose();
   void gemini?.dispose();
-  for (const component of [antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime]) void component?.dispose();
+  for (const component of [antigravity, kimiAgent, glmAgent, claudeAgent, arkAccount, antigravityRuntime, kimiRuntime, glmRuntime, claudeRuntime]) void component?.dispose();
   for (const account of roleDeepseekAccounts.values()) void account.dispose();
   for (const account of roleGeminiAccounts.values()) void account.dispose();
   pluginRuntime?.dispose();
@@ -3050,7 +3109,7 @@ app.on('before-quit', event => {
     if (sessionRestore?.pending || persistentTaskUndo?.pending || sharedMutations || pluginManager || dshPet) {
       event.preventDefault(); quitting = 'pending';
       Promise.allSettled([sessionRestore?.flush(), persistentTaskUndo?.flush(), roleModels?.settled(), modelCapacityPreferences?.settled(), pluginManager?.settled(), dshPet?.settled(), sharedQueue,
-        ...[antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose())]).finally(() => { quitting = true; app.quit(); });
+        ...[antigravity, kimiAgent, glmAgent, claudeAgent, arkAccount, antigravityRuntime, kimiRuntime, glmRuntime, claudeRuntime].map(component => component?.dispose())]).finally(() => { quitting = true; app.quit(); });
     }
     return;
   }
@@ -3064,7 +3123,7 @@ app.on('before-quit', event => {
     }
     cancelAccountSignIns();
     await Promise.allSettled(contexts.map(context => context.shutdown()));
-    await Promise.allSettled([antigravity, kimiAgent, glmAgent, antigravityRuntime, kimiRuntime, glmRuntime].map(component => component?.dispose()));
+    await Promise.allSettled([antigravity, kimiAgent, glmAgent, claudeAgent, arkAccount, antigravityRuntime, kimiRuntime, glmRuntime, claudeRuntime].map(component => component?.dispose()));
     await sessionRestore?.flush();
     await persistentTaskUndo?.flush();
     await pluginManager?.settled();

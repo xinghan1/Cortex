@@ -23,8 +23,10 @@ function run(script, args = []) {
 run(path.join(root, 'scripts', 'prepare-chatgpt-sdk.mjs'));
 run(path.join(root, 'scripts', 'prepare-gemini-cli.mjs'));
 run(path.join(root, 'scripts', 'prepare-zcode-agent.mjs'));
+run(path.join(root, 'scripts', 'prepare-accounts.mjs'));
 run(require.resolve('electron-builder/cli.js'), [
   '--config', path.join(root, 'electron-builder.json'),
+  '--config.electronDist=' + path.dirname(require('electron')),
   '--win', 'nsis', '--x64', '--publish', 'never',
 ]);
 

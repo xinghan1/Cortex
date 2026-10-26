@@ -45,7 +45,7 @@ export class RoleModelRuntime {
       if (Object.hasOwn(arg, key)) input[key] = arg[key];
     const validator = await this.configs.draft(role, input);
     const settings = validator.publicSettings();
-    if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(settings.authMode)) throw new Error('此登录方式是完整官方代理；请为此功能单独配置 API 模型。');
+    if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(settings.authMode)) throw new Error('此登录方式是完整官方代理；请为此功能单独配置 API 模型。');
     const isDeepSeek = settings.provider === 'deepseek' && settings.authMode === 'deepseek-account';
     const isGemini = settings.provider === 'gemini' && settings.authMode === 'gemini-account';
     const account = isGemini ? await this.geminiAccounts.get(role)?.publicState()

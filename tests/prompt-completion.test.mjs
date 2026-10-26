@@ -64,6 +64,45 @@ test('DeepSeek completion keeps account generations and refuses cross-account, A
   await assert.rejects(missing.controller.complete(missing.input()), /DeepSeek 账号信息不完整/);
 });
 
+test('Ark completion rejects account A to B, Ark to API and API to Ark history before requesting a model', async () => {
+  for (const [owner, authMode, target] of [['ark-a', 'ark-account', 'ark-b'], ['ark-a', 'apiKey', null], [null, 'ark-account', 'ark-a']]) {
+    let validated = false;
+    const data = fixture({ getConfig: captured => {
+      assert.equal(captured.arkProfileId, owner);
+      return { ...config, provider: 'doubao', authMode, arkProfileId: target };
+    }, validateConfig: async () => { validated = true; } });
+    data.snapshot.arkProfileId = owner; const before = structuredClone(data.snapshot);
+    await assert.rejects(data.controller.complete(data.input()), /会话模型账号已变化/);
+    assert.equal(data.requests.length, 0); assert.equal(data.usage.length, 0); assert.equal(validated, false); assert.deepEqual(data.snapshot, before);
+  }
+});
+
+test('Ark profile identity reaches snapshot, current checks, config validation and the dispatcher unchanged', async () => {
+  const validations = [], currentChecks = []; let data;
+  data = fixture({ getConfig: captured => {
+    assert.equal(captured.arkProfileId, 'ark-generation');
+    return { ...config, provider: 'doubao', apiKey: '', authMode: 'ark-account', arkProfileId: captured.arkProfileId };
+  }, isCurrent: captured => { currentChecks.push(captured.arkProfileId); return captured.arkProfileId === data.snapshot.arkProfileId; },
+  validateConfig: async (selected, captured) => { validations.push([selected.arkProfileId, captured.arkProfileId]); } });
+  data.snapshot.arkProfileId = 'ark-generation'; await data.controller.complete(data.input());
+  assert.equal(data.requests[0].arkProfileId, 'ark-generation'); assert.equal(data.requests[0].authMode, 'ark-account'); assert.equal(data.requests[0].apiKey, '');
+  assert.deepEqual(validations, [['ark-generation', 'ark-generation'], ['ark-generation', 'ark-generation']]);
+  assert.ok(currentChecks.length > 0); assert.ok(currentChecks.every(value => value === 'ark-generation'));
+});
+
+test('an explicitly configured API completion role retains authorization to use Ark-owned visible history', async () => {
+  const data = fixture({ getConfig: captured => {
+    assert.equal(captured.arkProfileId, 'main-ark-account'); return { ...config, modelRole: 'completion', roleConnectionRevision: 1 };
+  } });
+  data.snapshot.arkProfileId = 'main-ark-account'; await data.controller.complete(data.input());
+  assert.equal(data.requests.length, 1); assert.equal(data.requests[0].authMode, 'apiKey'); assert.equal(data.requests[0].modelRole, 'completion');
+  assert.equal(JSON.parse(data.requests[0].messages[1].content).conversation[0].content, data.snapshot.messages[0].content);
+  for (const modelRole of [undefined, 'completion']) {
+    const missing = fixture({ getConfig: () => ({ ...config, provider: 'doubao', authMode: 'ark-account', modelRole }) });
+    await assert.rejects(missing.controller.complete(missing.input()), /火山方舟账号信息不完整/); assert.equal(missing.requests.length, 0);
+  }
+});
+
 test('completion preserves the exact draft and bills an independent request without mutating conversation or exposing private provider state', async () => {
   const data = fixture();
   data.snapshot.messages.push({ role: 'tool', content: 'PRIVATE_TOOL_RESULT' }, { role: 'system', content: 'PRIVATE_SYSTEM' },
@@ -293,12 +332,18 @@ test('main-process completion config enforces real session ownership before disp
     [null, 'deepseek-account', 'deepseek-a', true, false, 'deepseek'],
     ['deepseek-a', 'deepseek-account', 'deepseek-b', false, true, 'deepseek'],
     ['deepseek-a', 'chatgpt', 'chatgpt-a', true, false, 'deepseek'],
+    ['ark-a', 'ark-account', 'ark-b', true, false, 'ark'],
+    ['ark-a', 'ark-account', 'ark-a', true, true, 'ark'],
+    ['ark-a', 'apiKey', null, true, false, 'ark'],
+    [null, 'ark-account', 'ark-a', true, false, 'ark'],
+    ['ark-a', 'ark-account', 'ark-b', false, true, 'ark'],
   ]) {
     const context = {}, calls = [], usage = [];
     const currentSession = { id: randomUUID(), chatgptProfileId: ownerKind === 'chatgpt' ? owner : null,
       deepseekProfileId: ownerKind === 'deepseek' ? owner : null,
+      arkProfileId: ownerKind === 'ark' ? owner : null,
       messages: history ? [{ role: 'user', content: 'PRIVATE_ACCOUNT_HISTORY' }] : [] };
-    const selected = { ...config, provider: authMode === 'deepseek-account' ? 'deepseek' : 'openai', authMode }, connection = { key: `key-${authMode}-${profile}`, authMode,
+    const selected = { ...config, provider: authMode === 'ark-account' ? 'doubao' : authMode === 'deepseek-account' ? 'deepseek' : 'openai', authMode }, connection = { key: `key-${authMode}-${profile}`, authMode,
       account: { session: { profileId: profile, status: 'connected', sharing: true } } };
     const sandbox = vm.createContext({ createPromptCompletionController, DOMException,
       requireSharedReady() {}, shuttingDown: false, quitting: false, localOperation: false, promptPreflights: 0,
@@ -306,10 +351,10 @@ test('main-process completion config enforces real session ownership before disp
       workspaceId: 'workspace', configRevision: 1, publicSettings: () => selected, catalogContext: async () => connection,
       catalogSnapshots: new Map(), fetchModelCatalog: async () => {},
       capabilitiesFor: () => ({ supportsTools: true }), resolvedReasoningEffort: () => 'default',
-      isAccountMode: mode => mode === 'chatgpt' || mode === 'deepseek-account', isExternalAgentMode: () => false,
+      isAccountMode: mode => ['chatgpt', 'deepseek-account', 'ark-account'].includes(mode), isExternalAgentMode: () => false,
       app: { getVersion: () => '0.23.0' },
-      accountLabel: mode => mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT',
-      accountBaseUrl: mode => mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1',
+      accountLabel: mode => mode === 'ark-account' ? '火山方舟' : mode === 'deepseek-account' ? 'DeepSeek' : 'ChatGPT',
+      accountBaseUrl: mode => mode === 'ark-account' ? 'https://ark.cn-beijing.volces.com/api/v3' : mode === 'deepseek-account' ? 'https://api.deepseek.com/anthropic/v1' : 'https://api.openai.com/v1',
       permissionMode: 'request', uiPreferences: null, store: { key: () => 'fake-key' }, roleModels: { isEnabled: () => false },
       dispatchModelRequest: async request => { calls.push(request); return reply('，并验证边界。'); },
       recordRunUsage: async record => { usage.push(record); }, redact: value => value,
@@ -321,6 +366,7 @@ test('main-process completion config enforces real session ownership before disp
       assert.ok((await pending).text.startsWith('继续完善')); assert.equal(calls.length, 1); assert.equal(usage.length, 1);
       assert.equal(calls[0].chatgptProfileId, authMode === 'chatgpt' ? profile : null);
       assert.equal(calls[0].deepseekProfileId, authMode === 'deepseek-account' ? profile : null);
+      assert.equal(calls[0].arkProfileId, authMode === 'ark-account' ? profile : null);
     } else {
       await assert.rejects(pending, { message: '会话模型账号已变化，请新建会话后再补全提示词。' });
       assert.equal(calls.length, 0); assert.equal(usage.length, 0);

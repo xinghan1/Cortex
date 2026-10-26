@@ -1,7 +1,7 @@
 {
   "name": "synora-code",
   "productName": "Synora code",
-  "version": "0.23.5",
+  "version": "0.24.0",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",
@@ -10,6 +10,7 @@
     "prepare:sdk": "node scripts/prepare-chatgpt-sdk.mjs",
     "prepare:gemini": "node scripts/prepare-gemini-cli.mjs",
     "prepare:zcode": "node scripts/prepare-zcode-agent.mjs",
+    "prepare:accounts": "node scripts/prepare-accounts.mjs",
     "start": "electron .",
     "test": "node --test tests/*.test.mjs",
     "build": "node scripts/build.mjs",
@@ -27,6 +28,8 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.310",
+    "@volcengine/ark-cli": "1.0.42",
     "jose": "^6.1.0",
     "openai": "^7.21.0",
     "proper-lockfile": "^4.1.2"

@@ -1,6 +1,27 @@
 'use strict';
 (function (root) {
   const messages = Object.freeze({
+    CLAUDE_RUNTIME_MISSING: 'Claude 官方组件不可用，请重新安装新版，或安装官方 Claude Code 后重试。',
+    CLAUDE_RUNTIME_OUTDATED: '本机 Claude Code 版本过旧，请更新官方组件后重试。',
+    CLAUDE_SDK_MISSING: 'Claude 组件不完整，请重新安装新版。',
+    CLAUDE_AUTH_FAILED: 'Claude 官方账号授权未完成，请重新登录。',
+    CLAUDE_AUTH_REQUIRED: 'Claude 账号需要重新授权，请重新登录。',
+    CLAUDE_USAGE_LIMIT: 'Claude 官方额度不足或请求受限，请在官方账号中核对套餐与计费。',
+    CLAUDE_EFFORT_UNSUPPORTED: '官方 Claude 未提供所选推理档位，请刷新模型目录。',
+    CLAUDE_STORAGE_UNREADABLE: '无法读取本机 Claude 连接，请重试读取。',
+    CLAUDE_TASK_INCOMPLETE: 'Claude 官方任务未完成，请查看会话流程后重试。',
+    CLAUDE_CANCELLED: '',
+    ARK_RUNTIME_MISSING: '火山方舟登录组件不可用，请重新安装新版。',
+    ARK_SIGN_IN_REQUIRED: '请重新登录火山方舟并连接可用配置。',
+    ARK_AUTH_FAILED: '火山方舟官方授权未完成，请重新登录。',
+    ARK_RUNTIME_KEY_UNAVAILABLE: '账号已授权，但当前配置没有可用的模型调用密钥，请在官方控制台开通对应 API 或 Plan。',
+    ARK_PROFILE_UNSUPPORTED: '当前火山方舟配置暂不支持，请选择北京区域的 API、Agent Plan 或 Coding Plan。',
+    ARK_CATALOG_EMPTY: '当前配置未提供可调用的文本模型或接入点，请核对官方套餐与模型配置。',
+    ARK_STORAGE_LOCKED: '本机安全加密不可用，账号连接未保存，请重试。',
+    ARK_STORAGE_UNREADABLE: '无法读取本机火山方舟连接，请重试读取。',
+    ARK_ACCOUNT_CHANGED: '火山方舟账号或套餐配置已改变，请重新连接。',
+    ARK_CANCELLED: '',
+
     ZCODE_RUNTIME_MISSING: 'GLM 组件准备失败，请点击“准备组件”重试，或重新安装新版；账号连接已保留。',
     KIMI_SUBSCRIPTION_REQUIRED: '账号已登录，但当前订阅没有 Kimi Code 访问权限，请在官方账号中确认 Coding 套餐。',
     ZCODE_AUTH_URL_INVALID: '官方代理返回的授权地址无效，请重试登录。',
@@ -56,7 +77,7 @@
   });
   function errorCode(value) {
     const encoded = typeof value === 'string' ? value.slice(0, 8192) : typeof value?.message === 'string' ? value.message.slice(0, 8192) : '';
-    return typeof value?.code === 'string' && /^(?:AGY|KIMI|ZCODE)_[A-Z_]{1,64}$/u.test(value.code) ? value.code : encoded.match(/\[((?:AGY|KIMI|ZCODE)_[A-Z_]{1,64})\]/u)?.[1];
+    return typeof value?.code === 'string' && /^(?:AGY|KIMI|ZCODE|CLAUDE|ARK)_[A-Z_]{1,64}$/u.test(value.code) ? value.code : encoded.match(/\[((?:AGY|KIMI|ZCODE|CLAUDE|ARK)_[A-Z_]{1,64})\]/u)?.[1];
   }
   function errorMessage(value) { const code = errorCode(value); return Object.hasOwn(messages, code) ? messages[code] : value ? '官方代理操作未完成，请重试。' : ''; }
   function formatBytes(value) {
@@ -74,14 +95,14 @@
       if (code?.startsWith(spec.errorPrefix) && Object.hasOwn(messages, code)) return messages[code];
       if (spec.errorPrefix === 'AGY_') return errorMessage(value);
       const message = Object.hasOwn(messages, normalized) ? messages[normalized] : value ? '官方代理操作未完成，请重试。' : '';
-      return message.replaceAll('Antigravity', spec.name).replaceAll('Google', spec.provider === 'kimi' ? 'Kimi' : '智谱 / Z.AI').replaceAll('Gemini API Key', `${spec.provider === 'kimi' ? 'Kimi' : 'GLM'} API Key`);
+      return message.replaceAll('Antigravity', spec.name).replaceAll('Google', spec.name).replaceAll('Gemini API Key', `${spec.name} API Key`);
     };
     const $ = id => document.getElementById(id);
     const el = (tag, id, text) => { const value = document.createElement(tag); if (id) value.id = id; if (text !== undefined) value.textContent = text; return value; };
     const mode = $(spec.modeId), panel = el('section', spec.prefix + '-login-panel'); panel.className = 'antigravity-login-panel'; panel.hidden = true;
     panel.setAttribute('aria-label', `${spec.name} 官方代理`);
     const status = el('strong', spec.prefix + '-login-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-    const help = el('p', spec.prefix + '-login-help', `由 ${spec.name} 官方代理完整执行主会话任务。在官方页面连接${spec.provider === 'gemini' ? ' Google ' : ''}账号，可用模型与额度以官方账号为准。`); help.className = 'official-agent-help';
+    const help = el('p', spec.prefix + '-login-help', spec.help || `由 ${spec.name} 官方代理完整执行主会话任务。在官方页面连接${spec.provider === 'gemini' ? ' Google ' : ''}账号，可用模型与额度以官方账号为准。`); help.className = 'official-agent-help';
     const version = el('small', spec.prefix + '-runtime-version'); version.className = 'official-agent-version';
     const download = el('div', spec.prefix + '-download'), progress = el('progress', spec.prefix + '-download-progress'), downloadSize = el('span', spec.prefix + '-download-size');
     download.className = 'official-agent-download'; progress.className = 'official-agent-progress'; downloadSize.className = 'official-agent-download-size';
@@ -90,8 +111,8 @@
     const buttons = {}, add = (id, text, handler) => {
       const button = el('button', spec.prefix + '-' + id, text); button.type = 'button'; button.className = 'button'; button.addEventListener('click', handler); buttons[id] = button; actions.append(button);
     };
-    add('install', '下载官方代理', () => run('install'));
-    add('sign-in', spec.provider === 'gemini' ? '使用 Google 账号连接' : '使用官方账号连接', () => run('signin'));
+    add('install', spec.installLabel || '准备登录组件', () => run('install'));
+    add('sign-in', spec.provider === 'gemini' ? '使用 Google 账号登录' : '账号登录', () => run('signin'));
     add('cancel-sign-in', '取消连接', cancel);
     add('disconnect', '断开本机连接', () => run('disconnect'));
     add('retry', '重试读取', () => run('retry'));
@@ -106,9 +127,19 @@
       for (const [value, label] of spec.regions) { const option = el('option', '', label); option.value = value; region.append(option); }
       region.value = spec.regions[0][0]; regionField.append(region); $('base-url-field').before(regionField);
     }
-    panel.append(status, help, version, download, verification, actions, message); $('base-url-field').before(panel);
+    const profileField = spec.provider === 'doubao' ? el('div', 'ark-profile-field') : null;
+    const profileSelect = profileField ? el('select', 'ark-profile-select') : null;
+    const profileConfirm = profileField ? el('button', 'ark-profile-confirm', '连接此配置') : null;
+    if (profileField) {
+      profileField.className = 'form-field'; profileSelect.setAttribute('aria-label', '火山方舟 API 或套餐配置');
+      profileConfirm.type = 'button'; profileConfirm.className = 'button solid';
+      profileField.append(el('span', '', '选择账号配置'), profileSelect, profileConfirm);
+      profileSelect.addEventListener('change', () => render());
+      profileConfirm.addEventListener('click', chooseProfile);
+    }
+    panel.append(status, help, version, download, verification, ...(profileField ? [profileField] : []), actions, message); $('base-url-field').before(panel);
     let action = null, cancelling = false, cancelled = false, localError = null, disposed = false;
-    let regionDirty = false;
+    let regionDirty = false, choosingProfile = false, profileSnapshot = '';
     const account = () => getScope()?.[spec.stateKey] || {};
     const validRegion = value => spec.regions.some(([id]) => id === value);
     const signing = () => action === 'signin' || account().session?.status === 'connecting';
@@ -129,7 +160,7 @@
         for (const option of mode.children) if (option.value === spec.authMode) option.disabled = getRole() != null;
       }
       const phases = { initialize: '正在启动官方代理…', initializing: '正在启动官方代理…', authenticate: spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权',
-        'waiting-browser': spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权', 'model-list': '正在读取模型目录…', committing: '正在保存本机连接…' };
+        'waiting-browser': spec.provider === 'gemini' ? '等待 Google 浏览器授权' : '等待官方浏览器授权', 'choosing-profile': '请选择要连接的 API 或套餐配置', 'model-list': '正在读取模型目录…', committing: '正在保存本机连接…' };
       status.textContent = downloading ? `正在下载 ${spec.name} 官方代理…` : connecting ? phases[value.attempt?.phase] || '正在连接官方代理…'
         : connected ? `${spec.name} 官方代理已连接` : session.status === 'connected' && regionMismatch ? '请连接所选地区账号'
           : session.status === 'reauth_required' ? '请重新连接账号' : runtime.status === 'ready' ? '官方代理已安装，尚未连接账号' : '尚未安装官方代理';
@@ -146,6 +177,24 @@
       buttons.disconnect.hidden = connecting || !(session.profileId || connected || session.status === 'reauth_required'); buttons.disconnect.disabled = locked;
       buttons.retry.hidden = !value.error && runtime.status !== 'error'; buttons.retry.disabled = locked;
       buttons.models.hidden = !connected; buttons.models.disabled = locked || runtime.status !== 'ready';
+      if (profileField) {
+        const waiting = connecting && value.attempt?.phase === 'choosing-profile';
+        const profiles = Array.isArray(value.profiles) ? value.profiles : [];
+        const snapshot = JSON.stringify(profiles);
+        if (snapshot !== profileSnapshot) {
+          const previous = profileSelect.value; profileSelect.replaceChildren();
+          const placeholder = el('option', '', '请选择 API 或套餐配置'); placeholder.value = ''; profileSelect.append(placeholder);
+          const names = { platform: '按量 API（独立计费）', 'agent-plan': 'Agent Plan', 'agent-plan-team': '团队 Agent Plan', 'coding-plan': 'Coding Plan', 'coding-plan-team': '团队 Coding Plan' };
+          for (const profile of profiles) if (typeof profile?.name === 'string' && profile.name.length <= 128) {
+            const option = el('option', '', `${names[profile.type] || profile.type} · ${profile.name} · ${profile.region || ''}`);
+            option.value = profile.name; profileSelect.append(option);
+          }
+          profileSelect.value = profiles.some(profile => profile.name === previous) ? previous : ''; profileSnapshot = snapshot;
+        }
+        profileField.hidden = panel.hidden || !waiting;
+        profileSelect.disabled = !waiting || choosingProfile || cancelling;
+        profileConfirm.disabled = !waiting || choosingProfile || cancelling || !profileSelect.value;
+      }
       const published = value.error || runtime.error, localCode = errorCode(localError), publishedCode = errorCode(published);
       message.textContent = messageFor(publishedCode && (!localCode || localCode === publishedCode) ? published : localError || published);
       message.hidden = !message.textContent;
@@ -159,14 +208,23 @@
     const methods = { install: 'Install', signin: 'SignIn', disconnect: 'Disconnect', retry: 'RetryStorage' };
     async function run(kind) {
       if (disposed || getRole() != null || isBusy() || busy() || $('provider-select').value !== spec.provider || mode?.value !== spec.authMode) return;
+      if (kind === 'signin' && profileSelect) { profileSelect.value = ''; profileSnapshot = ''; }
       action = kind; localError = null; cancelled = false; onInvalidate(); render(); onChange();
       try { const next = await bridge[spec.bridgePrefix + methods[kind]](kind === 'signin' && region ? { region: region.value } : undefined); if (!disposed && next?.settings) onState(next); }
       catch (error) { if (!disposed && !cancelled) localError = { code: errorCode(error) }; }
       finally { action = null; cancelling = false; if (!disposed) { render(); onChange(); } }
     }
+    async function chooseProfile() {
+      if (disposed || choosingProfile || !profileSelect?.value || account().attempt?.phase !== 'choosing-profile') return;
+      choosingProfile = true; localError = null; render();
+      try { const next = await bridge.arkSelectProfile({ profileName: profileSelect.value }); if (!disposed && next?.settings) onState(next); }
+      catch (error) { if (!disposed) localError = { code: errorCode(error) }; }
+      finally { choosingProfile = false; if (!disposed) render(); }
+    }
     async function cancel() {
       if (disposed || !signing() || cancelling) return;
-      cancelling = true; cancelled = true; localError = null; render(); onChange();
+      cancelling = true; cancelled = true; localError = null;
+      if (profileSelect) { profileSelect.value = ''; profileSnapshot = ''; } render(); onChange();
       try {
         const next = await bridge[spec.bridgePrefix + 'CancelSignIn']();
         if (!disposed && next?.settings) onState(next);

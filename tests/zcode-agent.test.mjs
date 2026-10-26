@@ -439,6 +439,26 @@ test('native advertised reasoning defaults complete only private execution refs,
   assert.equal(f.fake.calls.filter(call => call.rpc.method === 'session/send').length, 3);
 });
 
+test('official ZCode reasoning choices preserve arbitrary values and labels and default clears a previous override', async t => {
+  let next = 0;
+  const f = await fixture(t, { handler: ({ child, rpc }) => {
+    if (rpc?.method !== 'session/create') return false;
+    const sessionId = 'native-effort-' + ++next; f.fake.sessions.set(sessionId, { seq: 0 });
+    child.reply(rpc, { protocol: { name: 'ZCode Protocol', version: 1 }, session: { sessionId }, settings: { model: {
+      current: { providerId: 'bigmodel', modelId: 'glm-flexible', options: { reasoningLevel: 'native:auto' } },
+      available: [{ ref: { providerId: 'bigmodel', modelId: 'glm-flexible' }, label: 'Official flexible model',
+        reasoning: { defaultLevel: 'native:auto', levels: [{ value: 'native:auto', label: '官方自动' }, { value: 'native:deep', label: '官方深度' }] } }],
+    } } }); return true;
+  } }); await f.agent.signIn();
+  const [model] = await f.agent.listModels(); assert.deepEqual(model.reasoningEfforts, ['native:auto', 'native:deep']);
+  assert.deepEqual(model.reasoningOptions, [{ value: 'native:auto', label: '官方自动' }, { value: 'native:deep', label: '官方深度' }]);
+  assert.equal(model.defaultReasoningEffort, 'native:auto'); assert.equal(model.currentReasoningEffort, 'native:auto');
+  await f.agent.runTask(task(f, { modelId: model.id, reasoningEffort: 'native:deep' }));
+  await f.agent.runTask(task(f, { modelId: model.id, reasoningEffort: 'default' }));
+  await assert.rejects(f.agent.runTask(task(f, { modelId: model.id, reasoningEffort: 'invented' })), { code: 'ZCODE_REASONING_UNAVAILABLE' });
+  const sends = f.fake.calls.filter(({ rpc }) => rpc.method === 'session/send'); assert.deepEqual(sends.map(({ rpc }) => rpc.params.modelSelection.options.reasoningLevel), ['native:deep', 'native:auto']);
+});
+
 test('startup automatically restores the updated bundled component for an existing account without starting a process or changing its binding', async t => {
   const f = await fixture(t), existing = await f.agent.signIn();
   const file = path.join(f.dir, 'zcode-agent', 'connection.json'), before = await fs.readFile(file, 'utf8');

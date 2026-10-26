@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { classifyGeminiRpcError } from './gemini-auth-errors.mjs';
 import { externalAgentPrompt } from './external-agent-context.mjs';
+import { officialReasoningValue, acpModelOption, acpModelsWithReasoning, updateAcpConfig, requestAcpConfig, needsAcpReasoningReset, setAcpReasoning } from './official-agent-reasoning.mjs';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = (value, max = 512) => typeof value === 'string' && value.length <= max && !/[\x00-\x1f\x7f]/u.test(value);
@@ -162,11 +163,7 @@ export class ExternalAcpClient {
 }
 
 function modelConfigOption(session) {
-  if (!Array.isArray(session?.configOptions)) return null;
-  // ACP categories are optional semantic hints. Antigravity also uses the
-  // canonical id without a category; an empty legacy list must not hide it.
-  return session.configOptions.find(option => option?.type === 'select' && option.category === 'model')
-    || session.configOptions.find(option => option?.type === 'select' && option.id === 'model') || null;
+  return acpModelOption(session);
 }
 function catalog(session) {
   const setting = modelConfigOption(session);
@@ -180,7 +177,7 @@ function catalog(session) {
     models.push({ id: row.modelId, displayName: text(row.name, 256) && row.name ? row.name : row.modelId,
       compatible: true, textCompatible: true, supportsTools: true, supportsImages: true, reasoningEfforts: [] });
   }
-  return models;
+  return acpModelsWithReasoning(models, session);
 }
 function modes(session) {
   if (!Array.isArray(session?.modes?.availableModes)) return [];
@@ -315,14 +312,21 @@ export class AntigravityAgent {
       }
       check(signal);
       if (!models.length) throw fail('AGY_CATALOG_EMPTY', 'Antigravity 已连接，但官方会话没有返回可选模型，请刷新目录或检查账号权限。');
-      return { id: sessionId, cwd, profile: this.#profile, models, modes: modes(current), configOptions: current.configOptions || [] };
+      return { id: sessionId, cwd, profile: this.#profile, models, modes: modes(current), currentModelId: modelConfigOption(current)?.currentValue ?? current.models?.currentModelId, configOptions: current.configOptions || [] };
     } finally { this.#catalogCollectors.delete(collect); wake?.(); }
   }
-  async listModels({ cwd = this.#work, signal } = {}) {
+  async #selectModel(client, session, modelId, signal) {
+    if (!session.models.some(model => model.id === modelId)) throw fail('AGY_MODEL_UNAVAILABLE', '官方账号未提供所选模型，请刷新目录。');
+    const option = modelConfigOption(session);
+    await requestAcpConfig({ client, session, method: option?.id ? 'session/set_config_option' : 'session/set_model',
+      params: option?.id ? { sessionId: session.id, configId: option.id, value: modelId } : { sessionId: session.id, modelId },
+      options: { signal, timeoutMs: this.#startTimeout }, collectors: this.#catalogCollectors, modelId });
+  }
+  async listModels({ cwd = this.#work, modelId, signal } = {}) {
     this.#usable(); if (this.#active) return structuredClone(this.#models);
-    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw fail('AGY_INVALID_INPUT', '官方代理工作目录无效。');
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || modelId !== undefined && !identifier(modelId)) throw fail('AGY_INVALID_INPUT', '官方代理工作目录或模型无效。');
     const profile = this.#profile, epoch = this.#epoch;
-    try { const client = await this.initialize({ signal }); const session = await this.#newSession(client, cwd, signal); if (profile !== this.#profile || epoch !== this.#epoch) throw cancelled(); this.#models = session.models; this.#modes = session.modes; this.#error = null; this.#changed(); return structuredClone(this.#models); }
+    try { const client = await this.initialize({ signal }); const session = await this.#newSession(client, cwd, signal); if (modelId) await this.#selectModel(client, session, modelId, signal); if (profile !== this.#profile || epoch !== this.#epoch) throw cancelled(); this.#models = session.models; this.#modes = session.modes; this.#error = null; this.#changed(); return structuredClone(this.#models); }
     catch (error) { if (error.name !== 'AbortError') this.#setError(error, 'model-list'); throw error; }
   }
   #update(params) {
@@ -331,6 +335,7 @@ export class AntigravityAgent {
     if (!active || active.controller.signal.aborted || active.profile !== this.#profile || params?.sessionId !== active.session?.id || !object(params.update)) return;
     const update = params.update;
     if (!identifier(update.sessionUpdate)) throw invalid();
+    if (update.sessionUpdate === 'config_option_update') { updateAcpConfig(active.session, update.configOptions); this.#models = active.session.models; this.#changed(); }
     if (update.sessionUpdate === 'agent_message_chunk') {
       if (update.content?.type !== 'text' || typeof update.content.text !== 'string') active.otherReplyContent = true;
       else if (active.replyText !== null) {
@@ -366,11 +371,11 @@ export class AntigravityAgent {
       return { result: { outcome: { outcome: 'selected', optionId: selected } } };
     } catch { return denied; }
   }
-  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, modeId, signal, onUpdate, onPermission } = {}) {
+  async runTask({ localSessionId, cwd, prompt, contextMessages, attachments = [], modelId, reasoningEffort = 'default', modeId, signal, onUpdate, onPermission } = {}) {
     const profile = this.#usable(); check(signal);
     if (this.#active) throw fail('AGY_BUSY', '官方代理已有任务正在运行。');
     if (!identifier(localSessionId) || typeof cwd !== 'string' || !path.isAbsolute(cwd) || /[\x00\r\n]/u.test(cwd)
-        || modelId !== undefined && !identifier(modelId) || modeId !== undefined && !identifier(modeId)
+        || modelId !== undefined && !identifier(modelId) || modeId !== undefined && !identifier(modeId) || !officialReasoningValue(reasoningEffort)
         || onUpdate !== undefined && typeof onUpdate !== 'function' || onPermission !== undefined && typeof onPermission !== 'function') throw fail('AGY_INVALID_INPUT', '官方代理任务配置无效。');
     const originalBlocks = promptBlocks(prompt, attachments, { promptCapabilities: { image: true, audio: true } });
     const controller = new AbortController();
@@ -384,19 +389,17 @@ export class AntigravityAgent {
         const client = await this.initialize({ signal: controller.signal }); check(controller.signal);
         if (profile !== this.#profile) throw fail('AGY_SESSION_CHANGED', '官方代理账号已改变，请重新开始任务。');
         let session = this.#sessions.get(localSessionId);
-        const fresh = !session || session.profile !== profile || session.cwd !== cwd;
+        let fresh = !session || session.profile !== profile || session.cwd !== cwd || needsAcpReasoningReset(session, reasoningEffort);
         if (fresh) { session = await this.#newSession(client, cwd, controller.signal); this.#sessions.set(localSessionId, session); }
         check(controller.signal); active.session = session;
-        if (modelId) {
-          if (!session.models.some(model => model.id === modelId)) throw fail('AGY_MODEL_UNAVAILABLE', '官方账号未提供所选模型，请刷新目录。');
-          const option = modelConfigOption(session);
-          if (option?.id) await client.request('session/set_config_option', { sessionId: session.id, configId: option.id, value: modelId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
-          else await client.request('session/set_model', { sessionId: session.id, modelId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
-        }
+        if (modelId) await this.#selectModel(client, session, modelId, controller.signal);
         if (modeId) {
           if (!session.modes.some(mode => mode.id === modeId)) throw fail('AGY_MODE_UNAVAILABLE', '官方代理未提供所选执行模式。');
           await client.request('session/set_mode', { sessionId: session.id, modeId }, { signal: controller.signal, timeoutMs: this.#startTimeout });
         }
+        await setAcpReasoning({ client, session, effort: reasoningEffort, options: { signal: controller.signal, timeoutMs: this.#startTimeout }, collectors: this.#catalogCollectors,
+          unavailable: () => fail('AGY_REASONING_UNAVAILABLE', '官方代理未提供或未接受所选推理档位，请刷新模型目录。') });
+        this.#models = session.models; this.#changed();
         // The caller supplies only history authorized for this account/profile.
         // Existing native sessions already own their history; do not replay it.
         const remainingBytes = Math.min(4 * 1024 * 1024 - Buffer.byteLength(prompt),

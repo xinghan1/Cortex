@@ -62,8 +62,8 @@ class RoleModels {
   async #draft(role, input) {
     const store = this.#store(this.#role(role).store.settings);
     await store.saveSettings(input);
-    if (['antigravity-agent', 'kimi-agent', 'glm-agent'].includes(store.publicSettings().authMode))
-      throw failure('此登录方式是完整官方代理；请为此功能单独配置 API 模型。', 'ROLE_MODELS_AGENT_UNSUPPORTED');
+    if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(store.publicSettings().authMode))
+      throw failure('此登录方式暂不支持独立角色；请为此功能单独配置 API 模型。', 'ROLE_MODELS_AGENT_UNSUPPORTED');
     if (this.#requiresKey(store) && !store.key(store.settings.provider)) {
       throw failure('请为此角色填写独立的 API Key。', 'ROLE_MODELS_API_KEY_REQUIRED');
     }
@@ -73,10 +73,13 @@ class RoleModels {
   async #decodeSettings(saved) {
     const store = this.#store(), defaults = store.settings;
     const providers = Object.keys(defaults.providers);
-    // Versions before Gemini have the exact previous provider set. Add a
-    // fresh empty connection without borrowing a key or changing any role.
+    // Accept exact historical provider sets, adding fresh empty connections.
+    // Never copy the main model or credential into a role.
     if (object(saved) && [providers.filter(provider => !['kimi', 'glm'].includes(provider)),
-      providers.filter(provider => !['gemini', 'kimi', 'glm'].includes(provider))].some(legacy => exactKeys(saved.providers, legacy)))
+      providers.filter(provider => !['gemini', 'kimi', 'glm'].includes(provider)),
+      providers.filter(provider => !['doubao'].includes(provider)),
+      providers.filter(provider => !['doubao', 'kimi', 'glm'].includes(provider)),
+      providers.filter(provider => !['doubao', 'gemini', 'kimi', 'glm'].includes(provider))].some(legacy => exactKeys(saved.providers, legacy)))
       saved = { ...saved, providers: Object.fromEntries(providers.map(provider => [provider,
         Object.hasOwn(saved.providers, provider) ? saved.providers[provider] : structuredClone(defaults.providers[provider])])) };
     if (!exactKeys(saved, ['provider', 'providers']) || !providers.includes(saved.provider)
@@ -96,11 +99,18 @@ class RoleModels {
         }
         if (!Object.hasOwn(value, 'region')) value.region = baseline.region;
       }
+      if (provider === 'doubao' && object(value) && !Object.hasOwn(value, 'authMode') && !Object.hasOwn(value, 'modelsByAuth')) {
+        value.authMode = 'apiKey'; value.modelsByAuth = { apiKey: value.model, 'ark-account': '' };
+        value.apiProtocol ??= 'chat-completions';
+      }
+      if (provider === 'anthropic' && object(value) && !Object.hasOwn(value, 'authMode') && !Object.hasOwn(value, 'modelsByAuth')) {
+        value.authMode = 'apiKey'; value.modelsByAuth = { apiKey: value.model, 'claude-agent': '' };
+      }
       const keys = Object.keys(baseline);
       if (!object(value) || !keys.every(key => Object.hasOwn(value, key))
           || Object.keys(value).some(key => !keys.includes(key) && key !== 'encryptedKey')
           || !validText(value.model, 200) || !validText(value.baseUrl, 4096)
-          || !validText(value.reasoningEffort, 30)) throw new Error('Invalid role provider');
+          || !validText(value.reasoningEffort, 128)) throw new Error('Invalid role provider');
       if (Object.hasOwn(value, 'encryptedKey') && (typeof value.encryptedKey !== 'string'
           || !value.encryptedKey.length || value.encryptedKey.length > 16384
           || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value.encryptedKey))) {
@@ -114,6 +124,12 @@ class RoleModels {
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'deepseek-account'].includes(value.authMode)
           || value.model !== value.modelsByAuth[value.authMode])) throw new Error('Invalid role auth settings');
+      if (provider === 'doubao' && (!exactKeys(value.modelsByAuth, ['apiKey', 'ark-account'])
+          || !Object.values(value.modelsByAuth).every(model => validText(model, 200)) || value.authMode !== 'apiKey'
+          || value.model !== value.modelsByAuth.apiKey)) throw new Error('Invalid role account settings');
+      if (provider === 'anthropic' && (!exactKeys(value.modelsByAuth, ['apiKey', 'claude-agent'])
+          || !Object.values(value.modelsByAuth).every(model => validText(model, 200)) || value.authMode !== 'apiKey'
+          || value.model !== value.modelsByAuth.apiKey)) throw new Error('Invalid role agent settings');
       if (provider === 'gemini' && (!exactKeys(value.modelsByAuth, ['apiKey', 'gemini-account', 'antigravity-agent'])
           || !Object.values(value.modelsByAuth).every(model => validText(model, 200))
           || !['apiKey', 'gemini-account'].includes(value.authMode)
@@ -143,13 +159,18 @@ class RoleModels {
           await store.saveSettings({ ...input, authMode, model: value.modelsByAuth[authMode] });
         input.authMode = value.authMode;
       }
-      if (['relay', 'kimi', 'glm'].includes(provider)) input.apiProtocol = value.apiProtocol;
+      if (['relay', 'kimi', 'glm', 'doubao'].includes(provider)) input.apiProtocol = value.apiProtocol;
       if (['kimi', 'glm'].includes(provider)) { input.authMode = 'apiKey'; input.region = value.region; }
+      if (['anthropic', 'doubao'].includes(provider)) input.authMode = 'apiKey';
       if (provider === 'ollama') input.contextWindowTokens = value.contextWindowTokens;
       await store.saveSettings(input);
     }
     for (const provider of providers) {
       if (saved.providers[provider].encryptedKey) store.settings.providers[provider].encryptedKey = saved.providers[provider].encryptedKey;
+      if (['anthropic', 'doubao'].includes(provider)) {
+        const mode = provider === 'anthropic' ? 'claude-agent' : 'ark-account';
+        store.settings.providers[provider].modelsByAuth[mode] = saved.providers[provider].modelsByAuth?.[mode] || '';
+      }
     }
     store.settings.provider = saved.provider;
     return store;
