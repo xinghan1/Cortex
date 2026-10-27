@@ -37,7 +37,7 @@ function fixture({initial=empty(),role=null,methods={},descriptor}={}){
   document.nodes.get('provider-select').value=spec.provider;document.nodes.get(spec.modeId).value='apiKey';
   for(const value of ['apiKey',spec.authMode]){const option=new Element(document);option.value=value;document.nodes.get(spec.modeId).append(option);}
   let state={settings:{provider:spec.provider},[spec.stateKey]:initial},busy=false;const calls=[],args=[],applied=[],invalidations=[];let refreshed=0;
-  const bridge={getState:async()=>state};
+  const bridge={getState:async()=>state, ...(methods.editCommand ? { editCommand: methods.editCommand } : {})};
   for(const suffix of ['Install','SignIn','CancelSignIn','Disconnect','RetryStorage','OpenAuthorization','SubmitAuthorizationCode','SelectProfile']){const name=spec.bridgePrefix+suffix;bridge[name]=value=>{calls.push(name);args.push(value);return methods[name]?methods[name](value):state;};}
   const context=vm.createContext({document,URL});vm.runInContext(source,context);let ui;
   ui=context.ForgeAntigravityLogin.create({document,bridge,descriptor,getScope:()=>state,getRole:()=>role,isBusy:()=>busy,
@@ -75,6 +75,16 @@ test('Ark pending authorization shows masked code entry and submits once without
   assert.equal(f.node('ark-authorization-field').hidden,true);assert.equal(f.node('ark-code-input').value,'');assert.equal(f.node('ark-profile-field').hidden,false);
   assert.doesNotMatch(JSON.stringify(f.applied),/SYNTHETIC_BASE64_AUTH_CODE/);
   login.resolve(choosing);await signing;
+});
+
+test('Ark authorization field routes Ctrl+V to the native focused-field paste command', async()=>{
+  // The test bridge uses no real clipboard or authorization code.
+  const calls=[];
+  const g=fixture({descriptor:ark,initial:pendingArk(),methods:{editCommand:arg=>calls.push(arg)}}); g.open();
+  const event={key:'v',ctrlKey:true,metaKey:false,altKey:false,shiftKey:false,isComposing:false,
+    preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}};
+  g.node('ark-code-input').events.get('keydown')(event);
+  assert.equal(event.prevented,true); assert.equal(event.stopped,true); assert.equal(calls.length,1); assert.equal(calls[0].command,'paste');
 });
 
 test('Ark invalid authorization codes show fixed guidance, clear the input and leave the same pending flow available for another code',async()=>{

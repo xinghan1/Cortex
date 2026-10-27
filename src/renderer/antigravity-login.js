@@ -148,7 +148,16 @@
       codeSubmit.type = 'button'; codeSubmit.className = 'button solid'; authorizationOpen.type = 'button'; authorizationOpen.className = 'button';
       authorizationField.append(el('p', '', '在官方页面完成登录后，复制授权码并粘贴到下方。授权码仅用于本次连接。'), authorizationOpen, codeInput, codeSubmit);
       codeInput.addEventListener('input', () => { localError = null; render(); });
-      codeInput.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); void submitAuthorizationCode(); } });
+      codeInput.addEventListener('keydown', event => {
+        if (!event.isComposing && !event.altKey && !event.shiftKey && (event.ctrlKey || event.metaKey)
+            && String(event.key).toLowerCase() === 'v' && typeof bridge.editCommand === 'function' && waitingForCode()) {
+          // The window has no native application menu, so explicitly route the
+          // shortcut through Electron's focused-field paste command. Clipboard
+          // contents never pass through account state or diagnostic messages.
+          event.preventDefault(); event.stopPropagation();
+          void Promise.resolve(bridge.editCommand({ command: 'paste' })).catch(() => {});
+        } else if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); void submitAuthorizationCode(); }
+      });
       codeSubmit.addEventListener('click', submitAuthorizationCode); authorizationOpen.addEventListener('click', openAuthorization);
     }
     const regionField = spec.regions.length ? el('label', spec.prefix + '-region-field') : null;
