@@ -10,6 +10,7 @@ import { RoleModelRuntime } from '../src/core/role-model-runtime.mjs';
 import { modelCapacityConnectionKey, applyModelCapacity } from '../src/core/model-capacity-preferences.cjs';
 
 const { Store } = createRequire(import.meta.url)('../src/core/store.cjs');
+const { selectModelContext } = createRequire(import.meta.url)('../src/core/model-context.cjs');
 const source=(await fs.readFile(new URL('../src/main.cjs',import.meta.url),'utf8')).replaceAll('\r\n','\n');
 const preload=await fs.readFile(new URL('../src/preload.cjs',import.meta.url),'utf8');
 const roles=['subagent','approval','completion','sidebar','pet'];
@@ -24,7 +25,7 @@ function fixture({mode='gemini-account',profile='google-main-a',historyProfile=p
   store.write=async()=>{};const readKey=store.key.bind(store);store.key=provider=>{keyReads++;return readKey(provider);};
   const account={session:{status:'connected',sharing:true,profileId:profile}},calls=[],enabled=new Set(),snapshots=new Map(),sentinel=new Error('owner-state-captured');
   const gemini={publicState:async()=>structuredClone(account),listModels:async()=>{calls.push('account-models');return[{id:'gemini-fixture',compatible:true,supportsTools:true}];},requestModel:async config=>{calls.push({transport:'google-account',config});return'account';},redact:String};
-  const c=vm.createContext({Store,safeStorage:crypto,store,createHash,randomUUID,structuredClone,AbortController,DOMException,path,
+  const c=vm.createContext({Store,safeStorage:crypto,store,createHash,randomUUID,selectModelContext,structuredClone,AbortController,DOMException,path,
     gemini,chatgpt:null,deepseek:null,antigravity:null,kimiAgent:null,glmAgent:null,app:{getVersion:()=> '0.23.0'},permissionMode:'request',configRevision:1,workspaceId:'workspace-a',
     publicSettings:()=>store.publicSettings(),state:async()=>({settings:store.publicSettings()}),catalogSnapshots:snapshots,modelCatalog:{list:async input=>{calls.push({transport:'native-catalog',input});return{models:[{id:'gemini-fixture',compatible:true,supportsTools:true}]};}},
     redact:String,broadcastState:async()=>{},broadcastAllStates:async()=>{},requireIdle(){},requireSharedReady(){},mutateShared:async action=>action(),
@@ -35,7 +36,7 @@ function fixture({mode='gemini-account',profile='google-main-a',historyProfile=p
       config:async role=>({provider:'gemini',authMode:'gemini-account',apiKey:'',model:'gemini-role-'+role,modelRole:role,roleConnectionRevision:0,geminiProfileId:'role-'+role,modelCapabilities:{}}),
       dispatch:async config=>{calls.push({transport:'role',config});return'role';}},
     requestModel:async config=>{calls.push({transport:'native-api',config});return'api';},
-    promptCompletion:{abort(){}},normalizeImageAttachments:()=>[],requireTools(){},tools:{root:'C:/disposable-project'},
+    promptCompletion:{abort(){}},petDialog:{close(){}},normalizeImageAttachments:()=>[],requireTools(){},tools:{root:'C:/disposable-project'},
     shuttingDown:false,quitting:false,stopGeneration:0,loadedSnapshot:false,win:{isDestroyed:()=>false},
     currentSession:{id:'old-session',workspace:'C:/disposable-project',messages:history?[{role:'user',content:'PRIMARY_PRIVATE_HISTORY'}]:[],
       chatgptProfileId:null,deepseekProfileId:null,geminiProfileId:historyProfile},
@@ -69,11 +70,12 @@ test('Google catalog and request configuration use only the account controller, 
   f.account.session.profileId='google-main-b';await assert.rejects(f.c.currentRequestConfig(f.run),/连接已变更|授权已变更/);
 });
 
-test('actual startTask creates a clean session for both API/account directions and every Google login generation',async()=>{
+test('actual startTask preserves the chat and separates model context for API/account and Google profile changes',async()=>{
   for(const [mode,profile,previous]of[['gemini-account','google-b',null],['apiKey',null,'google-a'],['gemini-account','google-b','google-a']]){
     const f=fixture({mode,profile,historyProfile:previous});await assert.rejects(f.c.startTask({text:'新的明确任务'}),error=>error===f.sentinel);
-    assert.equal(f.calls.filter(call=>call==='new-session').length,1);assert.equal(f.c.currentSession.id,'fresh-session');
-    assert.equal(f.c.currentSession.geminiProfileId,profile);assert.equal(f.c.currentSession.messages.length,1);assert.equal(f.c.currentSession.messages[0].content,'新的明确任务');
+    assert.equal(f.calls.filter(call=>call==='new-session').length,0);assert.equal(f.c.currentSession.id,'old-session');
+    assert.equal(f.c.currentSession.modelContext.startIndex,1);
+    assert.equal(f.c.currentSession.geminiProfileId,profile);assert.equal(f.c.currentSession.messages.length,2);assert.equal(f.c.currentSession.messages[1].content,'新的明确任务');
     assert.equal(f.keyReads(),mode==='apiKey'?1:0);
   }
   const same=fixture();await assert.rejects(same.c.startTask({text:'同账号继续'}),error=>error===same.sentinel);

@@ -7,6 +7,7 @@ const { AppUpdater } = require('./core/app-updater.cjs');
 const { createUpdateFetch } = require('./core/update-transport.cjs');
 const { Store } = require('./core/store.cjs');
 const { SessionCheckpoints, recoverInterruptedSession } = require('./core/session-checkpoints.cjs');
+const { selectModelContext } = require('./core/model-context.cjs');
 const sessionRunOwner = randomUUID();
 const sessionRecoveryErrors = new Map();
 const { RoleModels, ROLE_KEYS } = require('./core/role-models.cjs');
@@ -62,7 +63,7 @@ function preparePortableMigration() {
 
 let win, store, chatgpt, roleModels, roleRuntime, createSideChatController, createPetDialogController, PET_QUESTION_TOOL, createPetTaskHandoff, WorkspaceTools, TOOL_DEFINITIONS, createSubagentWorkspace, runAgent, runDemo, requestModel, reviewApproval, selectApprovalIntent, createApprovalController, createPromptCompletionController, TerminalSession, ManualFileManager, EditorFileTargets, normalizeImageAttachments, persistentTaskUndo;
 const roleAccounts = new Map();
-let deepseek, gemini, antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime, claudeAgent, claudeRuntime, arkAccount, runExternalAgentTurn;
+let deepseek, gemini, antigravity, antigravityRuntime, kimiAgent, kimiRuntime, glmAgent, glmRuntime, claudeAgent, claudeRuntime, arkAccount, runExternalAgentTurn, externalAgentPrompt;
 const roleDeepseekAccounts = new Map(), roleGeminiAccounts = new Map();
 const isExternalAgentMode = mode => ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent'].includes(mode);
 const isAccountMode = mode => ['chatgpt', 'deepseek-account', 'gemini-account', 'ark-account'].includes(mode) || isExternalAgentMode(mode);
@@ -1092,7 +1093,7 @@ async function currentRequestConfig(run, modelOverride) {
   const model = modelOverride || settings.model, modelCapabilities = capabilitiesFor(context, model);
   if (!model) throw new Error('请先选择模型。');
   if (!modelOverride && modelCapabilities.supportsTools === false) throw new Error('所选模型不支持编程工具调用。');
-  if (!modelOverride && modelCapabilities.supportsImages === false && currentSession.messages.some(message => message.attachments?.length)) throw new Error('当前会话包含图片，请选择支持图片的模型。');
+  if (!modelOverride && modelCapabilities.supportsImages === false && currentSession.messages.slice(currentSession.modelContext?.startIndex || 0).some(message => message.attachments?.length)) throw new Error('当前会话包含图片，请选择支持图片的模型。');
   return { provider: settings.provider, apiKey, authMode: account ? settings.authMode : 'apiKey',
     baseUrl: account ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: account ? settings.authMode === 'chatgpt' ? 'responses' : 'chat-completions' : settings.apiProtocol,
     ...(settings.authMode === 'deepseek-account' ? { deepseekProfileId: context.account.session.profileId } : {}),
@@ -1486,10 +1487,13 @@ async function startTask(input) {
     }
   }
   if (!demo) {
-    if (currentSession.messages.length && ((currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId
-        || (currentSession.arkProfileId || null) !== arkProfileId
-        || (currentSession.officialAgentProfileId || null) !== officialAgentProfileId
-        || (currentSession.officialAgentMode || null) !== (useExternalAgent ? settings.authMode : null))) await createSession({ temporary: currentSession.temporary === true });
+    // Do not bind a conversation to transient catalog/runtime status; a
+    // restart or refresh must not create a new native context by itself.
+    const connectionIdentity = createHash('sha256').update(JSON.stringify([provider, settings.authMode,
+      isAccountMode(settings.authMode) ? [modelContext.account?.session?.profileId, modelContext.account?.region || null]
+        : [settings.baseUrl, settings.apiProtocol, store.settings.providers[provider].encryptedKey || '']])).digest('hex');
+    const accountChanged = (currentSession.chatgptProfileId || null) !== chatgptProfileId || (currentSession.deepseekProfileId || null) !== deepseekProfileId || (currentSession.geminiProfileId || null) !== geminiProfileId || (currentSession.arkProfileId || null) !== arkProfileId || (currentSession.officialAgentProfileId || null) !== officialAgentProfileId || (currentSession.officialAgentMode || null) !== (useExternalAgent ? settings.authMode : null);
+    if (selectModelContext(currentSession, { connectionIdentity, catalogKey: modelContext.key, provider, accountChanged })) petDialog.close();
     currentSession.chatgptProfileId = chatgptProfileId;
     currentSession.deepseekProfileId = deepseekProfileId;
     currentSession.geminiProfileId = geminiProfileId;
@@ -1505,6 +1509,7 @@ async function startTask(input) {
     // Later requests in the original session cannot change the branch's totals.
     currentSession = { ...currentSession, id: fork.id, createdAt: fork.createdAt,
       usageBaseline: store.sessionUsageTotals(currentSession), turnUsage: store.snapshotTurnUsage(currentSession) };
+    if (currentSession.modelContext) currentSession.modelContext = { ...currentSession.modelContext, nativeSessionId: randomUUID() };
     try { await persistentTaskUndo.copySession(sourceSessionId, currentSession); }
     catch { emit({ type: 'storage-error', error: '历史撤销记录无法复制到新分支，当前文件和历史均已保留。' }); }
     loadedSnapshot = false;
@@ -1569,6 +1574,7 @@ async function startTask(input) {
         const controller = accountController(settings.authMode), connection = await controller.publicState();
         if (connection.session.profileId !== officialAgentProfileId) throw new Error('官方代理账号已变化，请重新开始任务。');
         await runExternalAgentTurn({ agent: controller, session: currentSession, cwd: tools.root, prompt: userText, attachments,
+          nativeSessionId: currentSession.modelContext?.nativeSessionId || currentSession.id,
           modelId: settings.model, reasoningEffort, provider, runId: run.id, signal: run.controller.signal, emit,
           onPermission: async request => { const decision = await officialAgentPermission(request); await run.checkpoints.flush(); return decision; }, onUserInput: async request => { const answer = await officialAgentUserInput(request); await run.checkpoints.flush(); return answer; },
           onUsage: record => recordRunUsage(record).catch(() => {}), redact });
@@ -1594,6 +1600,8 @@ async function startTask(input) {
             } }),
           onSubagentManager: manager => { run.subagentManager = manager; },
           takeSteering: () => takeSteering(run),
+          contextStartIndex: currentSession.modelContext?.startIndex || 0,
+          contextReference: currentSession.modelContext?.startIndex ? externalAgentPrompt('', currentSession.messages.slice(0, currentSession.modelContext.startIndex).map(message => ({ ...message, content: typeof message.content === 'string' ? redact(message.content) : message.content }))) : '',
           previousContextUsage,
           contextMeasurement: previousContextUsage.measurement || previousContextUsage.lastReported?.measurement,
           onMessagesChanged: () => { runSession.contextUsage = makePendingContextUsage(runSession.contextUsage); run.checkpoints.touch(); emitSessionMetrics(); },
@@ -1930,7 +1938,7 @@ function buildHandlers() {
       if (!model) throw new Error('请先刷新当前连接的模型目录，再选择模型。');
       if (model.supportsTools === false) throw new Error('此模型不支持当前编程助手使用的工具，请选择支持工具调用的模型。');
       const previous = publicSettings();
-      if (model.supportsImages === false && activeRun?.kind === 'agent' && currentSession.messages.some(message => message.attachments?.length)) throw new Error('当前任务包含图片，请选择支持图片的模型。');
+      if (model.supportsImages === false && activeRun?.kind === 'agent' && currentSession.messages.slice(currentSession.modelContext?.startIndex || 0).some(message => message.attachments?.length)) throw new Error('当前任务包含图片，请选择支持图片的模型。');
       const capabilities = capabilitiesFor(context, model.id);
       const reasoningEffort = resolvedReasoningEffort(capabilities, previous.reasoningEffort);
       await saveProjectSettings({ provider: context.provider, authMode: context.authMode, model: model.id, reasoningEffort });
@@ -2567,6 +2575,7 @@ async function boot() {
   ({ createPetDialogController, PET_QUESTION_TOOL } = await import('./core/pet-dialog.mjs'));
   ({ createPetTaskHandoff } = await import('./core/pet-task-intent.mjs'));
   ({ runAgent, runDemo } = await import('./core/agent.mjs'));
+  ({ externalAgentPrompt } = await import('./core/external-agent-context.mjs'));
   ({ requestModel } = await import('./core/providers.mjs'));
   ({ TerminalSession } = await import('./core/terminal.mjs'));
   ({ ManualFileManager } = await import('./core/file-manager.mjs'));

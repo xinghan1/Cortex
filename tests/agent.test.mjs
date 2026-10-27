@@ -4,6 +4,26 @@ import { runAgent } from '../src/core/agent.mjs';
 import { requestModel } from '../src/core/providers.mjs';
 
 const config = { provider: 'openai', apiKey: 'secret', model: 'test-model', maxSteps: 3 };
+test('a switched connection receives a text reference and its new segment without leaking previous tool data or images', async () => {
+  const { externalAgentPrompt } = await import('../src/core/external-agent-context.mjs');
+  const messages = [
+    { role: 'user', content: '先前问题', attachments: [{ dataUrl: 'old-image' }] },
+    { role: 'assistant', content: '先前回答', toolCalls: [{ arguments: 'old-arguments' }] },
+    { role: 'tool', content: 'old-tool-output' },
+    { role: 'assistant', content: 'hidden-data', hidden: true },
+    { role: 'user', content: '接着处理' },
+  ];
+  const reference = externalAgentPrompt('', messages.slice(0, 4));
+  let sent;
+  await runAgent({ config, messages, contextStartIndex: 4, contextReference: reference,
+    signal: new AbortController().signal, workspace: { root: 'test', execute: async () => '' }, toolDefinitions: [], emit: () => {},
+    requestModel: async request => { sent = request.messages; return { message: { role: 'assistant', content: '继续完成', toolCalls: [] }, usage: {} }; } });
+  assert.match(JSON.stringify(sent), /先前问题/); assert.match(JSON.stringify(sent), /先前回答/);
+  assert.doesNotMatch(JSON.stringify(sent), /old-image|old-arguments|old-tool-output|hidden-data/);
+  assert.equal(sent.at(-1).content, '接着处理');
+  assert.equal(messages.length, 6); assert.equal(messages.at(-1).content, '继续完成');
+  assert.equal(messages[2].content, 'old-tool-output');
+});
 test('agent returns tool results to model, streams text, and accounts usage', async () => {
   const messages = [{ role: 'user', content: 'read it' }], events = [];
   let round = 0;

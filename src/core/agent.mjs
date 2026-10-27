@@ -51,7 +51,7 @@ function nativeStateMatches(state, config) {
   return true;
 }
 
-export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage }) {
+export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage, contextStartIndex = 0, contextReference = '' }) {
   if (getRequestConfig !== undefined && typeof getRequestConfig !== 'function') throw new Error('实时模型配置读取器无效。');
   if (getSubagentRequestConfig !== undefined && typeof getSubagentRequestConfig !== 'function') throw new Error('子智能体模型配置读取器无效。');
   if (subagentFactory || getRequestConfig) config = freezeConfig(config);
@@ -344,8 +344,10 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
       if (measurement && !contextMeasurementMatchesConfig(measurement, plannedConfig)) measurement = null;
       let prepared, summaryRequested = false;
       try {
-        prepared = await prepareContext({ messages, checkpoint: contextCheckpoint, signal, redact,
-          protectedFromIndex: pendingImageGroups.size ? Math.min(...pendingImageGroups.values()) : undefined,
+        const prefix = contextReference ? [{ role: 'user', content: contextReference }] : [];
+        const contextMessages = [...prefix, ...messages.slice(contextStartIndex)];
+        prepared = await prepareContext({ messages: contextMessages, checkpoint: contextCheckpoint, signal, redact,
+          protectedFromIndex: pendingImageGroups.size ? Math.max(0, Math.min(...pendingImageGroups.values()) - contextStartIndex + prefix.length) : undefined,
           contextMeasurement: measurement,
           rebuildCheckpoint: rebuiltForConfig === configIdentity(plannedConfig),
           contextCompressionTriggerTokens: plannedConfig.contextCompressionTriggerTokens,

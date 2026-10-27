@@ -68,7 +68,7 @@ function appendImageSources(session, additions) {
 // its public updates; it never executes a tool or feeds its tokens into the
 // application's model request loop.
 export async function runExternalAgentTurn({ agent, session, cwd, prompt, attachments = [], modelId, reasoningEffort = 'default',
-  runId, signal, emit, onPermission, onUserInput = async () => ({ action: 'cancel' }), provider = 'gemini', onUsage = async () => {}, redact = value => value }) {
+  runId, signal, emit, onPermission, onUserInput = async () => ({ action: 'cancel' }), provider = 'gemini', onUsage = async () => {}, redact = value => value, nativeSessionId = session?.id }) {
   if (!agent || typeof agent.runTask !== 'function' || !session?.id || !Array.isArray(session.messages)
       || typeof emit !== 'function' || typeof onPermission !== 'function') throw new Error('官方代理会话配置无效。');
   const tools = new Map(), imageCandidates = new Map(), imageData = new Set(); let text = '', characters = 0, result, status = 'failed', imageCandidateBytes = 0;
@@ -149,10 +149,10 @@ export async function runExternalAgentTurn({ agent, session, cwd, prompt, attach
         && typeof message.content === 'string' && message.localOnly !== true && message.hidden !== true && message.private !== true)
         .map(message => ({ role: message.role, content: clean(message.content) }));
     }
-    result = await agent.runTask({ localSessionId: session.id, cwd, prompt, contextMessages, attachments, modelId, reasoningEffort, signal, onPermission, onUserInput,
+    result = await agent.runTask({ localSessionId: nativeSessionId, cwd, prompt, contextMessages, attachments, modelId, reasoningEffort, signal, onPermission, onUserInput,
       onUpdate: event => {
         signal?.throwIfAborted();
-        if (event?.localSessionId !== session.id) throw new Error('官方代理返回了其他会话的更新。');
+        if (event?.localSessionId !== nativeSessionId) throw new Error('官方代理返回了其他会话的更新。');
         const update = event.update;
         if (!object(update)) return;
         if (update.sessionUpdate === 'agent_message_chunk') {

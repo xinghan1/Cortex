@@ -15,6 +15,15 @@ const tool=(options,value)=>update(options,{sessionUpdate:'tool_call',toolCallId
 const resultEvents=f=>f.events.filter(event=>event.type==='tool-result').map(event=>({...event,result:JSON.parse(event.result)}));
 const displayed=(events,type)=>events.filter(event=>event.type===type).reduce((value,event)=>event.replace===true?event.text:value+event.text,'');
 
+test('native segment uses a separate identity while retaining the original conversation and text history', async()=>{
+  let received; const f=fixture(async options=>{received=options; options.onUpdate({localSessionId:'segment-id',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'新模型回复'}}}); return {stopReason:'end_turn'};}, {provider:'kimi',nativeSessionId:'segment-id'});
+  Object.assign(f.session,{officialAgentProfileId:'profile',officialAgentMode:'kimi-agent'});
+  f.config.agent.publicState=async()=>({session:{status:'connected',sharing:true,profileId:'profile'}});
+  f.session.messages.push({role:'user',content:'旧会话',attachments:[{data:'image'}]},{role:'tool',content:'工具秘密'},{role:'user',content:f.config.prompt});
+  await f.run(); assert.equal(received.localSessionId,'segment-id'); assert.deepEqual(received.contextMessages,[{role:'user',content:'旧会话'}]);
+  assert.equal(f.session.id,'local-session'); assert.equal(f.session.messages.at(-1).content,'新模型回复');
+});
+
 test('full-agent turns delegate prompt, model, attachments and permission selection without an application tool loop',async()=>{
   const permission={localSessionId:'local-session',sessionId:'official-session',options:[{optionId:'allow-native-once',kind:'allow_once'}]},asks=[];
   const handler=async value=>{asks.push(value);return 'allow-native-once';},questions=async()=>({action:'accept',content:{answers:{'选择方式':'local'}}}),attachments=[{name:'example.png',mediaType:'image/png',dataUrl:'data:image/png;base64,AA=='}];

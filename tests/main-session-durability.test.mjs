@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url);
 const {Store}=require('../src/core/store.cjs');
 const {SessionCheckpoints,recoverInterruptedSession}=require('../src/core/session-checkpoints.cjs');
+const {selectModelContext}=require('../src/core/model-context.cjs');
 const source=(await fs.readFile(new URL('../src/main.cjs',import.meta.url),'utf8')).replaceAll('\r\n','\n');
 function code(name,next){const begin=source.indexOf(`function ${name}(`),end=source.indexOf(`\n${next}`,begin+1);assert.ok(begin>=0&&end>begin,name);return source.slice(source.slice(begin-6,begin)==='async '?begin-6:begin,end);}
 const mainCode=[code('emit','function emitSessionMetrics('),code('recordLiveEvent','function rememberTerminalEvent('),
@@ -45,14 +46,14 @@ async function fixture(t,{external=false,temporary=false,storageFailure=false}={
   };
   const win={isDestroyed:()=>false,isVisible:()=>false,isMinimized:()=>false,webContents:{isDestroyed:()=>false,send:(_channel,event)=>events.push(structuredClone(event))}};
   const host={active:null,publishWorkspaces(){}};
-  context=vm.createContext({SessionCheckpoints,recoverInterruptedSession,randomUUID,structuredClone,AbortController,DOMException,performance,
+  context=vm.createContext({SessionCheckpoints,recoverInterruptedSession,selectModelContext,createHash,randomUUID,structuredClone,AbortController,DOMException,performance,
     sessionRunOwner:'current-process-owner',sessionRecoveryErrors:new Map(),store,currentSession:session,loadedSnapshot:false,
     initialized:true,lastRememberedSessionId:session.id,workspaceId:'workspace-fixture',win,host,context:null,activeRun:null,
     tools:{root:session.workspace,execute:async()=>{const disk=await store.getSession(session.id);assert.ok(disk.messages.some(value=>value.toolCalls?.[0]?.id==='tool-one'));
       assert.ok(disk.events.some(event=>event.type==='tool-start'&&event.toolCallId==='tool-one'),'tool-start is durable before execution');executions.push('read_file');return 'file';}},
     publicSettings:()=>store.publicSettings(),catalogContext:async()=>({key:'fixture-connection'}),catalogSnapshots:new Map([['fixture-connection',{models:[]}]]),
     capacityFor:()=>({modelCapacity:{capacityTokens:40000}}),capabilitiesFor:()=>({supportsTools:true,contextWindow:40000}),
-    isExternalAgentMode:mode=>mode==='claude-agent',accountController:()=>account,resolvedReasoningEffort:()=> 'default',
+    isExternalAgentMode:mode=>mode==='claude-agent',isAccountMode:mode=>mode==='claude-agent',accountController:()=>account,resolvedReasoningEffort:()=> 'default',
     promptCompletion:{abort(){}},petDialog:{close(){},stop(){},snapshot:()=>({}),greet(){},ask:async()=>({})},
     requireIdle(){},requireSharedReady(){},requireTools(){},normalizeImageAttachments:()=>[],stopGeneration:0,shuttingDown:false,quitting:false,
     metricsConnectionKey:null,metricsModelCapacity:null,configRevision:1,permissionMode:'request',redact:String,
