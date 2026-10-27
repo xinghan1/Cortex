@@ -31,12 +31,12 @@
     }
     const result = [];
     for (const file of files.values()) {
-      if (file.continuous && file.before === file.after) continue;
-      const diff = file.continuous ? diffAPI.compare(file.before, file.after) : null;
+      if (file.before === file.after) continue;
+      const diff = diffAPI.compare(file.before, file.after);
       result.push({ ...file, added: diff?.added ?? null, removed: diff?.removed ?? null, exact: diff?.exact === true });
     }
     const complete = Number.isSafeInteger(expectedCount) && expectedCount >= 0 && expectedCount === recordedCount;
-    const exact = complete && result.every(file => file.continuous && file.exact);
+    const exact = complete && result.every(file => file.exact);
     return { runId, files: result, recordedCount, expectedCount: Number.isSafeInteger(expectedCount) ? expectedCount : null, complete, exact,
       added: exact ? result.reduce((total, file) => total + file.added, 0) : null,
       removed: exact ? result.reduce((total, file) => total + file.removed, 0) : null };
@@ -85,8 +85,7 @@
     function showFile(entry, value) {
       if (value && !entry.ready) {
         const detail = node('div', 'task-change-diff'); detail.dataset.path = entry.file.path;
-        if (!entry.file.continuous) detail.append(node('p', 'task-change-warning', '记录不连续，以下分别展示已记录片段。'));
-        for (const segment of entry.file.continuous ? [{ before: entry.file.before, after: entry.file.after }] : entry.file.segments) {
+        for (const segment of [{ before: entry.file.before, after: entry.file.after }]) {
           const diff = diffAPI.create({ path: entry.file.path, ...segment }, { onCopy: options.onCopy });
           diff.querySelector('.code-diff-filename')?.remove(); diff.querySelector('.code-diff-stats')?.remove();
           diff.querySelector('.code-diff-header')?.classList.add('task-change-diff-tools');
@@ -108,7 +107,6 @@
       row.dataset.external = String(absolutePath(file.path));
       row.setAttribute('aria-expanded', 'false');
       row.append(node('span', 'task-change-path', file.path), stats(file));
-      if (!file.continuous) row.append(node('span', 'task-change-warning', '记录不连续'));
       const entry = { element, file, row, preview, open: false, ready: false }; entries.push(entry);
       row.addEventListener('click', () => {
         bulkViewing = false; showFile(entry, !entry.open); syncView();
@@ -126,7 +124,6 @@
       card.append(extra.wrap, more);
     }
     if (!summary.complete) card.append(node('p', 'task-change-warning', '快照可能未完整保留，总净变化未计算。'));
-    else if (summary.files.some(file => !file.continuous)) card.append(node('p', 'task-change-warning', '记录不连续，总净变化未计算。'));
     else if (!summary.exact) card.append(node('p', 'task-change-warning', '改动较大，差异按整段替换展示。'));
     const actions = node('div', 'task-change-actions'), undo = node('button', 'task-change-undo', '撤销'); undo.type = 'button';
     const redo = node('button', 'task-change-redo', '取消撤销'); redo.type = 'button';

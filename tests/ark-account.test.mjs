@@ -82,6 +82,25 @@ async function fixture(t, options = {}) {
   return { directory, agent, create, calls, profiles, openedUrls, states, waitForState, safeStorage, config };
 }
 
+test('login initialization errors are identified before attempting to open a browser', async t => {
+  const f = await fixture(t, { autoSubmit: false, handler: ({ args, child }) => {
+    if (args[0] === 'auth' && args[1] === 'login') { child.finish(undefined, 1); return true; }
+    return false;
+  } });
+  await assert.rejects(f.agent.signIn(), { code: 'ARK_AUTH_INITIALIZATION_FAILED' });
+  assert.equal(f.openedUrls.length, 0);
+  assert.equal((await f.agent.publicState()).error.code, 'ARK_AUTH_INITIALIZATION_FAILED');
+});
+
+test('a system proxy lookup failure is reported before the browser or CLI is started', async t => {
+  const f = await fixture(t, { autoSubmit: false });
+  const a = new ArkAccount({ ...f.config, getProxyEnv: () => { throw new Error('PRIVATE_PROXY'); } });
+  t.after(() => a.dispose());
+  await assert.rejects(a.signIn(), { code: 'ARK_PROXY_FAILED' });
+  assert.equal(f.calls.length, 0); assert.equal(f.openedUrls.length, 0);
+  assert.doesNotMatch(JSON.stringify((await a.publicState()).error), /PRIVATE_PROXY/);
+});
+
 test('official browser authorization and documented profile-key export securely bind the exact runtime profile', async t => {
   const f = await fixture(t); await f.agent.init(); assert.equal(f.calls.length, 0); assert.equal((await f.agent.publicState()).session.status, 'disconnected');
   await f.agent.signIn({ profileName: 'official-profile' }); const state = await f.agent.publicState(); assert.equal(state.session.status, 'connected'); assert.equal(state.session.sharing, true);

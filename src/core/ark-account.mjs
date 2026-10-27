@@ -182,7 +182,10 @@ export class ArkAccount {
   }
   async #options(profileId, signal) {
     const home = this.#home(profileId); await this.#mkdir(this.#profiles); await this.#mkdir(home); check(signal);
-    const proxy = await this.#proxy(); check(signal);
+    let proxy;
+    try { proxy = await this.#proxy(); }
+    catch { check(signal); throw fail('ARK_PROXY_FAILED', '无法读取当前代理配置，请检查系统代理后重试。'); }
+    check(signal);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key, value]) => /^(?:path|pathext|systemroot|windir|comspec|temp|tmp|appdata|localappdata|lang|lc_all|node_extra_ca_certs)$/iu.test(key) && typeof value === 'string'));
     if (object(proxy)) for (const [key, value] of Object.entries(proxy)) if (/^(?:https?_proxy|all_proxy|no_proxy)$/iu.test(key) && text(value, 4096)) env[key] = value;
     env.HOME = home; env.USERPROFILE = home; env.APPDATA = path.join(home, 'AppData', 'Roaming'); env.LOCALAPPDATA = path.join(home, 'AppData', 'Local'); env.CI = '1'; env.ARKCLI_NO_UPDATE_NOTIFIER = '1';
@@ -214,7 +217,13 @@ export class ArkAccount {
     const flags = ['auth', 'login', '--login-mode', 'legacy', '--no-browser'];
     // The pinned CLI's default broker flow does not implement --no-browser.
     // Keep both phases in its documented legacy cross-device flow and HOME.
-    const response = parseJson(await this.#run(flags, attempt.profileId, { signal: attempt.controller.signal, login: true }));
+    let raw;
+    try { raw = await this.#run(flags, attempt.profileId, { signal: attempt.controller.signal, login: true }); }
+    catch (error) {
+      if (error?.code === 'ARK_AUTH_FAILED') throw fail('ARK_AUTH_INITIALIZATION_FAILED', '官方方舟登录组件未能生成授权页面，请检查网络、代理和组件状态后重试。');
+      throw error;
+    }
+    const response = parseJson(raw);
     if (response.stage !== 'authorize_pending' || response.method !== 'sso_no_browser'
         || !Number.isSafeInteger(response.expires_in_sec) || response.expires_in_sec <= 0 || response.expires_in_sec > 600) throw invalid();
     attempt.verificationUrl = arkAuthorizationUrl(response.authorize_url);

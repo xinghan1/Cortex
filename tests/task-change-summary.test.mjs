@@ -30,10 +30,10 @@ test('other runs, proposals and malformed snapshots never count; replayed snapsh
   assert.equal(value.recordedCount, 1); assert.equal(value.files.length, 1); assert.equal(value.files[0].path, 'src/a.js'); assert.equal(value.complete, true);
 });
 
-test('non-contiguous snapshots remain separate segments and never claim a fabricated net diff', () => {
+test('non-contiguous snapshots show a net comparison of the earliest and latest recorded content', () => {
   const value = aggregate([edit('1', 'a', 'old', 'first'), edit('2', 'a', 'external change', 'last')], 'run-one', { expectedCount: 2 });
   const file = value.files[0]; assert.equal(file.continuous, false); assert.equal(file.segments.length, 2);
-  assert.equal(file.added, null); assert.equal(file.removed, null); assert.equal(value.exact, false); assert.equal(value.added, null);
+  assert.equal(file.added, 1); assert.equal(file.removed, 1); assert.equal(value.exact, true); assert.equal(value.added, 1);
 });
 
 test('bounded or legacy archives expose recorded files but keep whole-run totals unknown', () => {
@@ -150,12 +150,12 @@ test('view changes opens only visible file rows, and showing more reuses preview
   await rows[1].click(); assert.equal(rows[1].attributes['aria-expanded'], 'false'); assert.equal(view.textContent, '收起变更');
 });
 
-test('inline previews retain separate discontinuous segments and distinguish archive gaps from large diff fallback', async () => {
+test('inline previews merge discontinuous segments and distinguish archive gaps from large diff fallback', async () => {
   const broken = aggregate([edit('one', 'a', 'old', 'first'), edit('two', 'a', 'external', 'last')], 'run-one', { expectedCount: 2 });
   const card = context.ForgeTaskChangeSummary.create(broken); await card.querySelector('.task-change-file').click();
   assert.equal(card.querySelectorAll('.task-change-file').length, 1); assert.equal(card.querySelectorAll('.task-change-diff').length, 1);
-  assert.equal(card.querySelectorAll('.code-diff-card').length, 2); assert.equal(card.querySelectorAll('.code-diff-copy').length, 2);
-  assert.match(card.textContent, /记录不连续，总净变化未计算/u); assert.match(card.textContent, /以下分别展示已记录片段/u);
+  assert.equal(card.querySelectorAll('.code-diff-card').length, 1); assert.equal(card.querySelectorAll('.code-diff-copy').length, 1);
+  assert.doesNotMatch(card.textContent, /记录不连续/u); assert.match(card.textContent, /\+1/u);
   const large = aggregate([edit('large', 'large.js', Array.from({ length: 150 }, (_, index) => `old ${index}\n`).join(''),
     Array.from({ length: 150 }, (_, index) => `new ${index}\n`).join(''))], 'run-one', { expectedCount: 1 });
   assert.equal(large.files[0].continuous, true); assert.equal(large.exact, false);

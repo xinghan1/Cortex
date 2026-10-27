@@ -12,8 +12,21 @@
     CLAUDE_TASK_INCOMPLETE: 'Claude 官方任务未完成，请查看会话流程后重试。',
     CLAUDE_CANCELLED: '',
     ARK_RUNTIME_MISSING: '火山方舟登录组件不可用，请重新安装新版。',
+    ARK_START_FAILED: '无法启动火山方舟登录组件，请检查系统权限并重新安装软件。',
+    ARK_PROTOCOL_ERROR: '火山方舟登录组件返回的数据格式不符合预期，授权页面未打开；请更新软件后重试。',
+    ARK_TIMEOUT: '火山方舟登录或资料查询超时，请检查网络和代理后重试。',
+    ARK_PROXY_FAILED: '无法读取系统代理配置，火山方舟授权页面未打开；请检查系统代理后重试。',
+    ARK_CLI_FAILED: '火山方舟登录组件未能读取账号配置，请检查账号权限和网络后重试。',
+    ARK_REQUEST_FAILED: '火山方舟登录初始化失败，请检查本机存储权限、网络和代理设置后重试。',
+    ARK_PROFILE_UNAVAILABLE: '火山方舟账号没有可用的官方配置，请在官方控制台检查套餐和地域。',
+    ARK_INVALID_CONFIG: '火山方舟登录配置无效，请重新打开模型设置后重试。',
+    ARK_BUSY: '火山方舟账号操作正在进行，请等待或取消后重试。',
+    ARK_CLOSED: '火山方舟账号连接已关闭，请重新打开软件后重试。',
+    ARK_NO_PROFILE_SELECTION: '当前没有等待选择的方舟配置，请重新登录。',
+    ARK_MODEL_UNAVAILABLE: '当前方舟配置没有提供所选模型，请刷新模型目录。',
     ARK_SIGN_IN_REQUIRED: '请重新登录火山方舟并连接可用配置。',
     ARK_AUTH_FAILED: '火山方舟官方授权未完成，请重新登录。',
+    ARK_AUTH_INITIALIZATION_FAILED: '火山方舟登录组件未能生成授权页面，请检查网络、代理及组件状态后重试。',
     ARK_AUTH_CODE_INVALID: '授权码无效或已失效，请从当前官方授权页面重新复制授权码后提交。',
     ARK_AUTH_EXCHANGE_FAILED: '授权码验证未完成，请检查网络后重新提交；如授权码已失效，请从当前官方页面重新复制。',
     ARK_AUTH_EXPIRED: '本次授权已过期，请重新登录火山方舟。',
@@ -98,7 +111,7 @@
       const code = errorCode(value), normalized = code?.startsWith(spec.errorPrefix) ? 'AGY_' + code.slice(spec.errorPrefix.length) : null;
       if (code?.startsWith(spec.errorPrefix) && Object.hasOwn(messages, code)) return messages[code];
       if (spec.errorPrefix === 'AGY_') return errorMessage(value);
-      const message = Object.hasOwn(messages, normalized) ? messages[normalized] : value ? '官方代理操作未完成，请重试。' : '';
+      const message = Object.hasOwn(messages, normalized) ? messages[normalized] : value ? (spec.errorPrefix === 'ARK_' && code?.startsWith('ARK_') ? `火山方舟账号操作未完成（${code}），请重试。` : '官方代理操作未完成，请重试。') : '';
       return message.replaceAll('Antigravity', spec.name).replaceAll('Google', spec.name).replaceAll('Gemini API Key', `${spec.name} API Key`);
     };
     const $ = id => document.getElementById(id);

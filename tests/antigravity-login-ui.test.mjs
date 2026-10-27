@@ -229,6 +229,9 @@ test('connected official agent refreshes the shared catalog and sanitized errors
   assert.equal(f.node('antigravity-sign-in').hidden,true);assert.equal(f.node('antigravity-models').disabled,false);await f.node('antigravity-models').click();assert.equal(f.refreshed(),1);
   assert.match(f.api.errorMessage(new Error("Error invoking remote method: [AGY_ACCESS_DENIED] PRIVATE_OAUTH?code=SECRET")),/账号.*访问/);
   assert.equal(f.api.errorMessage({code:'AGY_UNKNOWN',message:'PRIVATE_TOKEN_FILE'}),'官方代理操作未完成，请重试。');
+  for (const [code, pattern] of [['ARK_START_FAILED',/启动/],['ARK_PROTOCOL_ERROR',/格式/],['ARK_AUTH_INITIALIZATION_FAILED',/授权页面/],['ARK_REQUEST_FAILED',/初始化/],['ARK_TIMEOUT',/超时/],['ARK_PROFILE_UNAVAILABLE',/配置/]]) {
+    const message = f.api.errorMessage({code,message:'PRIVATE_TOKEN_FILE'}); assert.match(message,pattern); assert.doesNotMatch(message,/PRIVATE/);
+  }
   assert.match(f.api.errorMessage(new Error('[AGY_CALLBACK_FAILED] PRIVATE_CALLBACK_STATE')),/操作已停止/);
   f.update({...empty(),error:{code:'AGY_PROXY_FAILED',message:'PRIVATE_PROXY_PASSWORD'}});assert.doesNotMatch(f.node('antigravity-login-message').textContent,/PRIVATE/);
   assert.equal(f.api.formatBytes(-1),'—');assert.equal(f.api.formatBytes(1073741824),'1.0 GB');
