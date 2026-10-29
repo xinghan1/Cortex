@@ -56,6 +56,7 @@ test('five independent provider connections and reasoning settings survive resta
     completion: { ...openai('completion-secret', 'completion-model'), apiProtocol: 'chat-completions', reasoningEffort: 'none' },
     sidebar: { provider: 'ollama', model: 'local-model', baseUrl: 'http://192.0.2.10:11434', reasoningEffort: 'enabled', contextWindowTokens: 65536 },
     pet: { provider: 'deepseek', model: 'pet-model', apiKey: 'pet-only-secret', reasoningEffort: 'none' },
+    image: { ...openai('image-only-secret', 'gpt-image-2.5-flare'), reasoningEffort: 'default' },
   };
   await Promise.all(ROLE_KEYS.map(role => roles.save(role, payloads[role])));
   await roles.settled();
@@ -87,12 +88,13 @@ test('five independent provider connections and reasoning settings survive resta
 test('four-role files add a disabled pet role without inheriting sidebar credentials or rewriting the file on read', async t => {
   const { dir, roles, file } = await fixture(t);
   await roles.save('sidebar', openai('sidebar-private-key', 'sidebar-model'));
-  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.pet;
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.pet; delete saved.roles.image;
   const legacy = JSON.stringify(saved); await fs.writeFile(file, legacy);
   const restored = await new RoleModels(dir, crypto).init();
   assert.deepEqual(restored.publicState().sidebar, roles.publicState().sidebar);
   assert.equal(restored.key('sidebar'), 'sidebar-private-key');
   assert.equal(restored.isEnabled('pet'), false);
+  assert.equal(restored.isEnabled('image'), false);
   for (const provider of Object.keys(restored.settingsFor('pet').providers)) assert.equal(restored.key('pet', provider), '');
   assert.equal(await fs.readFile(file, 'utf8'), legacy, 'Migration never writes during initialization');
   await restored.save('pet', openai('pet-private-key', 'pet-model'));
@@ -103,6 +105,16 @@ test('four-role files add a disabled pet role without inheriting sidebar credent
   assert.equal(reopened.key('sidebar'), 'sidebar-private-key');
   await reopened.reset('pet');
   assert.equal(reopened.isEnabled('pet'), false); assert.equal(reopened.key('pet'), 'pet-private-key');
+});
+
+test('existing five-role settings gain a disabled independent image role on restart', async t => {
+  const { dir, roles, file } = await fixture(t);
+  await roles.save('pet', openai('pet-private-key', 'pet-model'));
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.image;
+  await fs.writeFile(file, JSON.stringify(saved));
+  const restored = await new RoleModels(dir, crypto).init();
+  assert.equal(restored.isEnabled('image'), false); assert.equal(restored.key('image'), '');
+  assert.equal(restored.key('pet'), 'pet-private-key');
 });
 
 test('catalog drafts allow an empty model and never persist or mutate role state', async t => {

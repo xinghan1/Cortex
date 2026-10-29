@@ -47,6 +47,13 @@ test('only main and subagent require tool capability; text-only roles retain tex
   }
 });
 
+test('image role selects GPT image models without exposing them as text models', () => {
+  const image = { id: 'gpt-image-2.5-flare', compatible: false, textCompatible: false };
+  assert.equal(roles.selectable('image', image), true);
+  assert.equal(roles.selectable('completion', image), false);
+  assert.equal(roles.selectable('image', { id: 'gpt-4o', compatible: true, textCompatible: true }), false);
+});
+
 test('catalog, save and all account actions route to the chosen role without altering main actions', async () => {
   const methods = {
     preview: ['previewModelCatalog', 'previewRoleModelCatalog'], save: ['saveModelSettings', 'saveRoleModelSettings'],
@@ -77,11 +84,12 @@ function listFixture(bridge = {}) {
 test('role list shows follow versus independent models and opens the existing form for exactly one role', async () => {
   const f = listFixture(), value = state(); value.approvalReviewer = { model: 'legacy-reviewer' };
   f.controller.update(value); f.controller.openList();
-  assert.equal(f.rows().length, 5);
+  assert.equal(f.rows().length, 6);
   assert.match(f.rows()[0].text, /跟随主模型.*main-model/u);
   assert.match(f.rows()[1].text, /独立配置.*approval-model/u);
   assert.match(f.rows()[2].text, /跟随主模型.*main-model/u);
   assert.match(f.rows()[4].text, /宠物模型.*跟随主模型.*main-model/u);
+  assert.match(f.rows()[5].text, /图片模型.*跟随主模型.*main-model/u);
   await f.rows()[4].children[1].children[0].click(); assert.deepEqual(f.calls, ['pet']);
   f.controller.openList();
   await f.rows()[1].children[1].children[0].click();

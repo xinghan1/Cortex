@@ -789,7 +789,7 @@ function emit(event) {
     win.webContents.send('forge:event', imageSources.length ? { ...clean, imageSources } : clean);
   }
   else host.publishWorkspaces({ force: ['approval-request', 'approval-resolved', 'run-start', 'run-end', 'terminal-start', 'terminal-end', 'pending-prompts'].includes(clean.type) });
-  if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'context-compaction-end', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
+  if (activeRun && activeRun.kind !== 'terminal' && (event.type !== 'user-message' || event.source === 'steering') && !['text-delta', 'image-generated', 'state', 'session', 'command-output', 'telemetry', 'find-result', 'window-state', 'pending-prompts', 'files-changed', 'editor-close-request', 'browser-state', 'browser-open', 'browser-capture', 'context-compaction-start', 'context-compaction-end', 'session-metrics'].includes(event.type) && !event.type.startsWith('terminal-')) {
     // Snapshots have their own bounded archive. Do not retain a second copy
     // in the 150-event suffix after the live event has been delivered.
     const { fileChange: localSnapshot, ...publicEvent } = clean;
@@ -1581,6 +1581,30 @@ async function startTask(input) {
         emit({ type: 'files-changed', operation: 'official-agent', path: '' });
       } else {
         await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : useArkAccount ? 'ark-account' : 'apiKey', deepseekProfileId, geminiProfileId, arkProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount || useArkAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+          if (name === 'generate_image') return (async () => {
+            await run.checkpoints.flush(); options.signal?.throwIfAborted();
+            const config = roleModels.isEnabled('image') ? await roleRuntime.config('image', { signal: options.signal, permissionMode }) : await currentRequestConfig(run);
+            if (config.provider !== 'openai' || config.authMode !== 'apiKey' || !config.apiKey)
+              throw new Error('当前连接不支持 OpenAI 图片生成，请在模型分工中配置 OpenAI API Key 图片模型。');
+            const { generateOpenAIImage } = await import('./core/openai-image.mjs');
+            const isImageModel = /^gpt-image-/u.test(config.model);
+            const generated = await generateOpenAIImage({ apiKey: config.apiKey, model: isImageModel ? config.model : 'gpt-image-2.5-flare',
+              ...(!isImageModel ? { textModel: config.model } : {}), prompt: args.prompt, signal: options.signal,
+              fetchImpl: (url, opts) => electronSession.defaultSession.fetch(url, opts) });
+            options.signal?.throwIfAborted();
+            let bytes = Buffer.from(generated.dataUrl.split(',')[1], 'base64'), mediaType = generated.mediaType;
+            if (bytes.length > 2 * 1024 * 1024) {
+              const img = nativeImage.createFromBuffer(bytes); if (img.isEmpty()) throw new Error('生成的图片无效。');
+              for (const quality of [85, 70, 55, 40]) { bytes = img.toJPEG(quality); if (bytes.length <= 2 * 1024 * 1024) break; }
+              mediaType = 'image/jpeg';
+            }
+            if (bytes.length > 2 * 1024 * 1024) throw new Error('生成图片太大，无法保存到会话。');
+            const [attachment] = normalizeImageAttachments([{ name: 'generated.' + (mediaType === 'image/png' ? 'png' : 'jpg'), mediaType, dataUrl: `data:${mediaType};base64,${bytes.toString('base64')}` }]);
+            const message = { id: randomUUID(), role: 'assistant', content: '图片已生成。', attachments: [attachment], localOnly: true, source: 'generated-image' };
+            runSession.messages.push(message); run.checkpoints.touch(); await run.checkpoints.flush();
+            emit({ type: 'image-generated', id: message.id, content: message.content, attachments: message.attachments });
+            return JSON.stringify({ status: 'completed', message: '图片已生成并显示在会话中。' });
+          })();
           if (name === PET_QUESTION_TOOL.name)
             return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(async value => { await run.checkpoints.flush(); return JSON.stringify(value); });
           return run.checkpoints.flush().then(() => {
@@ -1591,7 +1615,7 @@ async function startTask(input) {
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
           });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL, { name: 'generate_image', description: '当用户要求生成图片或任务需要图像素材时，使用配置的图片模型生成图片并显示在会话中。仅在任务确实需要生图时调用。', parameters: { type: 'object', properties: { prompt: { type: 'string', description: '图片内容和风格的具体描述' } }, required: ['prompt'], additionalProperties: false } }], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);

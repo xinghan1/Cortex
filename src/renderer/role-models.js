@@ -6,6 +6,7 @@
     Object.freeze({ id: 'completion', name: 'TAB 提示词补齐', description: '生成输入框中的 Tab 补全建议' }),
     Object.freeze({ id: 'sidebar', name: '侧边问答', description: '在侧栏进行独立问答' }),
     Object.freeze({ id: 'pet', name: '宠物模型', description: '与大肥鱼聊天和生成动作台词' }),
+    Object.freeze({ id: 'image', name: '图片模型', description: '为任务生成图片' }),
   ]);
   const names = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi', glm: 'GLM', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
   const roleInfo = role => roles.find(item => item.id === role);
@@ -15,7 +16,7 @@
     return state?.roleModels?.[role] || { enabled: false, settings: {}, chatgpt: {} };
   }
   const requiresTools = role => role == null || role === 'subagent';
-  const selectable = (role, model) => !!model && (requiresTools(role)
+  const selectable = (role, model) => !!model && (role === 'image' ? /^gpt-image-/iu.test(model.id || '') : requiresTools(role)
     ? model.compatible !== false && model.supportsTools !== false
     : model.textCompatible !== false && (model.compatible !== false || model.textCompatible === true));
   function invoke(bridge, role, action, input = {}) {

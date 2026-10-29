@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SettingsCatalogSelections } from './settings-model-catalog.mjs';
 
-export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar', 'pet']);
+export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar', 'pet', 'image']);
 const roleName = role => {
   if (!MODEL_ROLES.includes(role)) throw new Error('模型用途无效。');
   return role;
@@ -45,6 +45,7 @@ export class RoleModelRuntime {
       if (Object.hasOwn(arg, key)) input[key] = arg[key];
     const validator = await this.configs.draft(role, input);
     const settings = validator.publicSettings();
+    if (role === 'image' && (settings.provider !== 'openai' || settings.authMode !== 'apiKey')) throw new Error('图片模型目前需要 OpenAI API Key。');
     if (['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account'].includes(settings.authMode)) throw new Error('此登录方式是完整官方代理；请为此功能单独配置 API 模型。');
     const isDeepSeek = settings.provider === 'deepseek' && settings.authMode === 'deepseek-account';
     const isGemini = settings.provider === 'gemini' && settings.authMode === 'gemini-account';
@@ -78,7 +79,8 @@ export class RoleModelRuntime {
       apiKey: draft.apiKey, contextWindowTokens: settings.contextWindowTokens, force: true });
     if ((await this.draft(role, arg)).connection !== draft.connection) throw new Error('连接或账号已变化，请重新获取模型目录。');
     // Text-only roles may use models that do not expose coding tools.
-    const models = result.models.map(model => role === 'subagent' ? model : ({ ...model,
+    const models = result.models.map(model => role === 'image' ? ({ ...model,
+      compatible: /^gpt-image-/u.test(model.id), compatibilityReason: /^gpt-image-/u.test(model.id) ? '' : '请选择 OpenAI 图像生成模型。' }) : role === 'subagent' ? model : ({ ...model,
       compatible: model.textCompatible !== false && (model.compatible !== false || model.textCompatible === true) }));
     let encoded = this.redact(JSON.stringify({ ...result, models, provider: settings.provider, authMode: settings.authMode }));
     if (draft.apiKey) encoded = encoded.replaceAll(JSON.stringify(draft.apiKey).slice(1, -1), '[已隐藏密钥]');

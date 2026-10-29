@@ -2087,7 +2087,7 @@ function renderHistoricalTaskActivity(record, items = []) {
   const tools = [];
   let output = null;
   for (const item of items) {
-    if (item.type === 'message' && (item.message.content || (item.message.role === 'user' && messageImageAttachments(item.message.attachments).length))) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
+    if (item.type === 'message' && (item.message.content || messageImageAttachments(item.message.attachments).length)) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
     else if (item.type === 'event') {
       const event = item.event;
       if (event.type === 'tool-start') {
@@ -2190,6 +2190,13 @@ function addMessage(role, text, streaming = false, metadata = {}) {
     const header = element('div', 'message-header');
     header.append(element('span', 'message-avatar', '✳'), element('span', '', 'Synora code'));
     message.append(header, body);
+    const images = messageImageAttachments(metadata.attachments);
+    if (images.length) {
+      const gallery = element('div', 'user-message-attachments');
+      gallery.setAttribute('aria-label', '生成的图片');
+      images.forEach(attachment => gallery.append(createMessageImage(attachment)));
+      message.append(gallery);
+    }
   }
   const liveSteering = role === 'user' && metadata.source === 'steering' && !metadata.historical
     && activeTaskActivity?.status === 'running' && metadata.runId === activeTaskActivity.runId;
@@ -3619,7 +3626,7 @@ function renderSessionSnapshot(session) {
     }
     else {
       const message = block.message;
-      if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || (message.role === 'user' && messageImageAttachments(message.attachments).length))) addMessage(message.role, message.content, false, { ...message, historical: true });
+      if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || messageImageAttachments(message.attachments).length)) addMessage(message.role, message.content, false, { ...message, historical: true });
       for (const run of summariesAfter.get(block.index) || []) {
         renderTaskChangeSummary(run.record, { historical: true });
         renderRoundTokenUsage(run.record, { unanchored: run.unanchored });
@@ -4198,6 +4205,7 @@ function handleEvent(event) {
     case 'tool-result': rememberTaskChange(event); if (taskKind !== 'undo') completeTool(event); break;
     case 'file-change-recorded': rememberTaskChange(event); break;
     case 'images-viewed': renderImageViewed(event); break;
+    case 'image-generated': addMessage('assistant', event.content || '', false, { id: event.id, attachments: event.attachments }); break;
     case 'question-answer':
       if (renderQuestionAnswer(event)) { moveTaskActivityToEnd(); scrollBottom(); }
       break;
@@ -4748,6 +4756,7 @@ window.aiCodeCommands = Object.freeze({
       case 'role-completion-settings': return window.synoraRoleModels?.open('completion');
       case 'role-sidebar-settings': return window.synoraRoleModels?.open('sidebar');
       case 'role-pet-settings': return window.synoraRoleModels?.open('pet');
+      case 'role-image-settings': return window.synoraRoleModels?.open('image');
       case 'import-background': return window.synoraAppearance?.importBackground();
       case 'appearance-settings': return window.synoraAppearance?.open();
       case 'toggle-sidebar': return toggleSidebar();

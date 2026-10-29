@@ -130,7 +130,7 @@ test('Gemini role account configuration needs no API key and its schema is prese
 
 test('all independent Gemini role accounts use their own catalog/profile and dispatch directly to the account bridge without native API keys', async t => {
   const f = await runtimeFixture(t);
-  for (const role of MODEL_ROLES) {
+  for (const role of MODEL_ROLES.filter(role => role !== 'image')) {
     await select(f.runtime, role, { provider: 'gemini', authMode: 'gemini-account' }, 'gemini-cli-model');
     const config = await f.runtime.config(role), result = await f.runtime.dispatch({ ...config, tools: [], messages: [{ role: 'user', content: 'hello' }] });
     assert.equal(result.route, `gemini-account:${role}`); assert.equal(config.geminiProfileId, `gemini-${role}-profile`); assert.equal(config.apiKey, '');

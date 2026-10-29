@@ -56,6 +56,17 @@ async function select(runtime, role, input = api(), selected = 'coding-model') {
   return preview;
 }
 
+test('image role selects only OpenAI image models and keeps its independent API key', async t => {
+  const { runtime, catalog, configs } = await fixture(t);
+  catalog.models = [model('gpt-image-2.5-flare', {}, 'openai'), model('gpt-6.1-sol', {}, 'openai')];
+  const input = { provider: 'openai', authMode: 'apiKey', apiKey: 'isolated-image-key' };
+  const preview = await select(runtime, 'image', input, 'gpt-image-2.5-flare');
+  assert.equal(preview.models[0].compatible, true); assert.equal(preview.models[1].compatible, false);
+  assert.equal((await runtime.config('image')).apiKey, 'isolated-image-key');
+  assert.equal(configs.isEnabled('image'), true);
+  await assert.rejects(runtime.preview('image', { provider: 'openai', authMode: 'chatgpt' }), /OpenAI API Key/);
+});
+
 test('default role state follows main settings without exposing or inheriting its API key', async t => {
   const { runtime, main, configs } = await fixture(t);
   const state = await runtime.publicState(main.publicSettings());
@@ -296,7 +307,7 @@ test('a revision change while ChatGPT dispatch awaits account state prevents the
 test('restarted account roles reload their own narrower catalog before budgeting and reuse the current snapshot', async t => {
   const { dir, runtime, accounts, create } = await fixture(t);
   const input = { provider: 'openai', authMode: 'chatgpt' };
-  for (const [index, role] of MODEL_ROLES.entries()) {
+  for (const [index, role] of MODEL_ROLES.filter(role => role !== 'image').entries()) {
     const account = accounts.get(role);
     account.state.session = { status: 'connected', sharing: true, profileId: `${role}-account` };
     account.models = [{ slug: 'gpt-6.1-sol', displayName: 'Account model', contextWindow: 128000 + index * 1000,
@@ -305,7 +316,7 @@ test('restarted account roles reload their own narrower catalog before budgeting
   }
   const restored = await new RoleModels(dir, crypto).init(), fresh = create({ configs: restored });
   assert.equal(fresh.snapshots.size, 0);
-  for (const [index, role] of MODEL_ROLES.entries()) {
+  for (const [index, role] of MODEL_ROLES.filter(role => role !== 'image').entries()) {
     const account = accounts.get(role); let listings = 0;
     account.listModels = async (options = {}) => {
       listings++; assert.notEqual(options.force, true);

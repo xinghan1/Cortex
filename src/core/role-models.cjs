@@ -4,7 +4,8 @@ const { randomUUID } = require('node:crypto');
 const { Store } = require('./store.cjs');
 
 const LEGACY_ROLE_KEYS = Object.freeze(['subagent', 'approval', 'completion', 'sidebar']);
-const ROLE_KEYS = Object.freeze([...LEGACY_ROLE_KEYS, 'pet']);
+const PREVIOUS_ROLE_KEYS = Object.freeze([...LEGACY_ROLE_KEYS, 'pet']);
+const ROLE_KEYS = Object.freeze([...PREVIOUS_ROLE_KEYS, 'image']);
 const MAX_BYTES = 512 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && Object.keys(value).length === keys.length
@@ -185,12 +186,12 @@ class RoleModels {
         if (Buffer.byteLength(text) > MAX_BYTES) throw new Error('Role settings file too large');
         const data = JSON.parse(text);
         if (!exactKeys(data, ['version', 'roles']) || data.version !== 1
-            || !(exactKeys(data.roles, ROLE_KEYS) || exactKeys(data.roles, LEGACY_ROLE_KEYS))) throw new Error('Invalid role models');
+            || !(exactKeys(data.roles, ROLE_KEYS) || exactKeys(data.roles, PREVIOUS_ROLE_KEYS) || exactKeys(data.roles, LEGACY_ROLE_KEYS))) throw new Error('Invalid role models');
         const roles = {};
         for (const role of ROLE_KEYS) {
           // Older files have no pet connection. Start it in follow mode with
           // fresh defaults, without borrowing the sidebar's keys or account.
-          if (role === 'pet' && !Object.hasOwn(data.roles, role)) {
+          if ((role === 'pet' || role === 'image') && !Object.hasOwn(data.roles, role)) {
             roles[role] = { enabled: false, store: this.#store() }; continue;
           }
           const value = data.roles[role];
