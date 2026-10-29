@@ -51,10 +51,13 @@ function fixture() {
     showTokenRate() {}, finishContextCompaction() {}, renderTaskReconnect() {},
     hasTokenRate: () => false,
     taskProcessTarget: () => context.activity.events,
+    messageImageAttachments: value => Array.isArray(value) ? value.filter(item => item?.dataUrl) : [],
+    appendGeneratedImages: (message, attachments) => { for (const image of attachments) message.append(new Element('img', '', image.dataUrl)); },
+    addMessage: (_role, text) => { const message = new Element('article', 'message assistant', text); messages.append(message); return { message }; },
   });
   vm.runInContext('let running = true; let contextCompacting = false; let activeTaskActivity; let taskActivityTimer = null; let latestTelemetry = null; let taskKind = "agent"; let sessionId = "session";', context);
   vm.runInContext(historySource, context); context.window.ForgeTaskHistory = context.ForgeTaskHistory;
-  for (const name of ['activityDuration', 'taskElapsed', 'renderTaskActivityElapsed', 'createTaskActivity', 'setTaskActivityPhase', 'clearTaskReconnect', 'finishTaskActivity', 'renderQuestionAnswer'])
+  for (const name of ['activityDuration', 'taskElapsed', 'renderTaskActivityElapsed', 'createTaskActivity', 'rememberGeneratedImage', 'setTaskActivityPhase', 'clearTaskReconnect', 'finishTaskActivity', 'renderQuestionAnswer'])
     vm.runInContext(appFunction(name), context);
   vm.runInContext(groupSource, context);
   const activity = context.createTaskActivity({ runId: 'current' });
@@ -78,6 +81,22 @@ test('answered choices and custom text render once in the current task flow with
   const customCard = context.renderQuestionAnswer(event); assert.equal(customCard.querySelector('.question-answer-text').textContent, answer); assert.equal(customCard.querySelector('.question-answer-question').textContent, event.question);
   assert.equal(customCard.querySelector('.question-answer-response').dataset.kind, 'custom'); assert.equal(activity.events.querySelectorAll('.question-answer-card').length, 2);
   assert.equal(messages.children.length, 1); assert.equal(messages.querySelectorAll('article.message').length, 0);
+});
+
+test('generated images are deduplicated by id and attached to the final answer; failed turns retain images outside the folded process', () => {
+  for (const status of ['completed', 'failed', 'stopped']) {
+    const { context, activity, messages } = fixture();
+    const first = { runId:'current', id:'image-one', attachments:[{dataUrl:'fixture-one'}] };
+    assert.equal(context.rememberGeneratedImage(first), true); assert.equal(context.rememberGeneratedImage(first), true);
+    assert.equal(context.rememberGeneratedImage({ ...first, id:'image-two', attachments:[{dataUrl:'fixture-two'}] }), true);
+    assert.equal(context.rememberGeneratedImage({ ...first, runId:'wrong' }), false);
+    const answer = new Element('article','message assistant'); answer.append(new Element('div','message-body','最终答复'));
+    activity.events.append(answer); activity.lastAssistant = answer; activity.lastAssistantConfirmed = status === 'completed';
+    context.finishTaskActivity({status,elapsedMs:100});
+    const target = status === 'completed' ? answer : messages.children.at(-1);
+    assert.equal(target.parentElement, messages); assert.equal(target.querySelectorAll('img').length, 2);
+    assert.equal(activity.events.querySelectorAll('img').length, 0);
+  }
 });
 
 test('live question receipts cannot cross sessions, tasks, cancellations, casual chat or settled activity', () => {

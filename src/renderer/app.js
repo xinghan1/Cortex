@@ -1838,11 +1838,18 @@ function createTaskActivity(record = {}) {
   block.open = true;
   const runId = String(record.runId || record.id || '');
   if (runId) block.dataset.runId = runId;
-  return { block, events, summary, phaseLine, phaseNode: phase, marker, elapsed, separator, speed, runId, phase: 'waiting', lastRate: null, elapsedFloor: 0, startedMono: performance.now(), finishedElapsed: null, status: 'running', lastAssistant: null, lastAssistantConfirmed: false };
+  return { block, events, summary, phaseLine, phaseNode: phase, marker, elapsed, separator, speed, runId, phase: 'waiting', lastRate: null, elapsedFloor: 0, startedMono: performance.now(), finishedElapsed: null, status: 'running', lastAssistant: null, lastAssistantConfirmed: false, generatedImages: new Map() };
 }
 
 function taskProcessTarget() {
   return activeTaskActivity?.status === 'running' ? activeTaskActivity.events : $('messages');
+}
+
+function rememberGeneratedImage(event) {
+  if (!activeTaskActivity || activeTaskActivity.status !== 'running' || event.runId !== activeTaskActivity.runId
+      || typeof event.id !== 'string' || !event.id || !messageImageAttachments(event.attachments).length) return false;
+  activeTaskActivity.generatedImages.set(event.id, event.attachments);
+  return true;
 }
 
 function renderSubagentUpdate(event, { target = taskProcessTarget(), historical = false } = {}) {
@@ -2024,6 +2031,14 @@ function finishTaskActivity(record = {}) {
   if (activity.lastAssistantConfirmed && answer?.isConnected && activity.events.contains(answer) && answer.querySelector('.message-body')?.textContent.trim()) {
     activity.block.after(answer);
   }
+  if (activity.generatedImages.size) {
+    const target = activity.lastAssistantConfirmed && answer?.isConnected && !activity.events.contains(answer) ? answer : null;
+    if (target) for (const attachments of activity.generatedImages.values()) appendGeneratedImages(target, attachments);
+    else {
+      const generated = addMessage('assistant', '图片已生成。', false, { historical: true });
+      for (const attachments of activity.generatedImages.values()) appendGeneratedImages(generated.message, attachments);
+    }
+  }
   for (const tool of activity.events.querySelectorAll('details.tool-card')) tool.open = false;
   for (const card of activity.events.querySelectorAll('.subagent-card')) {
     window.ForgeSubagents?.finish(card);
@@ -2086,8 +2101,10 @@ function renderHistoricalTaskActivity(record, items = []) {
   activity.finishedElapsed = Number.isFinite(record.elapsedMs) ? record.elapsedMs : record.durationMs;
   const tools = [];
   let output = null;
+  const generatedImages = [];
   for (const item of items) {
-    if (item.type === 'message' && (item.message.content || messageImageAttachments(item.message.attachments).length)) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
+    if (item.type === 'message' && item.message.source === 'generated-image') generatedImages.push(item.message.attachments);
+    else if (item.type === 'message' && (item.message.content || messageImageAttachments(item.message.attachments).length)) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
     else if (item.type === 'event') {
       const event = item.event;
       if (event.type === 'tool-start') {
@@ -2119,6 +2136,7 @@ function renderHistoricalTaskActivity(record, items = []) {
   if (!activeTaskActivity) setSessionTokenRate(record.telemetry || record.finalTelemetry);
   renderTaskActivityElapsed(activity);
   $('messages').append(activity.block);
+  return generatedImages;
 }
 
 function toolActivity(name, args, completed = false) {
@@ -2243,6 +2261,13 @@ function createMessageImage(attachment, imageClass = 'user-message-image') {
   return button;
 }
 
+function appendGeneratedImages(message, attachments) {
+  const images = messageImageAttachments(attachments);
+  if (!images.length) return;
+  const gallery = element('div', 'user-message-attachments'); gallery.setAttribute('aria-label', '生成的图片');
+  images.forEach(image => gallery.append(createMessageImage(image))); message.append(gallery);
+}
+
 function openImagePreview(attachment) {
   const image = messageImageAttachments([attachment])[0];
   if (!image) return;
@@ -2342,6 +2367,12 @@ function bindImageAttachments() {
     addDraftImageFiles(items.map((item) => item.getAsFile()).filter(Boolean));
   });
   $('image-preview-close').addEventListener('click', () => $('image-preview-dialog').close());
+  $('image-preview-content').addEventListener('contextmenu', event => {
+    event.preventDefault();
+    const dataUrl = $('image-preview-content').src;
+    if (!dataUrl || typeof bridge.imagePreviewContext !== 'function') return;
+    void bridge.imagePreviewContext({ dataUrl }).catch(error => notice(`图片操作失败：${errorText(error)}`, true));
+  });
   $('image-preview-dialog').addEventListener('close', () => { $('image-preview-content').removeAttribute('src'); $('image-preview-title').textContent = '图片预览'; });
 }
 
@@ -3609,14 +3640,21 @@ function renderSessionSnapshot(session) {
   const compactions = (session.events || []).filter(event => event.type === 'context-compacted');
   const renderedCompactions = new Set();
   const blocks = window.ForgeTaskHistory.project(session, records);
-  const summariesAfter = new Map();
+  const summariesAfter = new Map(), generatedAfter = new Map(), activeGenerated = [];
+  const active = appState?.sessionId === session.id && appState?.activeTask?.running ? appState.activeTask : null;
+  const activeStart = Number.isInteger(active?.originalMessageStartIndex) ? active.originalMessageStartIndex : active?.messageStartIndex;
   blocks.forEach((block) => {
     const index = block.type === 'message' ? block.index : block.record.messageStartIndex;
     compactions.forEach((event) => {
       if (!renderedCompactions.has(event) && Number.isInteger(event.messageIndex) && event.messageIndex <= index) { appendContextCompactionNotice(event); renderedCompactions.add(event); }
     });
     if (block.type === 'run') {
-      renderHistoricalTaskActivity(block.record, block.items);
+      const generatedImages = renderHistoricalTaskActivity(block.record, block.items);
+      if (generatedImages.length && block.finalIndex !== null && block.finalIndex !== undefined) generatedAfter.set(block.finalIndex, generatedImages);
+      else if (generatedImages.length) {
+        const generated = addMessage('assistant', '图片已生成。', false, { historical: true });
+        generatedImages.forEach(attachments => appendGeneratedImages(generated.message, attachments));
+      }
       if (block.finalIndex !== null && Number.isInteger(block.finalIndex)) {
         const waiting = summariesAfter.get(block.finalIndex) || []; waiting.push(block); summariesAfter.set(block.finalIndex, waiting);
       } else {
@@ -3626,7 +3664,13 @@ function renderSessionSnapshot(session) {
     }
     else {
       const message = block.message;
-      if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || messageImageAttachments(message.attachments).length)) addMessage(message.role, message.content, false, { ...message, historical: true });
+      if (active && Number.isInteger(activeStart) && block.index >= activeStart && message.source === 'generated-image') {
+        activeGenerated.push(message); return;
+      }
+      if (['user', 'assistant'].includes(message.role) && typeof message.content === 'string' && (message.content || messageImageAttachments(message.attachments).length || generatedAfter.has(block.index))) {
+        const rendered = addMessage(message.role, message.content, false, { ...message, historical: true });
+        for (const attachments of generatedAfter.get(block.index) || []) appendGeneratedImages(rendered.message, attachments);
+      }
       for (const run of summariesAfter.get(block.index) || []) {
         renderTaskChangeSummary(run.record, { historical: true });
         renderRoundTokenUsage(run.record, { unanchored: run.unanchored });
@@ -3639,6 +3683,8 @@ function renderSessionSnapshot(session) {
     if (!taskChangeCards.has(runId)) renderTaskChangeSummary(records.find(record => record.runId === runId) || { runId }, { historical: true });
   }
   restoreTaskActivityFromState();
+  if (active && activeTaskActivity?.runId === active.runId)
+    activeGenerated.forEach(message => rememberGeneratedImage({ runId: active.runId, id: message.id, attachments: message.attachments }));
   renderSessions(appState?.sessions || []);
   scrollBottom(true);
 }
@@ -4205,7 +4251,9 @@ function handleEvent(event) {
     case 'tool-result': rememberTaskChange(event); if (taskKind !== 'undo') completeTool(event); break;
     case 'file-change-recorded': rememberTaskChange(event); break;
     case 'images-viewed': renderImageViewed(event); break;
-    case 'image-generated': addMessage('assistant', event.content || '', false, { id: event.id, attachments: event.attachments }); break;
+    case 'image-generated':
+      rememberGeneratedImage(event);
+      break;
     case 'question-answer':
       if (renderQuestionAnswer(event)) { moveTaskActivityToEnd(); scrollBottom(); }
       break;

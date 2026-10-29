@@ -124,6 +124,11 @@ function boundaries(messages) {
   let pending = null;
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
+    // Local-only assistant messages are omitted from model requests. In
+    // particular, generated image receipts can occur between a tool call and
+    // its result; they must not make that otherwise complete batch malformed.
+    // Preserve archive indices and do not create a boundary inside the batch.
+    if (message.role === 'assistant' && message.localOnly === true) continue;
     if (pending) {
       if (message.role !== 'tool' || !pending.has(message.toolCallId)) {
         // Do not cross an incomplete or malformed batch. No later boundary is

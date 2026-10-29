@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   setAppearance: arg => call('setAppearance', arg),
   resetBackground: () => call('resetBackground'),
   copyText: arg => call('copyText', arg),
+  imagePreviewContext: arg => call('imagePreviewContext', arg),
   getAppUpdate: () => call('getAppUpdate'),
   checkAppUpdate: () => call('checkAppUpdate'),
   downloadAppUpdate: () => call('downloadAppUpdate'),

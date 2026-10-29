@@ -33,6 +33,7 @@ const { createPluginExample } = require('./core/plugin-template.cjs');
 const { createPluginRuntime } = require('./core/plugin-runtime.cjs');
 const { DshPetStore } = require('./core/dsh-pet.cjs');
 const { createBackgroundTray } = require('./core/background-tray.cjs');
+const { createImageAssetStore } = require('./core/image-asset-store.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
 const smoke = process.argv.includes('--smoke-test');
@@ -49,6 +50,7 @@ const dataDir = resolveDataDirectory({
 app.setName('Synora code');
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'chromium'));
+const imageAssetStore = createImageAssetStore({ dataDir, nativeImage, clipboard, shell });
 if (smoke) app.disableHardwareAcceleration();
 
 let legacyMigrationSource = null, legacyMigrationError = null;
@@ -1150,7 +1152,7 @@ async function state() {
   const undoableRunIds = persistentTaskUndo.ids(currentSession?.id, tools?.root);
   const redoableRunIds = persistentTaskUndo.ids(currentSession?.id, tools?.root, 'redo');
   const activeTask = { compacting: activeRun?.compacting === true, running: !!activeRun, kind: activeRun?.kind || null, demo: activeRun?.demo === true,
-    ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex,
+    ...(activeRun ? { runId: activeRun.id, startedAt: activeRun.startedAt, messageStartIndex: activeRun.replayMessageStartIndex ?? activeRun.messageStartIndex, originalMessageStartIndex: activeRun.messageStartIndex,
       streamText: activeRun.streamText || '', liveEvents: structuredClone(activeRun.liveEvents || []), telemetry: activeRun.telemetry || null,
       subagents: structuredClone((currentSession?.subagents || []).filter(agent => agent.parentRunId === activeRun.id)) } : {}) };
   return { workspaceId, hiddenRecentProjects: recentProjects?.hidden() || [], openWorkspaces: host.summaries(), pendingApprovals: [...approvals.values()].map(value => value.request), terminalEvents: structuredClone(terminalEvents), permissionMode, approvalReviewer: { model: approvalReviewerModel, effectiveModel: approvalReviewerModel || publicSettings().model, provider: publicSettings().provider }, browser: browser?.state() || null, workspace: tools ? { root: tools.root, name: path.basename(tools.root) } : null, settings: publicSettings(), roleModels: roleState, sideChat: sideChat.snapshot(), petDialog: publicPetDialog(), sessions, recentProjects: projects, recentProjectsError: recentProjects?.error || null, fileClipboard: fileClipboard ? { ...fileClipboard } : null, editorDirty, usageStats: store.usageStats(), sessionMetrics, chatgpt: account, deepseek: deepseekAccount, gemini: geminiAccount, antigravity: antigravityAccount, kimiAgent: kimiAccount, glmAgent: glmAccount, claudeAgent: claudeAccount, ark: arkState, textScale: uiPreferences?.textScale ?? 100, modelCapacity, modelCatalog: catalogSnapshots.get(context.key) || null, version: app.getVersion(), sessionId: currentSession?.id, sessionTitle: store.sessionTitle(currentSession), temporary: currentSession?.temporary === true, isFullscreen: win && !win.isDestroyed() ? win.isFullScreen() : false, promptQueue: queueSnapshot(), activeTask, undoableRunIds, redoableRunIds };
@@ -1592,6 +1594,8 @@ async function startTask(input) {
               ...(!isImageModel ? { textModel: config.model } : {}), prompt: args.prompt, signal: options.signal,
               fetchImpl: (url, opts) => electronSession.defaultSession.fetch(url, opts) });
             options.signal?.throwIfAborted();
+            const imageAssetPath = await imageAssetStore.save(generated.dataUrl);
+            options.signal?.throwIfAborted();
             let bytes = Buffer.from(generated.dataUrl.split(',')[1], 'base64'), mediaType = generated.mediaType;
             if (bytes.length > 2 * 1024 * 1024) {
               const img = nativeImage.createFromBuffer(bytes); if (img.isEmpty()) throw new Error('生成的图片无效。');
@@ -1600,10 +1604,10 @@ async function startTask(input) {
             }
             if (bytes.length > 2 * 1024 * 1024) throw new Error('生成图片太大，无法保存到会话。');
             const [attachment] = normalizeImageAttachments([{ name: 'generated.' + (mediaType === 'image/png' ? 'png' : 'jpg'), mediaType, dataUrl: `data:${mediaType};base64,${bytes.toString('base64')}` }]);
-            const message = { id: randomUUID(), role: 'assistant', content: '图片已生成。', attachments: [attachment], localOnly: true, source: 'generated-image' };
+            const message = { id: randomUUID(), role: 'assistant', content: '图片已生成。', attachments: [attachment], localOnly: true, source: 'generated-image', imageAssetPath };
             runSession.messages.push(message); run.checkpoints.touch(); await run.checkpoints.flush();
             emit({ type: 'image-generated', id: message.id, content: message.content, attachments: message.attachments });
-            return JSON.stringify({ status: 'completed', message: '图片已生成并显示在会话中。' });
+            return JSON.stringify({ status: 'completed', message: '图片已生成并显示在会话中，文件可用于当前任务。', path: imageAssetPath });
           })();
           if (name === PET_QUESTION_TOOL.name)
             return petDialog.ask(args, { signal: options.signal, runId: run.id, sessionId: run.sessionId }).then(async value => { await run.checkpoints.flush(); return JSON.stringify(value); });
@@ -1737,6 +1741,19 @@ function buildHandlers() {
     await broadcastState(); return state();
   };
   const handlers = {
+    imagePreviewContext: async arg => {
+      if (!arg || typeof arg.dataUrl !== 'string' || arg.dataUrl.length > 3 * 1024 * 1024) throw new Error('图片数据无效。');
+      const session = currentSession;
+      const locate = () => [...(session?.messages || []), ...(session?.imageToolSources || [])]
+        .find(message => Array.isArray(message.attachments) && message.attachments.some(item => item?.dataUrl === arg.dataUrl));
+      const message = locate(); if (!message) throw new Error('图片不属于当前会话。');
+      const valid = () => currentSession === session && !!locate() && !win.isDestroyed();
+      const menu = Menu.buildFromTemplate([
+        { label: '复制图片', click: () => { if (valid()) void imageAssetStore.copy(arg.dataUrl, message.imageAssetPath).catch(error => emit({ type: 'storage-error', error: error.message })); } },
+        { label: '打开图片所在文件夹', click: () => { if (valid()) void imageAssetStore.reveal(arg.dataUrl, message.imageAssetPath).catch(error => emit({ type: 'storage-error', error: error.message })); } },
+      ]);
+      menu.popup({ window: win }); return null;
+    },
     getAppUpdate: () => appUpdateSnapshot(),
     checkAppUpdate: async () => { if (updateEnabled) await appUpdater.check(); return appUpdateSnapshot(); },
     downloadAppUpdate: async () => { await appUpdater.download(); return appUpdateSnapshot(); },

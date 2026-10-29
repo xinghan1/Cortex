@@ -193,6 +193,12 @@
         button.dataset.choiceIndex = String(index); button.disabled = busy; button.setAttribute('aria-pressed', String(selected === index));
         button.addEventListener('click', () => { selected = index; void answer({ choiceIndex: index }); }); options.append(button);
       }
+      if (isBlocking && !onlyChoices && (current.options || []).length) {
+        const custom = make('button', 'pet-dialog-custom-answer', 'pet-dialog-choice', '自定义回答');
+        custom.type = 'button'; custom.disabled = busy;
+        custom.addEventListener('click', () => { if (!busy) { selected = null; input.focus({ preventScroll: true }); } });
+        options.append(custom);
+      }
       cancel.hidden = !isBlocking; cancel.disabled = busy; stop.hidden = !isBlocking; stop.disabled = stopBusy; speechActions.hidden = !isBlocking;
       input.disabled = onlyChoices || busy || Boolean(snapshot.running && snapshot.activity !== 'reaction' && !isBlocking); send.disabled = input.disabled;
       send.setAttribute('aria-label', isBlocking ? '发送答复' : '发送消息'); send.title = isBlocking ? '回答' : '发送';

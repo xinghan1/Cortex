@@ -22,6 +22,17 @@ const deepFreeze = value => {
 const answerEvent = (runId, questionId, patch = {}) => ({ type: 'question-answer', runId, sessionId: 'original-session', questionId,
   question: '请选择处理方式。', options: ['保留', '调整'], answer: '调整', choiceIndex: 1, source: 'user', messageIndex: 0, sequence: 2, ...patch });
 
+test('generated images remain in their originating run with empty or nonempty final answers and survive failed runs', () => {
+  const image = id => ({ id, role:'assistant', content:'图片已生成。', source:'generated-image', localOnly:true, attachments:[{name:id,dataUrl:'fixture'}] });
+  const messages = [user('一'), assistant('',[call('a','generate_image',{})]), image('one'), result('a','ok'), assistant('总结'),
+    user('二'), assistant('',[call('b','generate_image',{})]), image('two'), result('b','ok'), assistant(''),
+    user('三'), assistant('',[call('c','generate_image',{})]), image('three'), result('c','ok')];
+  const blocks = project({ messages }, [record('r1',0,4),record('r2',5,9),record('r3',10,13,'failed')]);
+  const runs = runBlocks(blocks);
+  assert.deepEqual(runs.map(run => run.items.filter(item => item.type === 'message' && item.message.source === 'generated-image').map(item => item.message.id)), [['one'],['two'],['three']]);
+  assert.deepEqual(runs.map(run => run.finalIndex), [4,9,null]);
+});
+
 test('task question answers survive event rollover and session forks without adding user messages or rounds', () => {
   const choice = answerEvent('first', 'choice'), custom = answerEvent('second', 'custom', { question: '补充具体需求？', options: [], choiceIndex: undefined, answer: '完整自定义回答\n保留换行', messageIndex: 2 }); delete custom.choiceIndex;
   const session = deepFreeze({ id: 'forked-session', messages: [user('第一项任务'), assistant('第一项完成'), user('第二项任务'), assistant('第二项完成')],

@@ -18,6 +18,26 @@ const longHistory = () => [
   user('Latest task: fix the failure and test it.'),
 ];
 
+test('generated local-only images within a completed tool batch do not block compaction or enter the model request', async () => {
+  const generated = { role: 'assistant', content: '图片已生成。', localOnly: true, source: 'generated-image', attachments: [{ ...image, dataUrl: 'data:image/png;base64,' + 'A'.repeat(200000) }] };
+  const messages = [user('Create the poster.'), assistant('image'), generated, tool('image', 'Generated image.'),
+    assistant('command'), tool('command', 'x'.repeat(200000)), user('Continue editing the poster.')];
+  const checkpoint = {}, result = await prepareContext({ messages, checkpoint, signal: signal(),
+    summarize: async ({ source }) => { assert.doesNotMatch(source, /A{100}/u); return 'The poster was generated and the command ran.'; } });
+  assert.equal(result.compacted, true); assert.ok(checkpoint.throughIndex >= 5);
+  assert.equal(result.messages.includes(generated), false); assert.equal(messages[2], generated);
+  assert.doesNotMatch(JSON.stringify(result.messages), /A{100}/u);
+  const again = await prepareContext({ messages, checkpoint, signal: signal(), summarize: () => assert.fail('checkpoint should be reusable') });
+  assert.equal(again.compacted, false); assert.equal(again.messages.includes(generated), false);
+});
+
+test('a local-only image never permits a cut across an actually incomplete tool batch', async () => {
+  const messages = [user('Create the poster.'), assistant('image'),
+    { role: 'assistant', content: '图片已生成。', localOnly: true, attachments: [image] },
+    user('x'.repeat(180001))];
+  await assert.rejects(prepareContext({ messages, signal: signal(), summarize: () => assert.fail('no safe batch boundary') }), { code: 'CONTEXT_COMPACTION_LIMIT' });
+});
+
 test('short contexts do not summarize, mutate checkpoint, or alter messages', async () => {
   const messages = [user('Short task.')], checkpoint = {};
   const result = await prepareContext({ messages, checkpoint, signal: signal(), summarize: () => assert.fail('must not request summary') });

@@ -37,6 +37,31 @@ test('short sessions make no compaction request or notice', async () => {
   assert.equal(events.some(event => event.type.startsWith('context-')), false);
 });
 
+test('an image generated during a tool batch does not prevent later command output compaction', async () => {
+  const messages = [{ role: 'user', content: 'Generate a poster and inspect the project.' }], events = [];
+  let requests = 0, summaries = 0;
+  await runAgent(options({ messages, emit: event => events.push(event), workspace: { root: 'fixture-project',
+    execute: async name => {
+      if (name === 'generate_image') {
+        messages.push({ role: 'assistant', content: '图片已生成。', localOnly: true, source: 'generated-image',
+          attachments: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,' + 'A'.repeat(200000) }] });
+        return 'The image was generated.';
+      }
+      return 'A long command result ' + 'x'.repeat(200000);
+    } }, requestModel: async request => {
+      if (isSummary(request)) { summaries++; return reply('The poster was generated and the command completed.'); }
+      assert.doesNotMatch(JSON.stringify(request.messages), /A{100}/u);
+      requests++;
+      if (requests === 1) return reply('Creating poster.', [{ id: 'img', name: 'generate_image', arguments: { prompt: 'poster' } }]);
+      if (requests === 2) return reply('Inspecting.', [{ id: 'cmd', name: 'run_command', arguments: { command: 'fixture' } }]);
+      return reply('Finished.');
+    } }));
+  assert.equal(requests, 3); assert.equal(summaries, 1);
+  assert.ok(events.some(event => event.type === 'context-compacted'));
+  assert.equal(messages.filter(message => message.source === 'generated-image').length, 1);
+  assert.equal(messages.at(-1).content, 'Finished.');
+});
+
 test('a catalog one-million-token model uses its capacity instead of the legacy character limit', async () => {
   const messages = history(), original = structuredClone(messages), events = [], checkpoint = {};
   let requests = 0;

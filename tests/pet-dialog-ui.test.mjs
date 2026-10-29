@@ -164,6 +164,16 @@ test('hiding the pet replaces only the form presentation and retains a usable st
   assert.equal(h.document.activeElement, h.draft); assert.deepEqual([h.draft.selectionStart, h.draft.selectionEnd], [2, 5]);
 });
 
+test('custom answer option focuses the answer box with or without the pet and sends free text', async t => {
+  for (const hiddenPet of [false, true]) {
+    const h = await fixture(t, asking(), { hiddenPet });
+    const input = h.node('pet-dialog-input'), custom = h.node('pet-dialog-custom-answer');
+    assert.ok(custom); custom.fire('click'); assert.equal(h.document.activeElement, input);
+    input.value = '自定义方案'; h.node('pet-dialog-form').fire('submit'); await tick();
+    assert.equal(h.calls[0].text, '自定义方案'); assert.equal(h.calls[0].choiceIndex, undefined);
+  }
+});
+
 test('IME and Shift+Enter cannot accidentally answer, while failures preserve the answer and allow retry or cancellation', async t => {
   let failed = true;
   const h = await fixture(t, asking(), { answer: async () => { if (failed) throw new Error('测试发送失败'); return h.envelope(empty(2)); } });
@@ -336,7 +346,7 @@ test('blocking question bubbles expand without widening casual chat or overflowi
     const box=h.node('pet-dialog').getBoundingClientRect();
     assert.equal(box.width,Math.min(600,viewport-16));assert.ok(box.left>=8);assert.ok(box.right<=viewport-8);
     assert.equal(h.node('pet-dialog-cancel').hidden,false);assert.equal(h.node('pet-dialog-stop').hidden,false);
-    assert.equal(h.node('pet-dialog-options').children.length,2);assert.ok(h.node('pet-dialog-options').children.every(node=>!node.disabled));
+    assert.equal(h.node('pet-dialog-options').children.length,3);assert.ok(h.node('pet-dialog-options').children.every(node=>!node.disabled));
     assert.deepEqual(h.pet.rect,petBounds);assert.deepEqual(h.pet.style,petStyle);
   }
   h.view.innerWidth=1200;h.view.fire('resize');h.flush();
