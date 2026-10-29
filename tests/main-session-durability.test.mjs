@@ -5,10 +5,12 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { runAgent } from '../src/core/agent.mjs';
 const require=createRequire(import.meta.url);
 const {Store}=require('../src/core/store.cjs');
 const {SessionCheckpoints,recoverInterruptedSession}=require('../src/core/session-checkpoints.cjs');
 const {selectModelContext}=require('../src/core/model-context.cjs');
+const {createImageAssetStore}=require('../src/core/image-asset-store.cjs');
 const source=(await fs.readFile(new URL('../src/main.cjs',import.meta.url),'utf8')).replaceAll('\r\n','\n');
 function code(name,next){const begin=source.indexOf(`function ${name}(`),end=source.indexOf(`\n${next}`,begin+1);assert.ok(begin>=0&&end>begin,name);return source.slice(source.slice(begin-6,begin)==='async '?begin-6:begin,end);}
 const mainCode=[code('emit','function emitSessionMetrics('),code('recordLiveEvent','function rememberTerminalEvent('),
@@ -82,6 +84,31 @@ async function fixture(t,{external=false,temporary=false,storageFailure=false}={
   };
   return{context,session,store,starting,events,ready,release,models,executions,restarted,dir};
 }
+
+test('real task loop returns usable files to the model for both legacy preview and original generated image', async t => {
+  for (const legacy of [true, false]) await t.test(legacy ? 'legacy preview' : 'stored original', async t => {
+    const f = await fixture(t), png = Buffer.from([137,80,78,71,13,10,26,10,1,2,3]);
+    const url = `data:image/png;base64,${png.toString('base64')}`;
+    const nativeImage = { createFromBuffer: () => ({ isEmpty: () => false, getSize: () => ({ width: 1, height: 1 }) }) };
+    const images = createImageAssetStore({ dataDir: f.dir, nativeImage, clipboard: {}, shell: {} });
+    const original = legacy ? null : await images.save(url);
+    f.context.imageAssetStore = images;
+    f.session.messages.push({ id: 'old-image', role: 'assistant', localOnly: true, source: 'generated-image', content: '图片已生成。',
+      attachments: [{ dataUrl: url, mediaType: 'image/png', name: 'fixture.png' }], ...(original ? { imageAssetPath: original } : {}) });
+    let received, count = 0;
+    f.context.runAgent = options => runAgent({ ...options, getRequestConfig: undefined, subagentFactory: undefined,
+      requestModel: async request => {
+        if (++count === 1) return { message: { role: 'assistant', content: '', toolCalls: [{ id: 'lookup', name: 'get_generated_image', arguments: {} }] }, usage: {} };
+        const tool = request.messages.find(message => message.role === 'tool' && message.toolCallId === 'lookup');
+        received = JSON.parse(tool.content); assert.deepEqual(await fs.readFile(received.path), png);
+        return { message: { role: 'assistant', content: '文件已找到。', toolCalls: [] }, usage: {} };
+      } });
+    await f.context.startTask({ text: '继续使用之前的图片。' }); await f.starting[0]();
+    assert.equal(count, 2); assert.equal(received.status, 'completed'); assert.equal(received.original_file, !legacy);
+    assert.equal(f.session.messages[0].imageAssetPath, received.path);
+    const saved = await f.store.getSession(f.session.id); assert.equal(saved.messages[0].imageAssetPath, received.path);
+  });
+});
 
 test('actual main startup durably saves the user before execution and crash recovery reports stopped',async t=>{
   const f=await fixture(t);const started=await f.context.startTask({text:'Keep this explicit user request'});

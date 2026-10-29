@@ -25,6 +25,7 @@ const { nativeAppearance } = require('./core/native-appearance.cjs');
 const { RecentProjects } = require('./core/recent-projects.cjs');
 const { approvalDecision, validateMode } = require('./core/approval-policy.cjs');
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
+const { createRemoteOperationIndicator } = require('./core/remote-operation-indicator.cjs');
 const { isXmlURL } = require('./core/xml-reader.cjs');
 const { resolveDataDirectory } = require('./core/data-path.cjs');
 const { SessionRestore } = require('./core/session-restore.cjs');
@@ -438,6 +439,9 @@ function createWindowHost({ restoreTarget = null } = {}) {
 
 function createWindowContext(host) {
 let win, tools, currentSession, activeRun, terminal, fileManager, editorFiles;
+const remoteIndicator = createRemoteOperationIndicator({ BrowserWindow, screen, onExit: () => {
+  if (activeRun?.kind === 'agent') { ++stopGeneration; pauseQueue('远程操作已停止，待发送消息已暂停。'); activeRun.controller.abort(); browser?.stop(); }
+} });
 const workspaceId = randomUUID();
 let modelSelection = null, configRevision = 0, approvalReviewerModel = null;
 let approvalReviewerScope = null, approvalReviewerConnectionCache = null;
@@ -1583,6 +1587,23 @@ async function startTask(input) {
         emit({ type: 'files-changed', operation: 'official-agent', path: '' });
       } else {
         await runAgent({ config: { provider, apiKey, authMode: useChatGPT ? 'chatgpt' : useDeepSeekAccount ? 'deepseek-account' : useGeminiAccount ? 'gemini-account' : useArkAccount ? 'ark-account' : 'apiKey', deepseekProfileId, geminiProfileId, arkProfileId, connectionKey: modelContext.key, configRevision, appVersion: app.getVersion(), sessionId: currentSession.id, baseUrl: useChatGPT || useDeepSeekAccount || useGeminiAccount || useArkAccount ? accountBaseUrl(settings.authMode) : settings.baseUrl, apiProtocol: useChatGPT ? 'responses' : settings.apiProtocol, model: settings.model, modelCapabilities, reasoningEffort }, messages: currentSession.messages, permissionMode, workspace: { root: tools.root, execute: (name, args, options) => {
+          if (name === 'get_generated_image') return (async () => {
+            options.signal?.throwIfAborted();
+            const index = args?.recent_index ?? 1;
+            if (!Number.isSafeInteger(index) || index < 1 || index > 100) throw new Error('图片序号无效。');
+            const images = runSession.messages.filter(message => message?.source === 'generated-image' && message?.role === 'assistant' && message.attachments?.[0]?.dataUrl);
+            const message = images.at(-index);
+            if (!message) throw new Error('当前会话中没有对应的生成图片。');
+            // Legacy sessions retained only the display image. Materialize it
+            // when asked, without inventing an original-resolution file.
+            const path = await imageAssetStore.materialize(message.attachments[0].dataUrl, message.imageAssetPath);
+            options.signal?.throwIfAborted();
+            const reused = path === message.imageAssetPath;
+            const original = reused && message.imageAssetOriginal !== false;
+            if (!reused) { message.imageAssetPath = path; message.imageAssetOriginal = false; run.checkpoints.touch(); await run.checkpoints.flush(); }
+            return JSON.stringify({ status: 'completed', path, recent_index: index, original_file: original,
+              message: original ? '已返回此会话生成图片的原始文件路径。' : '旧会话仅保留预览图片；已将该预览保存为文件，原始分辨率可能不可用。' });
+          })();
           if (name === 'generate_image') return (async () => {
             await run.checkpoints.flush(); options.signal?.throwIfAborted();
             const config = roleModels.isEnabled('image') ? await roleRuntime.config('image', { signal: options.signal, permissionMode }) : await currentRequestConfig(run);
@@ -1615,11 +1636,12 @@ async function startTask(input) {
           options.signal?.throwIfAborted();
           if (name === 'read_url' || name.startsWith('browser_')) {
             if (name !== 'read_url' && !(name === 'browser_navigate' && isXmlURL(args.url))) emit({ type: 'browser-open' });
+            if (['browser_navigate', 'browser_click', 'browser_type'].includes(name) && !(name === 'browser_navigate' && isXmlURL(args.url))) remoteIndicator.show(win);
             return browser.execute(name, args, { ...options, approve });
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
           });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL, { name: 'generate_image', description: '当用户要求生成图片或任务需要图像素材时，使用配置的图片模型生成图片并显示在会话中。仅在任务确实需要生图时调用。', parameters: { type: 'object', properties: { prompt: { type: 'string', description: '图片内容和风格的具体描述' } }, required: ['prompt'], additionalProperties: false } }], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL, { name: 'get_generated_image', description: '取得当前会话中此前生成图片的本机文件路径，供继续编辑、制作文档或设计文件使用。recent_index 为从最新开始的序号。', parameters: { type: 'object', properties: { recent_index: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } }, { name: 'generate_image', description: '当用户要求生成图片或任务需要图像素材时，使用配置的图片模型生成图片；成功结果中的 path 是可用于后续任务的本机原图路径。仅在任务确实需要生图时调用。', parameters: { type: 'object', properties: { prompt: { type: 'string', description: '图片内容和风格的具体描述' } }, required: ['prompt'], additionalProperties: false } }], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);
@@ -1646,6 +1668,7 @@ async function startTask(input) {
       if (run.controller.signal.aborted) status = 'stopped';
       else { status = 'failed'; error = redact(cause.message || '任务失败。'); }
     } finally {
+      if (typeof remoteIndicator !== 'undefined') remoteIndicator.hide();
       clearTimeout(run.petGreetingTimer);
       for (const done of [...approvals.values()]) done(false);
       await approvalController.drain(run.id);
@@ -2516,7 +2539,7 @@ const context = {
       try { await broadcastAllStates(); } finally { scheduleNextPrompt(); }
     });
   },
-  dispose: () => { promptCompletion.abort(); sideChat.close(); petDialog.close(); browser?.destroy(); },
+  dispose: () => { remoteIndicator.dispose(); promptCompletion.abort(); sideChat.close(); petDialog.close(); browser?.destroy(); },
   abort() { ++stopGeneration; pluginRuntime?.closeOwner(win); promptCompletion.abort(); sideChat.close(); petDialog.close(); activeRun?.controller.abort(); terminal?.stop(); for (const done of [...approvals.values()]) done(false); },
   get activeRun() { return activeRun; }, get busy() { return Boolean(activeRun || localOperation || promptPreflights || fileOperationDone || sideChat.snapshot().running); },
   get hasPendingPrompts() { return pendingPrompts.length > 0; },

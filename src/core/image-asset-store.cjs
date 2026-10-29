@@ -41,14 +41,15 @@ function createImageAssetStore({ dataDir, nativeImage, clipboard, shell }) {
     return null;
   }
   async function reveal(dataUrl, storedPath) {
-    const filename = await trustedOriginal(storedPath) ? storedPath : await save(dataUrl);
+    const filename = await materialize(dataUrl, storedPath);
     shell.showItemInFolder(filename); return filename;
   }
+  async function materialize(dataUrl, storedPath) { return await trustedOriginal(storedPath) ? storedPath : await save(dataUrl); }
   async function copy(dataUrl, storedPath) {
     const original = await trustedOriginal(storedPath);
     const image = original ? nativeImage.createFromBuffer(original) : decode(dataUrl).image;
     if (image.isEmpty()) throw new Error('图片无法解码。'); clipboard.writeImage(image);
   }
-  return { save, copy, reveal };
+  return { save, copy, reveal, materialize };
 }
 module.exports = { createImageAssetStore };

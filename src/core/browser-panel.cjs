@@ -1,7 +1,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { WebContentsView, session } = require('electron');
+const { WebContentsView, session, Menu } = require('electron');
+const { installBrowserContextMenu } = require('./browser-context-menu.cjs');
 const { validateBrowserURL, ProjectPreviewServer, clampBrowserBounds } = require('./browser-security.cjs');
 const { readXmlURL, isXmlURL } = require('./xml-reader.cjs');
 
@@ -153,6 +154,10 @@ class BrowserPanel {
     this.view.setBackgroundColor('#101010');
     this.window.contentView.addChildView(this.view);
     const contents = this.view.webContents;
+    installBrowserContextMenu({ contents, window: this.window, Menu,
+      isCurrent: () => this.view?.webContents === contents && this.isForeground() && this.visible && !this.overlayHidden,
+      getPageVersion: () => this.generation,
+    });
     contents.setWindowOpenHandler(() => { this.error = '弹出窗口已阻止，请在地址栏打开需要的链接。'; this.publish(); return { action: 'deny' }; });
     contents.on('will-attach-webview', event => event.preventDefault());
     const guard = (event, value) => {
