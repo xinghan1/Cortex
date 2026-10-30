@@ -101,12 +101,14 @@ function petOptions(f){
   vm.runInContext(source.slice(start,end)+'\nglobalThis.options=petDialog;',f.c);return f.c.options;
 }
 
-test('actual Tab callbacks bind current Google profile, reject an old session and invalidate a result after account change',async()=>{
+test('actual Tab callbacks bind the current Google profile while invalidating an in-flight account change',async()=>{
   const f=fixture(),options=completionOptions(f),signal=new AbortController().signal;
   const snapshot={...options.getSnapshot(),hasConversation:true};assert.equal(snapshot.geminiProfileId,'google-main-a');
   const config=await options.getConfig(snapshot,signal);assert.equal(config.geminiProfileId,'google-main-a');assert.equal(config.apiKey,'');
   await options.validateConfig(config,snapshot,signal);f.account.session.profileId='google-main-b';
-  await assert.rejects(options.getConfig(snapshot,signal),/会话模型账号已变化/);await assert.rejects(options.validateConfig(config,snapshot,signal),{name:'AbortError'});
+  await assert.rejects(options.validateConfig(config,snapshot,signal),{name:'AbortError'});
+  const next=await options.getConfig(snapshot,signal);assert.equal(next.geminiProfileId,'google-main-b');
+  await options.validateConfig(next,snapshot,signal);
   assert.equal(f.keyReads(),0);
 });
 

@@ -15,7 +15,7 @@ const cancelled = () => new DOMException('提示词补全已取消。', 'AbortEr
 const validId = value => typeof value === 'string' && /^[a-z\d:_-]{1,200}$/iu.test(value);
 const validToken = value => Number.isSafeInteger(value) && value >= 0;
 
-function assertSessionOwner(snapshot, config) {
+function canUseSessionHistory(snapshot, config) {
   const profile = config.authMode === 'chatgpt' ? config.chatgptProfileId || null : null;
   const geminiProfile = config.authMode === 'gemini-account' ? config.geminiProfileId || null : null;
   if (config.authMode === 'gemini-account' && !geminiProfile) throw new Error('Google 账号信息不完整，请重新登录。');
@@ -26,14 +26,13 @@ function assertSessionOwner(snapshot, config) {
   if (config.authMode === 'ark-account' && !arkProfile) throw new Error('火山方舟账号信息不完整，请重新登录。');
   // Only the main process can designate an explicitly configured completion
   // connection. Choosing that role authorizes its own account for this request.
-  if (config.modelRole === 'completion') return;
+  if (config.modelRole === 'completion') return true;
   // Match startTask's history boundary in both directions: official account
   // A cannot disclose its history to B or API mode; unowned/API history must
   // likewise not be transferred to an official account by a Tab request.
-  if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profile
+  return !snapshot.hasConversation || !((snapshot.chatgptProfileId || null) !== profile
       || (snapshot.deepseekProfileId || null) !== deepseekProfile || (snapshot.geminiProfileId || null) !== geminiProfile
-      || (snapshot.arkProfileId || null) !== arkProfile))
-    throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
+      || (snapshot.arkProfileId || null) !== arkProfile);
 }
 
 function publicConversation(messages, redact) {
@@ -96,14 +95,18 @@ export function createPromptCompletionController({ getSnapshot, getConfig, valid
           text: input.draft + '请检查当前程序，找出需要改进的问题并给出具体修改建议。'.slice(0, PROMPT_COMPLETION_LIMITS.draftChars - input.draft.length) };
       }
       config = structuredClone(await wait(() => getConfig(snapshot, signal)));
-      assertSessionOwner(snapshot, config);
+      const safeConversation = canUseSessionHistory(snapshot, config) ? conversation : [];
+      if (!input.draft.trim() && !safeConversation.length) {
+        return { id: input.id, sessionId: snapshot.sessionId, workspaceId: snapshot.workspaceId,
+          text: input.draft + '请检查当前程序，找出需要改进的问题并给出具体修改建议。'.slice(0, PROMPT_COMPLETION_LIMITS.draftChars - input.draft.length) };
+      }
       const safeRedact = value => {
         let clean = String(redact(String(value)));
         for (const key of ['apiKey', 'accessToken', 'refreshToken']) if (typeof config[key] === 'string' && config[key]) clean = clean.replaceAll(config[key], '[已隐藏凭据]');
         return clean;
       };
       if (safeRedact(input.draft) !== input.draft) throw new Error('草稿包含敏感凭据，请移除后再补全。');
-      const payload = JSON.stringify({ conversation: conversation.map(message => ({ ...message, content: safeRedact(message.content) })), draft: input.draft });
+      const payload = JSON.stringify({ conversation: safeConversation.map(message => ({ ...message, content: safeRedact(message.content) })), draft: input.draft });
       await wait(() => validateConfig(config, snapshot, signal));
       response = await wait(() => {
         started = true;

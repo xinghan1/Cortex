@@ -490,13 +490,11 @@ const promptCompletion = createPromptCompletionController({
     const deepseekProfileId = connection.authMode === 'deepseek-account' ? connection.account?.session?.profileId || null : null;
     const geminiProfileId = connection.authMode === 'gemini-account' ? connection.account?.session?.profileId || null : null;
     const arkProfileId = connection.authMode === 'ark-account' ? connection.account?.session?.profileId || null : null;
-    if (snapshot.hasConversation && ((snapshot.chatgptProfileId || null) !== profileId || (snapshot.deepseekProfileId || null) !== deepseekProfileId || (snapshot.geminiProfileId || null) !== geminiProfileId || (snapshot.arkProfileId || null) !== arkProfileId))
-      throw new Error('会话模型账号已变化，请新建会话后再补全提示词。');
     const config = await currentRequestConfig({ controller: { signal }, connectionKey: connection.key,
-      chatgptProfileId: snapshot.hasConversation ? snapshot.chatgptProfileId : null,
-      deepseekProfileId: snapshot.hasConversation ? snapshot.deepseekProfileId : null,
-      geminiProfileId: snapshot.hasConversation ? snapshot.geminiProfileId : null,
-      arkProfileId: snapshot.hasConversation ? snapshot.arkProfileId : null }, publicSettings().model);
+      chatgptProfileId: profileId,
+      deepseekProfileId,
+      geminiProfileId,
+      arkProfileId }, publicSettings().model);
     return { ...config, chatgptProfileId: config.authMode === 'chatgpt' ? profileId : null,
       deepseekProfileId: config.authMode === 'deepseek-account' ? deepseekProfileId : null,
       geminiProfileId: config.authMode === 'gemini-account' ? geminiProfileId : null,

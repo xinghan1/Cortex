@@ -25,7 +25,7 @@ function fixture(options = {}) {
   return { controller, snapshot, requests, usage, input };
 }
 
-test('an explicitly configured completion role authorizes its own account while follow-main still enforces session ownership', async () => {
+test('an explicitly configured completion role receives history while a changed follow-main account receives only the draft', async () => {
   const independent = fixture({ getConfig: () => ({ ...config, modelRole: 'completion', roleConnectionRevision: 1,
     authMode: 'chatgpt', chatgptProfileId: 'completion-account' }) });
   independent.snapshot.chatgptProfileId = 'main-account';
@@ -34,20 +34,20 @@ test('an explicitly configured completion role authorizes its own account while 
   assert.equal(independent.requests[0].reasoningEffort, 'max');
   const following = fixture({ getConfig: () => ({ ...config, authMode: 'chatgpt', chatgptProfileId: 'completion-account' }) });
   following.snapshot.chatgptProfileId = 'main-account';
-  await assert.rejects(following.controller.complete(following.input()), /账号已变化/);
-  assert.equal(following.requests.length, 0);
+  await following.controller.complete(following.input());
+  assert.deepEqual(JSON.parse(following.requests[0].messages[1].content).conversation, []);
   const incomplete = fixture({ getConfig: () => ({ ...config, modelRole: 'completion', authMode: 'chatgpt' }) });
   await assert.rejects(incomplete.controller.complete(incomplete.input()), /账号信息不完整/);
   assert.equal(incomplete.requests.length, 0);
 });
 
-test('DeepSeek completion keeps account generations and refuses cross-account, API and ChatGPT history reuse', async () => {
+test('DeepSeek completion keeps account generations and omits history across account or API boundaries', async () => {
   for (const [owner, current] of [['main-deepseek', 'replacement-deepseek'], ['main-deepseek', null], [null, 'new-deepseek']]) {
     const data = fixture({ getConfig: () => ({ ...config, provider: 'deepseek',
       authMode: current ? 'deepseek-account' : 'apiKey', deepseekProfileId: current }) });
     data.snapshot.deepseekProfileId = owner;
-    await assert.rejects(data.controller.complete(data.input()), /账号已变化/);
-    assert.equal(data.requests.length, 0);
+    await data.controller.complete(data.input());
+    assert.deepEqual(JSON.parse(data.requests[0].messages[1].content).conversation, []);
   }
   const matching = fixture({ getConfig: captured => {
     assert.equal(captured.deepseekProfileId, 'current-generation');
@@ -64,7 +64,7 @@ test('DeepSeek completion keeps account generations and refuses cross-account, A
   await assert.rejects(missing.controller.complete(missing.input()), /DeepSeek 账号信息不完整/);
 });
 
-test('Ark completion rejects account A to B, Ark to API and API to Ark history before requesting a model', async () => {
+test('Ark completion omits history across account and API boundaries', async () => {
   for (const [owner, authMode, target] of [['ark-a', 'ark-account', 'ark-b'], ['ark-a', 'apiKey', null], [null, 'ark-account', 'ark-a']]) {
     let validated = false;
     const data = fixture({ getConfig: captured => {
@@ -72,9 +72,28 @@ test('Ark completion rejects account A to B, Ark to API and API to Ark history b
       return { ...config, provider: 'doubao', authMode, arkProfileId: target };
     }, validateConfig: async () => { validated = true; } });
     data.snapshot.arkProfileId = owner; const before = structuredClone(data.snapshot);
-    await assert.rejects(data.controller.complete(data.input()), /会话模型账号已变化/);
-    assert.equal(data.requests.length, 0); assert.equal(data.usage.length, 0); assert.equal(validated, false); assert.deepEqual(data.snapshot, before);
+    await data.controller.complete(data.input());
+    assert.deepEqual(JSON.parse(data.requests[0].messages[1].content).conversation, []);
+    assert.equal(data.usage.length, 1); assert.equal(validated, true); assert.deepEqual(data.snapshot, before);
   }
+});
+
+test('Google account changes preserve the draft without disclosing old history', async () => {
+  for (const [owner, mode, profile] of [['google-a', 'gemini-account', 'google-b'], ['google-a', 'apiKey', null], [null, 'gemini-account', 'google-a']]) {
+    const data = fixture({ getConfig: () => ({ ...config, provider: 'gemini', authMode: mode, geminiProfileId: profile }) });
+    data.snapshot.geminiProfileId = owner;
+    const input = data.input('设计界面');
+    assert.ok((await data.controller.complete(input)).text.startsWith(input.draft));
+    const payload = JSON.parse(data.requests[0].messages[1].content);
+    assert.equal(payload.draft, input.draft); assert.deepEqual(payload.conversation, []);
+  }
+});
+
+test('empty draft with history belonging to another account uses a local generic suggestion', async () => {
+  const data = fixture({ getConfig: () => ({ ...config, authMode: 'chatgpt', chatgptProfileId: 'account-b' }) });
+  data.snapshot.chatgptProfileId = 'account-a';
+  assert.match((await data.controller.complete(data.input(''))).text, /请检查当前程序/);
+  assert.equal(data.requests.length, 0);
 });
 
 test('Ark profile identity reaches snapshot, current checks, config validation and the dispatcher unchanged', async () => {
@@ -287,7 +306,7 @@ test('the selected official authentication and independent config snapshot reach
   assert.equal(selected.reasoningEffort, 'max');
 });
 
-test('historical chats cannot cross official account or API ownership boundaries during completion', async () => {
+test('historical chats never cross official account or API ownership boundaries during completion', async () => {
   for (const [owner, authMode, target] of [
     ['profile-a', 'chatgpt', 'profile-b'], ['profile-a', 'apiKey', null],
     [undefined, 'chatgpt', 'profile-b'], [null, 'chatgpt', 'profile-a'],
@@ -295,9 +314,9 @@ test('historical chats cannot cross official account or API ownership boundaries
     const data = fixture({ getConfig: async () => ({ ...config, authMode, chatgptProfileId: target }) });
     data.snapshot.chatgptProfileId = owner;
     const before = structuredClone(data.snapshot);
-    await assert.rejects(data.controller.complete(data.input()), { message: '会话模型账号已变化，请新建会话后再补全提示词。' });
-    assert.equal(data.requests.length, 0, 'Mismatched history must never reach the dispatcher');
-    assert.equal(data.usage.length, 0); assert.deepEqual(data.snapshot, before);
+    await data.controller.complete(data.input());
+    assert.deepEqual(JSON.parse(data.requests[0].messages[1].content).conversation, []);
+    assert.equal(data.usage.length, 1); assert.deepEqual(data.snapshot, before);
   }
   const apiHistory = fixture();
   await apiHistory.controller.complete(apiHistory.input());
@@ -316,7 +335,7 @@ test('empty chats can switch owners for a new draft, while official requests sti
   assert.equal(data.requests.length, 1);
 });
 
-test('main-process completion config enforces real session ownership before dispatch and allows a fresh chat after account switching', async () => {
+test('main-process completion config uses the current account while isolating old account history', async () => {
   const main = await fs.readFile(new URL('../src/main.cjs', import.meta.url), 'utf8');
   const wiringStart = main.indexOf('const promptCompletion = createPromptCompletionController(');
   const sideChatStart = main.indexOf('\nconst sideChat =', wiringStart);
@@ -362,15 +381,11 @@ test('main-process completion config enforces real session ownership before disp
     vm.runInContext(configSource, sandbox); vm.runInContext(wiring, sandbox);
     const completion = vm.runInContext('promptCompletion', sandbox);
     const pending = completion.complete({ id: randomUUID(), sessionId: currentSession.id, workspaceId: 'workspace', draft: '继续完善' });
-    if (allowed) {
-      assert.ok((await pending).text.startsWith('继续完善')); assert.equal(calls.length, 1); assert.equal(usage.length, 1);
-      assert.equal(calls[0].chatgptProfileId, authMode === 'chatgpt' ? profile : null);
-      assert.equal(calls[0].deepseekProfileId, authMode === 'deepseek-account' ? profile : null);
-      assert.equal(calls[0].arkProfileId, authMode === 'ark-account' ? profile : null);
-    } else {
-      await assert.rejects(pending, { message: '会话模型账号已变化，请新建会话后再补全提示词。' });
-      assert.equal(calls.length, 0); assert.equal(usage.length, 0);
-    }
+    assert.ok((await pending).text.startsWith('继续完善')); assert.equal(calls.length, 1); assert.equal(usage.length, 1);
+    assert.equal(calls[0].chatgptProfileId, authMode === 'chatgpt' ? profile : null);
+    assert.equal(calls[0].deepseekProfileId, authMode === 'deepseek-account' ? profile : null);
+    assert.equal(calls[0].arkProfileId, authMode === 'ark-account' ? profile : null);
+    assert.equal(JSON.parse(calls[0].messages[1].content).conversation.length, allowed && history ? 1 : 0);
   }
 });
 

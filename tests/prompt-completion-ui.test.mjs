@@ -97,10 +97,10 @@ test('malformed and cross-session results preserve the draft, and failure allows
   assert.equal(f.input.value, '继续检查测试结果。');
 });
 
-test('account isolation failures explain the next step without exposing arbitrary provider errors', async () => {
+test('completion failures allow retry without exposing arbitrary provider errors', async () => {
   const f = fixture(); f.key('Tab');
   f.requests[0].reject(new Error("Error invoking remote method: 会话模型账号已变化，请新建会话后再补全提示词。")); await tick();
-  assert.equal(f.hint.textContent, '账号已变化 · 新建会话后补全');
+  assert.equal(f.hint.textContent, '补全未完成，可重新按 Tab');
   assert.equal(f.input.value, '继续');
   f.key('Tab'); f.requests[1].reject(new Error('provider secret diagnostic')); await tick();
   assert.equal(f.hint.textContent, '补全未完成，可重新按 Tab');

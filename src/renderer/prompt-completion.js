@@ -92,8 +92,7 @@
         if (!applying && !matches(value)) { stop(); return; }
         active = null;
         if (auto) { render(); return; }
-        const accountChanged = String(error?.message || '').includes('会话模型账号已变化，请新建会话后再补全提示词。');
-        render('error', accountChanged ? '账号已变化 · 新建会话后补全' : '补全未完成，可重新按 Tab');
+        render('error', '补全未完成，可重新按 Tab');
       } finally {
         if (active === value) { active = null; render(); }
       }
