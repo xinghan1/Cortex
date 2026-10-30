@@ -67,6 +67,8 @@ public class MainActivity extends Activity {
     private final Runnable pollTask = this::poll;
     private LinearLayout messages, remoteControls, remoteProgress;
     private ScrollView scroll;
+    private View mainPage, currentPage;
+    private boolean secondaryPage;
     private EditText input;
     private TextView status, title;
     private boolean remote = false, destroyed = false, polling = false;
@@ -107,7 +109,7 @@ public class MainActivity extends Activity {
         modelButton.setEnabled(true);
     }
     private void build() {
-        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(14),dp(12),dp(14),dp(10)); root.setBackgroundColor(BG); setContentView(root);
+        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(BG); mainPage=root; applySafeInsets(root,14,12,14,10); setContentView(root);
         android.widget.FrameLayout top=new android.widget.FrameLayout(this); root.addView(top,new LinearLayout.LayoutParams(-1,dp(50)));
         TextView menu=control("☰",22); android.widget.FrameLayout.LayoutParams left=new android.widget.FrameLayout.LayoutParams(dp(46),dp(46),Gravity.START|Gravity.CENTER_VERTICAL); top.addView(menu,left); menu.setContentDescription("会话历史"); menu.setOnClickListener(v->showHistory());
         LinearLayout tabs=new LinearLayout(this); tabs.setPadding(dp(4),dp(4),dp(4),dp(4)); tabs.setBackground(rounded(PANEL,28)); android.widget.FrameLayout.LayoutParams middle=new android.widget.FrameLayout.LayoutParams(Math.min(dp(210),Math.max(dp(140),getResources().getDisplayMetrics().widthPixels-dp(148))),dp(46),Gravity.CENTER); top.addView(tabs,middle);
@@ -129,7 +131,7 @@ public class MainActivity extends Activity {
     }
     private void chooseFolder() { Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE); intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION); startActivityForResult(intent,41); }
     private void showHistory() {
-        Dialog drawer=new Dialog(this); LinearLayout panel=new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(18),dp(20),dp(18),dp(18)); panel.setBackgroundColor(light?0xfff0f1f3:0xff101113);
+        Dialog drawer=new Dialog(this); LinearLayout panel=new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); applySafeInsets(panel,18,20,18,18); panel.setBackgroundColor(light?0xfff0f1f3:0xff101113);
         LinearLayout head=new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL); panel.addView(head); TextView brand=text("Cortex",23,TEXT); brand.setTypeface(null,Typeface.BOLD); head.addView(brand,new LinearLayout.LayoutParams(0,-2,1)); TextView close=control("×",24); head.addView(close,new LinearLayout.LayoutParams(dp(40),dp(40))); close.setOnClickListener(v->drawer.dismiss());
         EditText search=new EditText(this); search.setSingleLine(true); search.setTextColor(TEXT); search.setHintTextColor(MUTED); search.setHint("搜索对话内容…"); search.setTextSize(15); search.setPadding(dp(16),0,dp(16),0); search.setBackground(rounded(PANEL,24)); LinearLayout.LayoutParams searchParams=new LinearLayout.LayoutParams(-1,dp(48)); searchParams.topMargin=dp(24); panel.addView(search,searchParams);
         TextView newChat=control("＋  新建对话",15); newChat.setGravity(Gravity.CENTER_VERTICAL|Gravity.START); newChat.setPadding(dp(14),0,0,0); LinearLayout.LayoutParams np=new LinearLayout.LayoutParams(-1,dp(46)); np.topMargin=dp(18); panel.addView(newChat,np); newChat.setOnClickListener(v->{ if(busy) { toast("请等待当前任务结束"); return; } String id=sessionStore.create(); sessionStore.select(id); localMessages=sessionStore.load(id); changeMode(false); renderLocal(); drawer.dismiss(); });
@@ -138,7 +140,7 @@ public class MainActivity extends Activity {
         Runnable update=()->renderHistory(list,search.getText().toString(),drawer); search.addTextChangedListener(new TextWatcher(){ public void beforeTextChanged(CharSequence s,int start,int count,int after){} public void onTextChanged(CharSequence s,int start,int before,int count){update.run();} public void afterTextChanged(Editable e){} }); update.run();
         TextView models=control("模型与账号设置",14); LinearLayout.LayoutParams mp=new LinearLayout.LayoutParams(-1,dp(44)); mp.topMargin=dp(8); panel.addView(models,mp); models.setOnClickListener(v->{drawer.dismiss(); modelStore.showManager(()->refreshTabs());});
         TextView theme=control(light?"切换深色模式":"切换浅色模式",14); LinearLayout.LayoutParams tp=new LinearLayout.LayoutParams(-1,dp(44)); tp.topMargin=dp(8); panel.addView(theme,tp); theme.setOnClickListener(v->{ if(busy || controlBusy){toast("请等待当前操作结束");return;} prefs.edit().putBoolean("light_theme",!light).apply(); drawer.dismiss(); recreate(); });
-        drawer.setContentView(panel); Window window=drawer.getWindow(); if(window!=null){ window.setBackgroundDrawableResource(android.R.color.transparent); window.setLayout(Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(48)),WindowManager.LayoutParams.MATCH_PARENT); window.setGravity(Gravity.START); window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); } drawer.show(); if(window!=null) window.setLayout(Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(48)),WindowManager.LayoutParams.MATCH_PARENT);
+        drawer.setContentView(panel); Window window=drawer.getWindow(); if(window!=null){ window.setBackgroundDrawableResource(android.R.color.transparent); window.setWindowAnimations(R.style.CortexDrawerAnimation); window.setLayout(Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(48)),WindowManager.LayoutParams.MATCH_PARENT); window.setGravity(Gravity.START); window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); } drawer.show(); if(window!=null) window.setLayout(Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(48)),WindowManager.LayoutParams.MATCH_PARENT);
     }
     private void renderHistory(LinearLayout list,String query,Dialog drawer) {
         list.removeAllViews(); JSONArray rows=sessionStore.list(query); if(rows.length()==0){ TextView empty=text("暂无会话",14,MUTED); empty.setPadding(dp(8),dp(20),0,0); list.addView(empty); return; }
@@ -159,25 +161,32 @@ public class MainActivity extends Activity {
     private void restoreScroll(boolean atBottom,int oldScroll) { scroll.post(() -> { if(atBottom) scroll.fullScroll(View.FOCUS_DOWN); else scroll.scrollTo(0,oldScroll); }); }
     private void saveMessages() { sessionStore.save(sessionStore.currentId(),localMessages); }
     private void showModelSelector() {
-        if(!remote) { modelStore.showSelector(this::refreshTabs); return; }
+        if(!remote) { modelStore.showSelector(modelButton,this::refreshTabs); return; }
         final String endpoint=prefs.getString("remote_url","").trim(), token;
         try { validateUrl(endpoint,true); token=readSecret("remote_token"); if(token.isEmpty()) throw new Exception("请先配置电脑连接"); } catch(Exception e) { toast(e.getMessage()); return; }
+        LinearLayout panel=new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(10),dp(10),dp(10),dp(10)); panel.setBackground(rounded(PANEL,18));
+        TextView heading=text("电脑模型",14,MUTED); heading.setPadding(dp(8),0,0,dp(8)); panel.addView(heading);
+        ScrollView menuScroll=new ScrollView(this); LinearLayout list=new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); menuScroll.addView(list); panel.addView(menuScroll,new LinearLayout.LayoutParams(-1,dp(180)));
+        TextView loading=text("正在获取电脑模型…",14,MUTED); list.addView(loading);
+        TextView configure=pageButton("模型设置  ›"); LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,dp(44)); cp.topMargin=dp(6); panel.addView(configure,cp);
+        PopupWindow popup=new PopupWindow(panel,Math.min(dp(300),getResources().getDisplayMetrics().widthPixels-dp(32)),dp(258),true); popup.setBackgroundDrawable(rounded(PANEL,18)); popup.setOutsideTouchable(true); popup.setElevation(dp(8));
+        configure.setOnClickListener(v->{popup.dismiss();modelStore.showManager(()->refreshTabs());}); popup.showAsDropDown(modelButton,0,-modelButton.getHeight()-dp(258),Gravity.END);
         remoteWorker.execute(()->{ try {
             JSONObject result=request(endpoint,"/v1/models",token,null,true); JSONArray models=result.optJSONArray("models");
             if(models==null || models.length()==0) throw new Exception("电脑未返回可用模型，请检查电脑的账号或模型配置");
-            String[] labels=new String[models.length()]; for(int i=0;i<models.length();i++) { JSONObject m=models.getJSONObject(i); labels[i]=m.optString("name",m.optString("id"))+(m.optBoolean("supportsTools",true)?"":"（不支持工具）"); }
-            runOnUiThread(()->{ if(!remote || destroyed) return; new AlertDialog.Builder(this).setTitle("电脑模型").setItems(labels,(dialog,which)->{
-                JSONObject m=models.optJSONObject(which); if(m==null) return; if(!m.optBoolean("supportsTools",true)) { toast("此模型不支持工具调用"); return; }
-                final String id=m.optString("id"); remoteWorker.execute(()->{ try {
+            runOnUiThread(()->{ if(!popup.isShowing() || destroyed) return; list.removeAllViews(); for(int i=0;i<models.length();i++) {
+                JSONObject model=models.optJSONObject(i); if(model==null) continue; String id=model.optString("id"), name=model.optString("name",id); boolean usable=model.optBoolean("supportsTools",true);
+                TextView row=text(name+(usable?"":"（不支持工具）"),14,TEXT); row.setGravity(Gravity.CENTER_VERTICAL|Gravity.START); row.setPadding(dp(8),0,dp(8),0); list.addView(row,new LinearLayout.LayoutParams(-1,dp(44)));
+                row.setOnClickListener(v->{ if(!usable) { toast("此模型不支持工具调用"); return; } row.setEnabled(false); remoteWorker.execute(()->{ try {
                     JSONObject response=request(endpoint,"/v1/model",token,new JSONObject().put("model",id),true);
-                    runOnUiThread(()->{ if(remote&&!destroyed) { remoteModel=response.optString("model",id); refreshTabs(); toast("电脑模型已切换"); } });
-                } catch(Exception e) { runOnUiThread(()->toast("切换电脑模型失败："+e.getMessage())); } });
-            }).setNegativeButton("取消",null).show(); });
-        } catch(Exception e) { runOnUiThread(()->toast("获取电脑模型失败："+e.getMessage())); } });
+                    runOnUiThread(()->{ if(remote&&!destroyed) { remoteModel=response.optString("model",id); refreshTabs(); popup.dismiss(); toast("电脑模型已切换"); } });
+                } catch(Exception e) { runOnUiThread(()->{row.setEnabled(true); if(!destroyed) toast("切换电脑模型失败："+e.getMessage());}); } }); });
+            } });
+        } catch(Exception e) { runOnUiThread(()->{ if(!destroyed && popup.isShowing()) loading.setText("获取电脑模型失败："+e.getMessage()); }); } });
     }
     private void send() {
         String prompt=input.getText().toString().trim(); if(prompt.isEmpty()) return; if(busy) { toast("任务仍在执行，请等待完成"); return; }
-        final boolean wasRemote=remote; final ModelStore chosenModels=new ModelStore(this,prefs); final String endpoint=(wasRemote?prefs.getString("remote_url", ""):chosenModels.selectedUrl()).trim(); final String secret; final String model=chosenModels.selectedModel().trim();
+        final boolean wasRemote=remote; final ModelStore chosenModels=new ModelStore(this,prefs); final String endpoint=(wasRemote?prefs.getString("remote_url", ""):chosenModels.selectedUrl()).trim(); final String secret; final String model=chosenModels.selectedModel().trim(); final String provider=chosenModels.selectedProvider(), authMode=chosenModels.selectedAuthMode();
         try { secret=wasRemote?readSecret("remote_token"):chosenModels.selectedKey(); validateUrl(endpoint,wasRemote); if(secret.isEmpty()) throw new Exception("请先配置模型密钥或电脑配对令牌。"); if(!wasRemote && model.isEmpty()) throw new Exception("请先选择模型。"); }
         catch(Exception ex) { toast(ex.getMessage()); return; }
         input.setText(""); busy=true; status.setText(wasRemote?"正在发送到电脑…":"正在请求模型…");
@@ -186,7 +195,7 @@ public class MainActivity extends Activity {
         (wasRemote ? remoteWorker : worker).execute(() -> { try {
             if(wasRemote) { request(endpoint,"/v1/messages",secret,new JSONObject().put("text",prompt),true); runOnUiThread(() -> { busy=false; MainActivity view=activeActivity.get(); if(view!=null && !view.destroyed && view.remote) view.poll(); }); }
             else { JSONArray conversation=new JSONArray(snapshot); FolderTools folder=new FolderTools(this,prefs.getString("folder_uri","")); boolean done=false;
-                for(int turn=0;turn<12;turn++) { JSONObject data=new JSONObject().put("model",model).put("messages",conversation).put("stream",false).put("tools",FolderTools.definitions()); JSONObject response=request(endpoint,"/chat/completions",secret,data,false); JSONObject reply=response.getJSONArray("choices").getJSONObject(0).getJSONObject("message"); JSONArray calls=reply.optJSONArray("tool_calls"); if(calls==null||calls.length()==0) { conversation.put(new JSONObject().put("role","assistant").put("content",reply.optString("content",""))); done=true; break; }
+                for(int turn=0;turn<12;turn++) { boolean messagesApi="anthropic".equals(provider) || "deepseek-account".equals(authMode); JSONObject data=messagesApi ? MessagesProtocol.request(model,conversation,FolderTools.definitions()) : new JSONObject().put("model",model).put("messages",conversation).put("stream",false).put("tools",FolderTools.definitions()); JSONObject response=messagesApi ? request(endpoint,"/messages",secret,data,false,authMode.equals("deepseek-account")?"deepseek-account":"anthropic") : request(endpoint,"/chat/completions",secret,data,false); JSONObject reply=messagesApi ? MessagesProtocol.reply(response) : response.getJSONArray("choices").getJSONObject(0).getJSONObject("message"); JSONArray calls=reply.optJSONArray("tool_calls"); if(calls==null||calls.length()==0) { conversation.put(new JSONObject().put("role","assistant").put("content",reply.optString("content",""))); done=true; break; }
                     conversation.put(reply); for(int i=0;i<calls.length();i++) { JSONObject call=calls.getJSONObject(i), f=call.getJSONObject("function"); String result; try { result=folder.call(f.getString("name"),new JSONObject(f.optString("arguments","{}"))); } catch(Exception e) { result=new JSONObject().put("error",String.valueOf(e.getMessage())).toString(); } conversation.put(new JSONObject().put("role","tool").put("tool_call_id",call.getString("id")).put("content",result)); }
                     JSONArray progress=new JSONArray(conversation.toString()); runOnUiThread(() -> publishLocalProgress(sentSession,progress,false));
                 } if(!done) conversation.put(new JSONObject().put("role","assistant").put("content","任务已暂停：工具调用次数达到上限，请发送消息继续。")); JSONArray completed=conversation; runOnUiThread(() -> publishLocalProgress(sentSession,completed,true)); }
@@ -231,8 +240,15 @@ public class MainActivity extends Activity {
         try { validateUrl(endpoint,true); token=readSecret("remote_token"); if(token.isEmpty()) throw new Exception("请先填写配对令牌"); } catch(Exception e) { toast(e.getMessage()); return; }
         controlBusy=true; remoteWorker.execute(() -> { try { request(endpoint,route,token,body,true); runOnUiThread(() -> { controlBusy=false; toast("操作已发送"); handler.removeCallbacks(pollTask); poll(); }); } catch(Exception e) { runOnUiThread(() -> { controlBusy=false; toast("操作失败："+e.getMessage()); }); } });
     }
-    private JSONObject request(String base,String route,String token,JSONObject body,boolean computer) throws Exception {
-        String url=base.replaceAll("/+$", "")+route; HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection(); c.setConnectTimeout(15000); c.setReadTimeout(body==null?15000:120000); c.setInstanceFollowRedirects(false); c.setRequestProperty("Authorization","Bearer "+token); c.setRequestProperty("Accept","application/json");
+    private JSONObject request(String base,String route,String token,JSONObject body,boolean computer) throws Exception { return request(base,route,token,body,computer,""); }
+    private JSONObject request(String base,String route,String token,JSONObject body,boolean computer,String auth) throws Exception {
+        String normalized=base.replaceAll("/+$", "");
+        if("deepseek-account".equals(auth) && !"https://api.deepseek.com/anthropic/v1".equals(normalized)) throw new Exception("DeepSeek 账号只能连接官方地址");
+        String url=normalized+route; HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection(); c.setConnectTimeout(15000); c.setReadTimeout(body==null?15000:120000); c.setInstanceFollowRedirects(false);
+        if("deepseek-account".equals(auth)) { c.setRequestProperty("x-dsh-auth-token",token); c.setRequestProperty("anthropic-version","2023-06-01"); }
+        else if("anthropic".equals(auth)) { c.setRequestProperty("x-api-key",token); c.setRequestProperty("anthropic-version","2023-06-01"); }
+        else c.setRequestProperty("Authorization","Bearer "+token);
+        c.setRequestProperty("Accept","application/json");
         if(computer) { String fingerprint=prefs.getString("remote_fingerprint","").replace(":","").replace(" ","").toLowerCase(java.util.Locale.ROOT); if(!fingerprint.matches("[0-9a-f]{64}")) throw new Exception("请填写电脑显示的 SHA-256 证书指纹"); SSLContext context=SSLContext.getInstance("TLS"); context.init(null,new TrustManager[]{new X509TrustManager() { public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; } public void checkClientTrusted(X509Certificate[] chain,String auth) throws java.security.cert.CertificateException { throw new java.security.cert.CertificateException("不支持客户端证书"); } public void checkServerTrusted(X509Certificate[] chain,String auth) throws java.security.cert.CertificateException { try { if(chain==null || chain.length==0) throw new Exception(); byte[] hash=MessageDigest.getInstance("SHA-256").digest(chain[0].getEncoded()); StringBuilder s=new StringBuilder(); for(byte b:hash) s.append(String.format(java.util.Locale.ROOT,"%02x",b&255)); if(!MessageDigest.isEqual(s.toString().getBytes(StandardCharsets.US_ASCII),fingerprint.getBytes(StandardCharsets.US_ASCII))) throw new Exception(); } catch(Exception e) { throw new java.security.cert.CertificateException("电脑证书指纹不匹配"); } } }},null); HttpsURLConnection https=(HttpsURLConnection)c; https.setSSLSocketFactory(context.getSocketFactory()); https.setHostnameVerifier((host,session)->true); }
         try { if(body!=null) { c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json; charset=utf-8"); try(OutputStream out=c.getOutputStream()) { out.write(body.toString().getBytes(StandardCharsets.UTF_8)); } }
             int code=c.getResponseCode(); if(code<200||code>=300) throw new Exception("HTTP "+code); try(InputStream in=c.getInputStream(); ByteArrayOutputStream out=new ByteArrayOutputStream()) { byte[] b=new byte[8192]; int n; while((n=in.read(b))!=-1) { if(out.size()+n>4_000_000) throw new Exception("响应过大"); out.write(b,0,n); } return new JSONObject(out.toString("UTF-8")); }
@@ -244,13 +260,39 @@ public class MainActivity extends Activity {
         if(u.getHost()==null || u.getHost().isEmpty()) throw new Exception("连接地址缺少主机名");
     }
     private EditText field(LinearLayout layout,String hint,String value,boolean secret) { EditText e=new EditText(this); e.setHint(hint); e.setText(value); if(secret) e.setInputType(129); layout.addView(e); return e; }
+    // Keep controls outside system bars, cutouts and the on-screen keyboard.
+    private void applySafeInsets(View page,int left,int top,int right,int bottom) {
+        page.setOnApplyWindowInsetsListener((v,insets)->{
+            int l=0,t=0,r=0,b=0;
+            if(android.os.Build.VERSION.SDK_INT>=30) {
+                android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+                android.graphics.Insets keyboard=insets.getInsets(android.view.WindowInsets.Type.ime());
+                l=bars.left; t=bars.top; r=bars.right; b=Math.max(bars.bottom,keyboard.bottom);
+            } else { l=insets.getSystemWindowInsetLeft(); t=insets.getSystemWindowInsetTop(); r=insets.getSystemWindowInsetRight(); b=insets.getSystemWindowInsetBottom(); }
+            v.setPadding(dp(left)+l,dp(top)+t,dp(right)+r,dp(bottom)+b); return insets;
+        });
+        page.requestApplyInsets();
+    }
+    private void showPage(View page) { currentPage=page; secondaryPage=true; applySafeInsets(page,18,12,18,10); setContentView(page); page.requestApplyInsets(); }
+    private void leavePage() { if(!secondaryPage) return; secondaryPage=false; currentPage=null; setContentView(mainPage); mainPage.requestApplyInsets(); refreshTabs(); if(remote) { handler.removeCallbacks(pollTask); poll(); } }
+    @Override public void onBackPressed() { if(secondaryPage) leavePage(); else super.onBackPressed(); }
+    @Override protected void onResume() { super.onResume(); if(modelButton!=null && modelStore!=null) refreshTabs(); }
+    private TextView pageButton(String label) { TextView v=control(label,15); v.setPadding(dp(16),0,dp(16),0); v.setGravity(Gravity.CENTER); return v; }
     private void settings() {
-        LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(20),dp(4),dp(20),0);
-        Button models=button("管理模型与账号"); form.addView(models); models.setOnClickListener(v->modelStore.showManager(()->refreshTabs()));
-        Button folder=button("授权手机文件夹"); LinearLayout.LayoutParams fp0=new LinearLayout.LayoutParams(-1,dp(48)); fp0.topMargin=dp(8); form.addView(folder,fp0); folder.setOnClickListener(v->chooseFolder());
-        TextView hint=text("电脑远程配对",14,MUTED); hint.setPadding(0,dp(18),0,0); form.addView(hint);
+        LinearLayout page=new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setBackgroundColor(BG);
+        LinearLayout head=new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL); page.addView(head,new LinearLayout.LayoutParams(-1,dp(52)));
+        TextView back=control("‹",28); back.setContentDescription("返回会话"); head.addView(back,new LinearLayout.LayoutParams(dp(44),dp(44))); back.setOnClickListener(v->leavePage());
+        TextView heading=text("设置与电脑连接",20,TEXT); heading.setTypeface(null,Typeface.BOLD); heading.setPadding(dp(16),0,0,0); head.addView(heading);
+        ScrollView settingsScroll=new ScrollView(this); settingsScroll.setFillViewport(true); page.addView(settingsScroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(0,dp(20),0,dp(16)); settingsScroll.addView(form);
+        TextView models=pageButton("管理模型与账号  ›"); form.addView(models,new LinearLayout.LayoutParams(-1,dp(50))); models.setOnClickListener(v->modelStore.showManager(()->refreshTabs()));
+        TextView folder=pageButton("授权手机文件夹  ›"); LinearLayout.LayoutParams fp0=new LinearLayout.LayoutParams(-1,dp(50)); fp0.topMargin=dp(10); form.addView(folder,fp0); folder.setOnClickListener(v->chooseFolder());
+        TextView hint=text("电脑远程配对",17,TEXT); hint.setTypeface(null,Typeface.BOLD); hint.setPadding(0,dp(28),0,dp(10)); form.addView(hint);
+        TextView description=text("在电脑端开启手机远程连接后，填写显示的地址、证书指纹和令牌。",13,MUTED); form.addView(description);
         EditText computer=field(form,"电脑地址（https://地址:端口）",prefs.getString("remote_url",""),false), fingerprint=field(form,"电脑证书 SHA-256 指纹",prefs.getString("remote_fingerprint",""),false), token=field(form,"电脑配对令牌（留空保持原值）","",true);
-        ScrollView scrollForm=new ScrollView(this); scrollForm.addView(form); new AlertDialog.Builder(this).setTitle("设置").setView(scrollForm).setPositiveButton("保存", (d,w)-> { try { if(!computer.getText().toString().trim().isEmpty()) validateUrl(computer.getText().toString().trim(),true); String fp=fingerprint.getText().toString().replace(":","").replace(" ",""); if(!fp.isEmpty()&&!fp.matches("(?i)[0-9a-f]{64}")) throw new Exception("证书指纹必须为 64 位十六进制字符"); if(token.length()>0) writeSecret("remote_token",token.getText().toString()); prefs.edit().putString("remote_url",computer.getText().toString().trim()).putString("remote_fingerprint",fp).apply(); if(remote) poll(); toast("设置已保存"); } catch(Exception ex) { toast("设置未保存："+ex.getMessage()); } }).setNegativeButton("取消",null).show();
+        TextView save=pageButton("保存连接"); LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,dp(50)); sp.topMargin=dp(24); form.addView(save,sp);
+        save.setOnClickListener(v->{ try { if(!computer.getText().toString().trim().isEmpty()) validateUrl(computer.getText().toString().trim(),true); String fp=fingerprint.getText().toString().replace(":","").replace(" ",""); if(!fp.isEmpty()&&!fp.matches("(?i)[0-9a-f]{64}")) throw new Exception("证书指纹必须为 64 位十六进制字符"); if(token.length()>0) writeSecret("remote_token",token.getText().toString()); prefs.edit().putString("remote_url",computer.getText().toString().trim()).putString("remote_fingerprint",fp).apply(); toast("设置已保存"); leavePage(); } catch(Exception ex) { toast("设置未保存："+ex.getMessage()); } });
+        showPage(page);
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) { super.onActivityResult(requestCode,resultCode,data); if(requestCode==41&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null) { Uri uri=data.getData(); int flags=data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION); if(flags!=(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) { toast("请选择允许读取和写入的文件夹"); return; } try { getContentResolver().takePersistableUriPermission(uri,flags); prefs.edit().putString("folder_uri",uri.toString()).apply(); toast("文件夹已授权"); } catch(Exception e) { toast("文件夹授权失败"); } } }
     private SecretKey key() throws Exception { KeyStore ks=KeyStore.getInstance("AndroidKeyStore"); ks.load(null); if(!ks.containsAlias("cortex_secrets")) { KeyGenerator g=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore"); g.init(new KeyGenParameterSpec.Builder("cortex_secrets",KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()); g.generateKey(); } return (SecretKey)ks.getKey("cortex_secrets",null); }

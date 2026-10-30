@@ -52,7 +52,22 @@ final class ModelStore {
     String selectedName() { JSONObject o=selected(); return o==null ? "选择模型" : o.optString("name", "选择模型"); }
     String selectedUrl() { JSONObject o=selected(); return o==null ? "" : o.optString("url"); }
     String selectedModel() { JSONObject o=selected(); return o==null ? "" : o.optString("model"); }
+    String selectedProvider() { JSONObject o=selected(); return o==null ? "" : o.optString("provider",""); }
+    String selectedAuthMode() { JSONObject o=selected(); return o==null ? "apiKey" : o.optString("authMode","apiKey"); }
     String selectedKey() throws Exception { JSONObject o=selected(); return o==null ? "" : readKey(o.optString("id")); }
+    JSONArray allProfiles() { return profiles(); }
+    JSONObject selectedProfile() { return selected(); }
+    String keyFor(String id) throws Exception { return readKey(id); }
+    void selectProfile(String id) { prefs.edit().putString(SELECTED,id).apply(); }
+    void saveProfile(JSONObject profile, String secret) throws Exception {
+        String id=profile.optString("id"); if(id.isEmpty()) throw new Exception("模型标识无效");
+        JSONArray before=profiles(), after=new JSONArray(); boolean found=false;
+        for(int i=0;i<before.length();i++){ JSONObject row=before.optJSONObject(i); if(row!=null && id.equals(row.optString("id"))){after.put(profile);found=true;}else if(row!=null)after.put(row); }
+        if(!found) after.put(profile);
+        SharedPreferences.Editor edit=prefs.edit().putString(PROFILES,after.toString()).putString(SELECTED,id);
+        if(secret!=null&&!secret.isEmpty()) edit.putString("model_secret_"+id,encodeKey(secret));
+        edit.apply();
+    }
     private SecretKey key() throws Exception {
         KeyStore ks=KeyStore.getInstance("AndroidKeyStore"); ks.load(null);
         if (!ks.containsAlias("cortex_secrets")) {
@@ -71,29 +86,19 @@ final class ModelStore {
         Cipher c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.DECRYPT_MODE,key(),new GCMParameterSpec(128,Base64.decode(p[0],Base64.NO_WRAP)));
         return new String(c.doFinal(Base64.decode(p[1],Base64.NO_WRAP)),StandardCharsets.UTF_8);
     }
-    void showSelector(Runnable changed) {
-        JSONArray a=profiles(); String[] names=new String[a.length()+1];
-        for(int i=0;i<a.length();i++) names[i]=a.optJSONObject(i).optString("name") + (a.optJSONObject(i).optString("id").equals(prefs.getString(SELECTED,"")) ? "  ✓" : "");
-        names[a.length()]="管理模型与 API 密钥";
-        new AlertDialog.Builder(activity).setTitle("选择模型").setItems(names,(dialog,which)->{
-            if(which==a.length()) { showManager(changed); return; }
-            prefs.edit().putString(SELECTED,a.optJSONObject(which).optString("id")).apply(); changed.run();
-        }).setNegativeButton("取消",null).show();
+    void showSelector(android.view.View anchor,Runnable changed) {
+        boolean light=prefs.getBoolean("light_theme",false); int bg=light?0xfff7f7f8:0xff242528, fg=light?0xff181a1f:0xfff2f2f3;
+        int d=(int)(activity.getResources().getDisplayMetrics().density*12); android.widget.LinearLayout box=new android.widget.LinearLayout(activity);box.setOrientation(android.widget.LinearLayout.VERTICAL);box.setPadding(d,d,d,d);
+        android.graphics.drawable.GradientDrawable shape=new android.graphics.drawable.GradientDrawable();shape.setColor(bg);shape.setCornerRadius(d);box.setBackground(shape);
+        android.widget.PopupWindow popup=new android.widget.PopupWindow(box,(int)(activity.getResources().getDisplayMetrics().density*260),-2,true);popup.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));popup.setElevation(d);popup.setOutsideTouchable(true);
+        JSONArray a=profiles();android.widget.TextView header=new android.widget.TextView(activity);header.setText("选择模型");header.setTextColor(fg);header.setTextSize(15);header.setPadding(d,d,d,d);box.addView(header);
+        android.widget.ScrollView scroll=new android.widget.ScrollView(activity);android.widget.LinearLayout list=new android.widget.LinearLayout(activity);list.setOrientation(android.widget.LinearLayout.VERTICAL);scroll.addView(list);box.addView(scroll,new android.widget.LinearLayout.LayoutParams(-1,Math.min((int)(activity.getResources().getDisplayMetrics().density*240),Math.max(0,a.length()*(int)(activity.getResources().getDisplayMetrics().density*44)))));
+        for(int i=0;i<a.length();i++){JSONObject o=a.optJSONObject(i);if(o==null)continue;android.widget.TextView row=new android.widget.TextView(activity);row.setText(o.optString("name")+(o.optString("id").equals(prefs.getString(SELECTED,""))?"  ✓":""));row.setTextColor(fg);row.setTextSize(15);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setPadding(d,0,d,0);list.addView(row,new android.widget.LinearLayout.LayoutParams(-1,(int)(activity.getResources().getDisplayMetrics().density*44)));row.setOnClickListener(v->{selectProfile(o.optString("id"));popup.dismiss();changed.run();});}
+        android.widget.TextView settings=new android.widget.TextView(activity);settings.setText("⚙  模型设置");settings.setTextColor(fg);settings.setTextSize(15);settings.setGravity(android.view.Gravity.CENTER_VERTICAL);settings.setPadding(d,0,d,0);box.addView(settings,new android.widget.LinearLayout.LayoutParams(-1,(int)(activity.getResources().getDisplayMetrics().density*48)));settings.setOnClickListener(v->{popup.dismiss();showManager(changed);});
+        box.measure(android.view.View.MeasureSpec.makeMeasureSpec((int)(activity.getResources().getDisplayMetrics().density*260),android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED));int[] loc=new int[2];anchor.getLocationOnScreen(loc);int x=Math.max(0,Math.min(loc[0],activity.getResources().getDisplayMetrics().widthPixels-box.getMeasuredWidth()));int y=Math.max(0,loc[1]-box.getMeasuredHeight());popup.showAtLocation(anchor,android.view.Gravity.TOP|android.view.Gravity.LEFT,x,y);
     }
     void showManager(Runnable changed) {
-        JSONArray a=profiles(); String[] names=new String[a.length()+1];
-        for(int i=0;i<a.length();i++) { JSONObject o=a.optJSONObject(i); names[i]=o.optString("name")+"  ·  "+o.optString("model"); }
-        names[a.length()]="＋ 添加模型";
-        new AlertDialog.Builder(activity).setTitle("模型与 API 密钥").setItems(names,(d,which)->{
-            if(which==a.length()) edit(null,changed); else {
-                JSONObject o=a.optJSONObject(which);
-                new AlertDialog.Builder(activity).setTitle(o.optString("name")).setItems(new String[]{"选择此模型","编辑","删除"},(sub,action)->{
-                    if(action==0) { prefs.edit().putString(SELECTED,o.optString("id")).apply(); changed.run(); }
-                    else if(action==1) edit(o,changed);
-                    else new AlertDialog.Builder(activity).setMessage("删除此模型及其保存的密钥？").setPositiveButton("删除",(x,y)->remove(o.optString("id"),changed)).setNegativeButton("取消",null).show();
-                }).show();
-            }
-        }).setNegativeButton("关闭",null).show();
+        activity.startActivity(new android.content.Intent(activity,ModelSettingsActivity.class));
     }
     private EditText field(LinearLayout layout,String hint,String value,boolean secret) {
         EditText e=new EditText(activity); e.setHint(hint); if(secret) e.setInputType(129); e.setText(value); e.setSingleLine(true); layout.addView(e); return e;
