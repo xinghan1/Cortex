@@ -19,7 +19,7 @@
       trigger.setAttribute('aria-haspopup', 'menu'); trigger.setAttribute('aria-expanded', 'false');
       const popup = el('section', 'permission-popup'); popup.id = 'permission-popup'; popup.hidden = true;
       popup.setAttribute('role', 'menu'); popup.setAttribute('aria-label', '操作权限');
-      popup.append(el('div', 'permission-heading', '如何批准 Synora code 操作？'));
+      popup.append(el('div', 'permission-heading', '如何批准 Cortex 操作？'));
       let mode = 'request', busy = false, saving = false;
       let reviewerModel = '', reviewerOptions = [], independentReviewer = null;
       const close = () => { popup.hidden = true; trigger.setAttribute('aria-expanded', 'false'); };

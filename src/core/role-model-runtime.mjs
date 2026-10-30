@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { SettingsCatalogSelections } from './settings-model-catalog.mjs';
 
-export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar', 'pet', 'image']);
+export const MODEL_ROLES = Object.freeze(['subagent', 'approval', 'completion', 'sidebar', 'pet', 'image', 'frontend', 'backend', 'modeling']);
+const requiresTools = role => ['subagent', 'frontend', 'backend', 'modeling'].includes(role);
 const roleName = role => {
   if (!MODEL_ROLES.includes(role)) throw new Error('模型用途无效。');
   return role;
@@ -80,7 +81,7 @@ export class RoleModelRuntime {
     if ((await this.draft(role, arg)).connection !== draft.connection) throw new Error('连接或账号已变化，请重新获取模型目录。');
     // Text-only roles may use models that do not expose coding tools.
     const models = result.models.map(model => role === 'image' ? ({ ...model,
-      compatible: /^gpt-image-/u.test(model.id), compatibilityReason: /^gpt-image-/u.test(model.id) ? '' : '请选择 OpenAI 图像生成模型。' }) : role === 'subagent' ? model : ({ ...model,
+      compatible: /^gpt-image-/u.test(model.id), compatibilityReason: /^gpt-image-/u.test(model.id) ? '' : '请选择 OpenAI 图像生成模型。' }) : requiresTools(role) ? model : ({ ...model,
       compatible: model.textCompatible !== false && (model.compatible !== false || model.textCompatible === true) }));
     let encoded = this.redact(JSON.stringify({ ...result, models, provider: settings.provider, authMode: settings.authMode }));
     if (draft.apiKey) encoded = encoded.replaceAll(JSON.stringify(draft.apiKey).slice(1, -1), '[已隐藏密钥]');
@@ -95,7 +96,7 @@ export class RoleModelRuntime {
     const selected = this.grants.validate({ selectionToken: arg.selectionToken, connection: draft.connection, model: arg.model });
     const preview = this.previews.get(arg.selectionToken);
     if (!preview || preview.role !== role || preview.connection !== draft.connection) throw new Error('请重新获取目录后再保存配置。');
-    if (role === 'subagent' && selected.supportsTools === false) throw new Error('子智能体需要支持编程工具的模型。');
+    if (requiresTools(role) && selected.supportsTools === false) throw new Error('此用途需要支持编程工具的模型。');
     const levels = selected.reasoningEfforts || selected.reasoningLevels;
     const oldEffort = draft.settings.reasoningEffort || 'default';
     const reasoningEffort = Array.isArray(levels) && !levels.includes(oldEffort) ? 'default' : oldEffort;
@@ -184,7 +185,7 @@ export class RoleModelRuntime {
     const modelCapabilities = this.deriveCapabilities(saved.provider, model, { ...metadata,
       ...(saved.provider === 'ollama' ? { contextWindowTokens: saved.contextWindowTokens } : {}),
       ...(saved.authMode === 'chatgpt' ? { officialSource: true, allowPublishedContextWindow: Boolean(metadata) } : {}) });
-    if (role === 'subagent' && modelCapabilities.supportsTools === false) throw new Error('此子智能体模型不支持编程工具。');
+    if (requiresTools(role) && modelCapabilities.supportsTools === false) throw new Error('此用途的模型不支持编程工具。');
     const key = createHash('sha256').update(JSON.stringify([draft.connection, model, saved.reasoningEffort, revision])).digest('hex');
     signal?.throwIfAborted();
     if (revision !== this.revisions[role] || !this.configs.isEnabled(role)) throw new DOMException('模型配置已变化。', 'AbortError');

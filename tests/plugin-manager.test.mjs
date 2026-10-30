@@ -24,6 +24,15 @@ test('plugin manifests restrict executable entry paths, unsupported APIs and dup
     { entry: 'dir%2findex.html' }, { permissions: ['shell'] }, { permissions: ['project.read', 'project.read'] }, { schemaVersion: 2 },
     { nodeIntegration: true }, { commands: [{ id: 'same', title: 'A' }, { id: 'same', title: 'B' }] }]) assert.throws(() => validatePluginManifest({ ...manifest(), ...patch }));
 });
+test('Cortex manifests install and reload while legacy manifests remain supported', async t => {
+  const f = await fixture(t);
+  await fs.rename(path.join(f.source, 'synora-plugin.json'), path.join(f.source, 'cortex-plugin.json'));
+  await f.manager.install(f.source);
+  const second = await new PluginManager({ dataDir: f.data }).init();
+  assert.equal(second.list()[0].id, 'demo.hello'); await second.dispose();
+  await fs.writeFile(path.join(f.source, 'synora-plugin.json'), JSON.stringify(manifest()));
+  await assert.rejects(f.manager.preview(f.source), /一个 cortex-plugin/);
+});
 test('install is a managed copy, disabled initially, and never executes JavaScript', async t => {
   const f = await fixture(t);
   const preview = await f.manager.preview(f.source);

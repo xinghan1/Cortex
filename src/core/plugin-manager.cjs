@@ -34,9 +34,14 @@ function validatePluginManifest(value) {
 }
 
 async function readManifest(root) {
-  const file = path.join(root, 'synora-plugin.json');
+  const names = await Promise.all(['cortex-plugin.json', 'synora-plugin.json'].map(async name => {
+    try { await fs.lstat(path.join(root, name)); return name; } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }));
+  const present = names.filter(Boolean);
+  if (present.length !== 1) fail('请选择包含一个 cortex-plugin.json 清单的插件目录。');
+  const file = path.join(root, present[0]);
   const stat = await fs.lstat(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > PLUGIN_LIMITS.manifestBytes) fail('请选择包含普通 synora-plugin.json 文件的插件目录。');
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > PLUGIN_LIMITS.manifestBytes) fail('请选择包含普通插件清单文件的目录。');
   let value;
   try { value = JSON.parse(await fs.readFile(file, 'utf8')); } catch { fail('无法读取插件清单，请检查 JSON 格式。'); }
   return validatePluginManifest(value);
@@ -80,8 +85,9 @@ async function inspectPluginDirectory(input) {
     }
   }
   await visit(root);
-  const manifestFile = files.find(file => file.name === 'synora-plugin.json');
-  if (!manifestFile || manifestFile.bytes.length > PLUGIN_LIMITS.manifestBytes) fail('请选择包含 synora-plugin.json 的插件目录。');
+  const manifests = files.filter(file => ['cortex-plugin.json', 'synora-plugin.json'].includes(file.name));
+  if (manifests.length !== 1 || manifests[0].bytes.length > PLUGIN_LIMITS.manifestBytes) fail('请选择包含一个 cortex-plugin.json 清单的插件目录。');
+  const manifestFile = manifests[0];
   let raw;
   try { raw = JSON.parse(manifestFile.bytes.toString('utf8')); } catch { fail('无法读取插件清单，请检查 JSON 格式。'); }
   const manifest = validatePluginManifest(raw);

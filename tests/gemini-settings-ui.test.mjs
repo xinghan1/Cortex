@@ -34,7 +34,7 @@ test('Gemini is listed as a first-class provider and does not inherit OpenAI thi
   assert.match(html, /<option value="gemini">Google · Gemini<\/option>/u);
   assert.match(appSource, /gemini:\s*\[\]/u);
   const roles = vm.createContext({});vm.runInContext(roleSource, roles);
-  assert.deepEqual(plain(roles.ForgeRoleModels.roles.map(role => role.id)), ['subagent','approval','completion','sidebar','pet','image']);
+  assert.deepEqual(plain(roles.ForgeRoleModels.roles.map(role => role.id)), ['subagent','approval','completion','sidebar','pet','image','frontend','backend','modeling']);
 });
 
 test('Gemini API key settings use the native default URL, hide compatible protocols, and never send an OpenAI protocol', () => {

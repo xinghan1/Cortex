@@ -5,7 +5,7 @@
   "commit": "86bc30c83225919434de8396073078dc22e926fd",
   "license": "MIT",
   "copyright": "Copyright (c) 2026 PC2005-cloud",
-  "integration": "Selected unmodified upstream VP9-alpha WebM animations, played by Synora code. No upstream host, npm lifecycle scripts, model requests, or external Electron helper are executed.",
+  "integration": "Selected unmodified upstream VP9-alpha WebM animations, played by Cortex. No upstream host, npm lifecycle scripts, model requests, or external Electron helper are executed.",
   "assets": [
     {
       "size": 464764,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { runAgent } from '../src/core/agent.mjs';
 import { requestModel } from '../src/core/providers.mjs';
 
-const identity = '我是 Synora code 编程助手。';
+const identity = '我是 Cortex 编程助手。';
 const connections = [
   { label: 'OpenAI Responses', provider: 'openai', apiProtocol: 'responses' },
   { label: 'OpenAI Chat Completions', provider: 'openai', apiProtocol: 'chat-completions' },

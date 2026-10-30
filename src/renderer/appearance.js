@@ -195,7 +195,7 @@
     const patch = Object.fromEntries(pending.map(({ setting, value }) => [setting.field, value]));
     saveQueue = saveQueue.then(async () => {
       try {
-        if (!bridge?.setAppearance) throw new Error('请在 Synora code 桌面软件中保存外观设置。');
+        if (!bridge?.setAppearance) throw new Error('请在 Cortex 桌面软件中保存外观设置。');
         const eventsAtRequest = appearanceEvents;
         const next = await bridge.setAppearance(patch);
         for (const { setting, token } of pending) if (token === setting.revision) setting.dirty = false;
@@ -240,7 +240,7 @@
     status();
     try {
       await settled();
-      if (!bridge?.importBackground) throw new Error('请在 Synora code 桌面软件中导入背景图。');
+      if (!bridge?.importBackground) throw new Error('请在 Cortex 桌面软件中导入背景图。');
       const before = persisted.backgroundImage;
       const eventsAtRequest = appearanceEvents;
       const next = await bridge.importBackground();
@@ -257,7 +257,7 @@
     status();
     try {
       await settled();
-      if (!bridge?.resetBackground) throw new Error('请在 Synora code 桌面软件中修改背景。');
+      if (!bridge?.resetBackground) throw new Error('请在 Cortex 桌面软件中修改背景。');
       const eventsAtRequest = appearanceEvents;
       const next = await bridge.resetBackground();
       acceptReply(next, eventsAtRequest);

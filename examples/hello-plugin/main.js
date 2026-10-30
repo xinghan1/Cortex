@@ -1,5 +1,5 @@
 'use strict';
-const api = window.synoraPlugin;
+const api = window.cortexPlugin;
 const byId = id => document.getElementById(id);
 let loadedPath = null, loadedVersion = null, busy = false;
 const status = value => { byId('status').textContent = value; };
@@ -22,8 +22,8 @@ async function read() {
 byId('path').addEventListener('input', controls);
 byId('read').addEventListener('click', () => action(read));
 byId('new').addEventListener('click', () => {
-  loadedPath = 'synora-plugin-example.txt'; loadedVersion = null; byId('path').value = loadedPath;
-  byId('content').value = 'Hello from Synora code plugin!\n'; status('已准备新文件内容。点击“请求保存”后由软件确认，现有同名文件不会被覆盖。'); controls();
+  loadedPath = 'cortex-plugin-example.txt'; loadedVersion = null; byId('path').value = loadedPath;
+  byId('content').value = 'Hello from Cortex plugin!\n'; status('已准备新文件内容。点击“请求保存”后由软件确认，现有同名文件不会被覆盖。'); controls();
 });
 byId('save').addEventListener('click', () => action(async () => {
   if (loadedPath !== byId('path').value.trim()) throw new Error('文件路径已变化，请先重新读取。');

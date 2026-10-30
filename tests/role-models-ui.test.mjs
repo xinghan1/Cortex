@@ -37,9 +37,9 @@ test('role configuration reads only its own saved keys and account even while fo
   assert.throws(() => roles.scope(value, '__proto__'), /未识别/u);
 });
 
-test('only main and subagent require tool capability; text-only roles retain text compatibility checks', () => {
+test('delegated design roles require tools; text-only roles retain text compatibility checks', () => {
   const text = { id: 'text-model', compatible: false, textCompatible: true, supportsTools: false };
-  for (const role of [null, 'subagent']) assert.equal(roles.selectable(role, text), false);
+  for (const role of [null, 'subagent', 'frontend', 'backend', 'modeling']) assert.equal(roles.selectable(role, text), false);
   for (const role of ['approval', 'completion', 'sidebar', 'pet']) {
     assert.equal(roles.selectable(role, text), true);
     assert.equal(roles.selectable(role, { compatible: false, textCompatible: false }), false);
@@ -84,12 +84,16 @@ function listFixture(bridge = {}) {
 test('role list shows follow versus independent models and opens the existing form for exactly one role', async () => {
   const f = listFixture(), value = state(); value.approvalReviewer = { model: 'legacy-reviewer' };
   f.controller.update(value); f.controller.openList();
-  assert.equal(f.rows().length, 6);
+  assert.equal(f.rows().length, 9);
   assert.match(f.rows()[0].text, /跟随主模型.*main-model/u);
   assert.match(f.rows()[1].text, /独立配置.*approval-model/u);
   assert.match(f.rows()[2].text, /跟随主模型.*main-model/u);
   assert.match(f.rows()[4].text, /宠物模型.*跟随主模型.*main-model/u);
   assert.match(f.rows()[5].text, /图片模型.*跟随主模型.*main-model/u);
+  for (const [index, name] of [[6, '前端设计'], [7, '后端设计'], [8, '建模']]) {
+    assert.match(f.rows()[index].text, new RegExp(`${name}.*跟随主模型.*main-model`, 'u'));
+    assert.equal(f.rows()[index].children[1].children[1].disabled, true);
+  }
   await f.rows()[4].children[1].children[0].click(); assert.deepEqual(f.calls, ['pet']);
   f.controller.openList();
   await f.rows()[1].children[1].children[0].click();
@@ -98,6 +102,17 @@ test('role list shows follow versus independent models and opens the existing fo
   assert.match(f.rows()[1].text, /当前连接.*legacy-reviewer/u);
   assert.equal(f.rows()[1].children[1].children[1].disabled, false);
   f.busy(true); f.controller.open('sidebar'); assert.deepEqual(f.calls, ['pet', 'approval']);
+});
+
+test('design roles open their own model settings and disclose unsupported official-agent follow mode', () => {
+  const f = listFixture(), value = state();
+  value.settings.authMode = 'claude-agent'; f.controller.update(value); f.controller.openList();
+  for (const [index, id] of [[6, 'frontend'], [7, 'backend'], [8, 'modeling']]) {
+    assert.match(f.rows()[index].text, /官方代理仅用于主会话/u);
+    f.rows()[index].children[1].children[0].click();
+    assert.equal(f.calls.at(-1), id);
+    f.controller.openList();
+  }
 });
 
 test('restore-follow saves only the chosen role, locks duplicate actions and retains configuration on failure', async () => {

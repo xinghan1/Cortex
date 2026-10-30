@@ -101,6 +101,29 @@ test('two independent real agent loops run in parallel, return matching results,
   assert.equal(messages.at(-1).content, 'Combined final.');
 });
 
+test('design roles route child requests to their designated model and preserve the ordinary default', async () => {
+  for (const role of ['frontend', 'backend', 'modeling', undefined]) {
+    const observed = [], events = []; let rootRound = 0;
+    await runAgent(options({
+      emit: event => events.push(event),
+      subagentFactory: async () => ({ root: 'C:/fixture', execute: async () => 'ok' }),
+      getSubagentRequestConfig: async value => { observed.push(value.role); return { ...config, model: `model-${value.role}` }; },
+      requestModel: async request => {
+        if (childRequest(request)) {
+          assert.equal(request.model, `model-${role ?? 'subagent'}`);
+          assert.equal(request.tools.some(tool => tool.name === 'view_image'), Boolean(role));
+          assert.equal(request.tools.some(tool => tool.name === 'generate_image' || tool.name.startsWith('browser_')), false);
+          return reply('Child done.');
+        }
+        if (++rootRound === 1) return reply('', [call('spawn', 'spawn_agent', { name: 'Design', task: 'Design a component.', ...(role ? { role } : {}) }), call('wait', 'wait_agents', {})]);
+        return reply('Done.');
+      },
+    }));
+    assert.ok(observed.length > 0 && observed.every(value => value === (role ?? 'subagent')));
+    assert.ok(events.some(event => event.type === 'subagent-update' && event.agent.role === (role ?? 'subagent')));
+  }
+});
+
 test('runtime independently enforces readonly tools, exact files and explicit directory scopes', async () => {
   const executed = [], seen = [];
   const manager = createSubagentManager(managerOptions({
@@ -170,7 +193,7 @@ test('parallel and total creation limits are enforced independently', async () =
 test('strict tool arguments reject forged IDs, unknown properties and unsafe path scopes', async () => {
   const manager = createSubagentManager(managerOptions());
   for (const args of [null, [], 'json', { name: 'x', task: 'y', extra: true }, { name: '', task: 'y' },
-    { name: 'x', task: 'y', write_paths: 'src/' }, JSON.parse('{"name":"x","task":"y","__proto__":{}}')])
+    { name: 'x', task: 'y', write_paths: 'src/' }, { name: 'x', task: 'y', role: 'not-a-role' }, { name: 'x', task: 'y', role: null }, JSON.parse('{"name":"x","task":"y","__proto__":{}}')])
     await assert.rejects(manager.execute('spawn_agent', args));
   for (const path of ['', '/', '../x', 'src/../x', 'C:x', '//server/x', 'src//x', 'src/./x',
     'src/a:stream', '.git/config', 'src/NUL.txt', 'src/a.']) assert.throws(() => normalizeSubagentPath(path));

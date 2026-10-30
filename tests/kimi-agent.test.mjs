@@ -103,7 +103,7 @@ test('official terminal login runs in a fresh isolated profile and exposes only 
   const state = await f.agent.signIn({ region: 'global' }); assert.equal(state.region, 'global'); assert.equal(state.session.status, 'connected'); assert.ok(state.session.profileId);
   assert.deepEqual(f.fake.children.map(child => child.args), [['acp'], ['acp', '--login', '--region', 'global'], ['acp']]);
   for (const child of f.fake.children) { assert.equal(child.options.env.KIMI_CODE_HOME, path.join(f.dir, 'kimi-agent', 'profiles', state.session.profileId)); assert.equal(child.options.env.KIMI_DISABLE_TELEMETRY, '1'); assert.equal(child.options.env.HTTPS_PROXY, 'http://127.0.0.1:9911'); assert.equal(child.options.shell, false); for (const key of ['KIMI_API_KEY', 'KIMI_CODE_OAUTH_HOST', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE']) assert.equal(child.options.env[key], undefined); }
-  assert.equal(f.fake.calls[0].rpc.params.clientInfo.name, 'Synora code'); assert.equal(f.fake.calls[0].rpc.params.clientCapabilities.auth.terminal, true); assert.ok(states.some(value => value.attempt?.userCode === 'ABCD-1234'));
+  assert.equal(f.fake.calls[0].rpc.params.clientInfo.name, 'Cortex'); assert.equal(f.fake.calls[0].rpc.params.clientCapabilities.auth.terminal, true); assert.ok(states.some(value => value.attempt?.userCode === 'ABCD-1234'));
   assert.doesNotMatch(JSON.stringify(states), /PRIVATE_TOKEN|never-public/); assert.equal(f.fake.calls.some(call => call.rpc.method === 'session/prompt'), false);
   const saved = await fs.readFile(path.join(f.dir, 'kimi-agent', 'profiles.json'), 'utf8'); assert.doesNotMatch(saved, /token|ABCD|auth\.kimi/iu);
 });

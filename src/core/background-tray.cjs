@@ -24,14 +24,14 @@ function createBackgroundTray({ Tray, Menu, icon, getWindows, createWindow, onQu
     }).finally(() => { opening = null; });
     return opening;
   }
-  const open = () => { void show().catch(error => console.error('无法恢复 Synora code 窗口：', error.message)); };
+  const open = () => { void show().catch(error => console.error('无法恢复 Cortex 窗口：', error.message)); };
   const quit = () => {
     if (!alive()) return;
     // The application callback restores any dirty editor before its existing
     // save/discard prompt, and shuts down running work only on explicit exit.
     onQuit();
   };
-  tray.setToolTip('Synora code · 关闭窗口后继续在后台运行');
+  tray.setToolTip('Cortex · 关闭窗口后继续在后台运行');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示窗口', click: open },
     { type: 'separator' },

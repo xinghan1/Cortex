@@ -76,7 +76,7 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
       const body = JSON.parse(raw), user = body.input.findLast(item => item.role === 'user');
       const system = body.input.filter(item => item.role === 'system').map(item => typeof item.content === 'string' ? item.content
         : (item.content || []).filter(part => part.type === 'input_text').map(part => part.text).join('\n')).join('\n');
-      if (!body.tools?.length && system.includes('Synora code 的输入框提示词补全助手')) {
+      if (!body.tools?.length && system.includes('Cortex 的输入框提示词补全助手')) {
         completionRequests++;
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ id: 'completion-' + completionRequests, status: 'completed', output: answer(JSON.stringify({ continuation: '继续核对 UI。' })),

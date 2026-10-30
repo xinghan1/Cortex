@@ -44,7 +44,7 @@ function fixture(t, overrides = {}) {
   const runtime = createPluginRuntime({ BrowserWindow: Window, session, manager, ipcMain: {
     handle(channel, handler) { assert.ok(!handlers.has(channel)); handlers.set(channel, handler); }, removeHandler(channel) { handlers.delete(channel); } },
     getOwnerWindow: () => owner, getProjectInfo: () => project,
-    getAppInfo: () => ({ name: 'Synora code', version: '0.19.3', apiKey: 'SECRET' }),
+    getAppInfo: () => ({ name: 'Cortex', version: '0.19.3', apiKey: 'SECRET' }),
     listFiles: async value => { calls.push(value); return [{ path: 'README.md', type: 'file', hidden: 'no' }]; },
     readText: async value => { calls.push(value); return { path: value.path, content: 'hello', version: 'sha123', apiKey: 'SECRET' }; },
     writeText: async value => { calls.push(value); return { path: value.path, content: value.content, version: 'sha456' }; },
@@ -90,7 +90,7 @@ test('plugin windows are sandboxed with independent sessions and no navigation, 
 });
 test('narrow APIs strip extra fields and bind file operations to the captured project', async t => {
   const f = fixture(t); await f.runtime.open('demo.hello');
-  assert.deepEqual(await f.call('app.info'), { name: 'Synora code', version: '0.19.3', apiVersion: 1 });
+  assert.deepEqual(await f.call('app.info'), { name: 'Cortex', version: '0.19.3', apiVersion: 1 });
   assert.deepEqual(await f.call('project.listFiles'), [{ path: 'README.md', type: 'file' }]);
   assert.deepEqual(await f.call('project.readText', { path: 'README.md' }), { path: 'README.md', content: 'hello', version: 'sha123' });
   assert.deepEqual(await f.call('project.writeText', { path: 'README.md', content: 'changed', expectedVersion: 'sha123' }), { path: 'README.md', content: 'changed', version: 'sha456' });

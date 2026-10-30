@@ -29,7 +29,7 @@ const patchSha256 = '7eab746b97fc6d4b9de13f6c225b71b21ac24ed1287d79f0814a58194b9
 const patchBytes = Buffer.from((await fs.readFile(path.join(root, 'scripts', 'patches', 'zcode-standalone-account.mjs'), 'utf8')).replace(/\r\n/gu, '\n'));
 if (sha(patchBytes) !== patchSha256) throw new Error('ZCode 兼容补丁文件校验失败。');
 const patchDescriptor = { ...ZCODE_STANDALONE_PATCH, patchSha256 };
-const patchNotice = `# Synora ZCode compatibility modifications\n\nModified on 2026-10-25 by Synora.\n\nBase: https://github.com/zai-org/ZCode/tree/${sourceCommit}\n\nThe included Apache-2.0 ZCode CLI ${version} is source-built with one disclosed compatibility patch (${patchDescriptor.id}). Its original upstream source is not unmodified. The exact patch implementation is retained in synora-standalone-account.mjs; provenance.json records its SHA-256 and the baseline/result source digests (UTF-8, LF).\n\nWhen SYNORA_ZCODE_STANDALONE_ACCOUNT=1 is passed only to this component, app-server initializes the upstream standalone AccountProviderService and uses the upstream standalone providerRuntimeHeadersPort. Credentials remain inside the component's isolated official store and its existing OAuth/request code. No account token is exported to Synora. Without that switch, the original desktop-worker initialization remains in effect.\n\nThis patch does not change OAuth client identity, service endpoints, account entitlement rules, provider/model definitions, tool execution or permission handling. All original SEA asset collectors and license/notices are retained.\n`;
+const patchNotice = `# Cortex ZCode compatibility modifications\n\nModified on 2026-10-25 by the project (now Cortex).\n\nBase: https://github.com/zai-org/ZCode/tree/${sourceCommit}\n\nThe included Apache-2.0 ZCode CLI ${version} is source-built with one disclosed compatibility patch (${patchDescriptor.id}). Its original upstream source is not unmodified. The exact patch implementation is retained in synora-standalone-account.mjs; provenance.json records its SHA-256 and the baseline/result source digests (UTF-8, LF).\n\nWhen SYNORA_ZCODE_STANDALONE_ACCOUNT=1 is passed only to this component, app-server initializes the upstream standalone AccountProviderService and uses the upstream standalone providerRuntimeHeadersPort. Credentials remain inside the component's isolated official store and its existing OAuth/request code. No account token is exported to Cortex. Without that switch, the original desktop-worker initialization remains in effect.\n\nThis patch does not change OAuth client identity, service endpoints, account entitlement rules, provider/model definitions, tool execution or permission handling. All original SEA asset collectors and license/notices are retained.\n`;
 const args = process.argv.slice(2);
 if (args.some(value => value !== '--rebuild')) throw new Error('用法：node scripts/prepare-zcode-agent.mjs [--rebuild]');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('官方 ZCode SEA 构建目前固定 Windows x64。');
@@ -45,6 +45,13 @@ async function prepared() {
     for (const name of retained) {
       const target = path.join(destination, name), stat = await fs.lstat(target);
       if (!stat.isFile() || stat.isSymbolicLink() || metadata.files[name] !== sha(await fs.readFile(target))) return false;
+    }
+    // Refresh the descriptive notice without recompiling an already verified binary.
+    const notice = Buffer.from(patchNotice);
+    if (metadata.files['SYNORA-PATCHES.md'] !== sha(notice)) {
+      await fs.writeFile(path.join(destination, 'SYNORA-PATCHES.md'), notice);
+      metadata.files['SYNORA-PATCHES.md'] = sha(notice);
+      await fs.writeFile(path.join(destination, 'provenance.json'), JSON.stringify(metadata, null, 2) + '\n');
     }
     return true;
   } catch { return false; }

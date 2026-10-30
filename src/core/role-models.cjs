@@ -5,7 +5,8 @@ const { Store } = require('./store.cjs');
 
 const LEGACY_ROLE_KEYS = Object.freeze(['subagent', 'approval', 'completion', 'sidebar']);
 const PREVIOUS_ROLE_KEYS = Object.freeze([...LEGACY_ROLE_KEYS, 'pet']);
-const ROLE_KEYS = Object.freeze([...PREVIOUS_ROLE_KEYS, 'image']);
+const IMAGE_ROLE_KEYS = Object.freeze([...PREVIOUS_ROLE_KEYS, 'image']);
+const ROLE_KEYS = Object.freeze([...IMAGE_ROLE_KEYS, 'frontend', 'backend', 'modeling']);
 const MAX_BYTES = 512 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && Object.keys(value).length === keys.length
@@ -186,12 +187,11 @@ class RoleModels {
         if (Buffer.byteLength(text) > MAX_BYTES) throw new Error('Role settings file too large');
         const data = JSON.parse(text);
         if (!exactKeys(data, ['version', 'roles']) || data.version !== 1
-            || !(exactKeys(data.roles, ROLE_KEYS) || exactKeys(data.roles, PREVIOUS_ROLE_KEYS) || exactKeys(data.roles, LEGACY_ROLE_KEYS))) throw new Error('Invalid role models');
+            || ![ROLE_KEYS, IMAGE_ROLE_KEYS, PREVIOUS_ROLE_KEYS, LEGACY_ROLE_KEYS].some(keys => exactKeys(data.roles, keys))) throw new Error('Invalid role models');
         const roles = {};
         for (const role of ROLE_KEYS) {
-          // Older files have no pet connection. Start it in follow mode with
-          // fresh defaults, without borrowing the sidebar's keys or account.
-          if ((role === 'pet' || role === 'image') && !Object.hasOwn(data.roles, role)) {
+          // Newly introduced roles follow the main model with independent defaults.
+          if (!Object.hasOwn(data.roles, role)) {
             roles[role] = { enabled: false, store: this.#store() }; continue;
           }
           const value = data.roles[role];

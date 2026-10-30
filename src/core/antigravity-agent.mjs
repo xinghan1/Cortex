@@ -252,7 +252,7 @@ export class AntigravityAgent {
             if (client) { const closing = client.close(error); this.#closing.add(closing); closing.finally(() => this.#closing.delete(closing)).catch(() => {}); }
             if (this.#client === client) { this.#client = null; this.#sessions.clear(); this.#setError(error, 'connection'); }
           } });
-        const initialized = await client.request('initialize', { protocolVersion: 1, clientInfo: { name: 'Synora code', version: this.#version },
+        const initialized = await client.request('initialize', { protocolVersion: 1, clientInfo: { name: 'Cortex', version: this.#version },
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }, { signal: controller.signal, timeoutMs: this.#startTimeout });
         check(controller.signal); if (epoch !== this.#epoch || this.#closed) throw cancelled();
         if (initialized?.protocolVersion !== 1 || initialized.agentInfo?.name !== 'antigravity-acp' || initialized.agentInfo?.version !== runtime.version || !Array.isArray(initialized.authMethods)) throw invalid();

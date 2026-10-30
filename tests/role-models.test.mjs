@@ -57,6 +57,9 @@ test('five independent provider connections and reasoning settings survive resta
     sidebar: { provider: 'ollama', model: 'local-model', baseUrl: 'http://192.0.2.10:11434', reasoningEffort: 'enabled', contextWindowTokens: 65536 },
     pet: { provider: 'deepseek', model: 'pet-model', apiKey: 'pet-only-secret', reasoningEffort: 'none' },
     image: { ...openai('image-only-secret', 'gpt-image-2.5-flare'), reasoningEffort: 'default' },
+    frontend: { ...openai('frontend-secret', 'frontend-model'), reasoningEffort: 'default' },
+    backend: { ...openai('backend-secret', 'backend-model'), reasoningEffort: 'default' },
+    modeling: { ...openai('modeling-secret', 'modeling-model'), reasoningEffort: 'default' },
   };
   await Promise.all(ROLE_KEYS.map(role => roles.save(role, payloads[role])));
   await roles.settled();
@@ -88,7 +91,7 @@ test('five independent provider connections and reasoning settings survive resta
 test('four-role files add a disabled pet role without inheriting sidebar credentials or rewriting the file on read', async t => {
   const { dir, roles, file } = await fixture(t);
   await roles.save('sidebar', openai('sidebar-private-key', 'sidebar-model'));
-  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.pet; delete saved.roles.image;
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')); for (const role of ['pet', 'image', 'frontend', 'backend', 'modeling']) delete saved.roles[role];
   const legacy = JSON.stringify(saved); await fs.writeFile(file, legacy);
   const restored = await new RoleModels(dir, crypto).init();
   assert.deepEqual(restored.publicState().sidebar, roles.publicState().sidebar);
@@ -110,11 +113,26 @@ test('four-role files add a disabled pet role without inheriting sidebar credent
 test('existing five-role settings gain a disabled independent image role on restart', async t => {
   const { dir, roles, file } = await fixture(t);
   await roles.save('pet', openai('pet-private-key', 'pet-model'));
-  const saved = JSON.parse(await fs.readFile(file, 'utf8')); delete saved.roles.image;
+  const saved = JSON.parse(await fs.readFile(file, 'utf8')); for (const role of ['image', 'frontend', 'backend', 'modeling']) delete saved.roles[role];
   await fs.writeFile(file, JSON.stringify(saved));
   const restored = await new RoleModels(dir, crypto).init();
   assert.equal(restored.isEnabled('image'), false); assert.equal(restored.key('image'), '');
   assert.equal(restored.key('pet'), 'pet-private-key');
+});
+
+test('six-role settings gain independent design roles without rewriting or copying credentials', async t => {
+  const { dir, roles, file } = await fixture(t);
+  await roles.save('subagent', openai('old-coder-key', 'old-model'));
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  for (const role of ['frontend', 'backend', 'modeling']) delete saved.roles[role];
+  const legacy = JSON.stringify(saved); await fs.writeFile(file, legacy);
+  const restored = await new RoleModels(dir, crypto).init();
+  for (const role of ['frontend', 'backend', 'modeling']) {
+    assert.equal(restored.isEnabled(role), false);
+    assert.equal(restored.key(role), '');
+  }
+  assert.equal(restored.key('subagent'), 'old-coder-key');
+  assert.equal(await fs.readFile(file, 'utf8'), legacy);
 });
 
 test('catalog drafts allow an empty model and never persist or mutate role state', async t => {

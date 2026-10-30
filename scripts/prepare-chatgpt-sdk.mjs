@@ -11,5 +11,5 @@ const output = path.join(root, 'src', 'vendor', 'siwc');
 await fs.mkdir(output, { recursive: true });
 await fs.cp(path.join(source, 'packages', 'local', 'dist'), output, { recursive: true });
 for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) await fs.copyFile(path.join(source, name), path.join(output, name));
-await fs.writeFile(path.join(output, 'FORGEDESK-NOTICE.txt'), 'OpenAI Sign-in with ChatGPT DevKit. Used for local personal experimentation under the included noncommercial license. ForgeDesk adds a main-process-only withAccessToken callback to preserve official OAuth and refresh handling while integrating tool calls. Synora code also preserves validated model context-capacity metadata for local context budgeting. Original source: https://github.com/openai/sign-in-with-chatgpt-devkit\n');
+await fs.writeFile(path.join(output, 'FORGEDESK-NOTICE.txt'), 'OpenAI Sign-in with ChatGPT DevKit. Used for local personal experimentation under the included noncommercial license. ForgeDesk adds a main-process-only withAccessToken callback to preserve official OAuth and refresh handling while integrating tool calls. Cortex also preserves validated model context-capacity metadata for local context budgeting. Original source: https://github.com/openai/sign-in-with-chatgpt-devkit\n');
 console.log('已构建官方 ChatGPT 登录 SDK。');

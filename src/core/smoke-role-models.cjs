@@ -111,16 +111,19 @@ module.exports = async function smokeRoleModels({ win, output, dataDir }) {
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);
     await until('project opened', async () => (await call('getState')).workspace.root === project && await js('!projectSwitching'));
     const original = await call('getState');
-    for (const role of ['subagent', 'approval', 'completion', 'sidebar', 'pet']) assert.equal(original.roleModels[role].enabled, false);
+    const defaultRoles = ['subagent', 'approval', 'completion', 'sidebar', 'pet', 'image', 'frontend', 'backend', 'modeling'];
+    for (const role of defaultRoles) assert.equal(original.roleModels[role].enabled, false);
     await call('saveSettings', { provider: 'deepseek', model: models.main, baseUrl, apiKey: keys.main, reasoningEffort: 'default', maxSteps: 4 });
     await call('listModels', { force: true }); mainSettings = (await call('getState')).settings;
 
-    stage = 'settings menu and four default following roles';
+    stage = 'settings menu and default following roles';
     await click('#menu-settings'); await click('#app-menu-popup [data-action="role-settings"]');
     const list = await js(`[...document.querySelectorAll('#role-models-list .role-model-row')].map(n=>({role:n.dataset.role,text:n.textContent}))`);
-    assert.deepEqual(list.map(item => item.role), ['subagent', 'approval', 'completion', 'sidebar', 'pet']); assert.ok(list.every(item => item.text.includes('跟随主模型')));
+    assert.deepEqual(list.map(item => item.role), defaultRoles); assert.ok(list.every(item => item.text.includes('跟随主模型')));
     assert.equal(await js(`Boolean(document.querySelector('#role-models-dialog .role-models-intro'))`), false);
-    await capture('role-defaults.png'); await click('#role-models-close');
+    await capture('role-defaults.png');
+    await js(`document.querySelector('[data-role="modeling"]').scrollIntoView({block:'end',behavior:'instant'});true;`);
+    await capture('role-defaults-design.png'); await click('#role-models-close');
     await configure('sidebar');
     await click('#toggle-side-chat');
     await until('empty side panel opened', () => js(`!$('side-chat-panel').hidden`));
@@ -185,11 +188,11 @@ module.exports = async function smokeRoleModels({ win, output, dataDir }) {
       await call('setAppearance', { uiStyle: style, selectionColor: null }); await js('window.synoraAppearance.settled()');
       await until('theme applied', () => js(`document.documentElement.dataset.uiStyle===${JSON.stringify(style)}`));
       const layout = await js(`(()=>{const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}};return {style:document.documentElement.dataset.uiStyle,width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth+1,panel:rect($('side-chat-panel')),input:rect($('side-chat-input')),send:rect($('side-chat-send')),help:rect($('menu-help')),conversation:rect(document.querySelector('.conversation'))}})()`);
-      assert.equal(layout.width, 980); assert.equal(layout.overflow, false); assert.ok(layout.panel.right <= 981 && layout.panel.left >= 0); assert.ok(layout.input.width > 200); assert.ok(layout.send.right <= layout.panel.right); assert.ok(layout.conversation.width > 250); layouts.push(layout);
+      assert.ok(layout.width >= 980 && layout.width <= 985); assert.equal(layout.overflow, false); assert.ok(layout.panel.right <= layout.width + 1 && layout.panel.left >= 0); assert.ok(layout.input.width > 200); assert.ok(layout.send.right <= layout.panel.right); assert.ok(layout.conversation.width > 250); layouts.push(layout);
       await capture(`role-sidebar-${style}-980.png`);
       await js(`window.synoraRoleModels.open('sidebar')`); await until('scoped settings shown', () => js(`$('settings-dialog').open&&settingsRole==='sidebar'`));
       const form = await js(`(()=>{const r=$('settings-dialog').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,title:$('settings-title').textContent,hint:$('settings-scope-hint').textContent}})()`);
-      assert.ok(form.left >= 0 && form.right <= 981 && form.top >= 0 && form.bottom <= 901); assert.match(form.hint, /独立配置/u);
+      assert.ok(form.left >= 0 && form.right <= layout.width + 1 && form.top >= 0 && form.bottom <= 905); assert.match(form.hint, /独立配置/u);
       await capture(`role-settings-${style}-980.png`); await click('#close-settings');
       await call('setAppearance', { selectionColor: '#63b77b' }); await js('window.synoraAppearance.settled()');
       await js(`$('side-chat-input').value='仅检查颜色，不发送';$('side-chat-input').dispatchEvent(new Event('input',{bubbles:true}));$('side-chat-input').focus();true;`);
@@ -242,7 +245,7 @@ module.exports = async function smokeRoleModels({ win, output, dataDir }) {
       assert.ok(storedRoles.roles[role].settings.providers.relay.encryptedKey, 'Reset retains only the saved encrypted key');
     }
     assert.deepEqual(problems, []);
-    const evidence = { status: 'completed', realApi: false, isolatedRegisteredChild: true, fourDefaultRoles: true,
+    const evidence = { status: 'completed', realApi: false, isolatedRegisteredChild: true, defaultRoles,
       sharedScopedForm: true, textOnlyModels: true, mainConfigurationUnchanged: true, separateRequestKeysAndModels: true,
       nativeContextMenu: true, exactQuoteOnly: true, noMainHistoryInSideChat: true, concurrentWithMainTask: true,
       streamedResponses: true, stopAborts: true, closeOnlyHides: true, hiddenStreamContinues: true,

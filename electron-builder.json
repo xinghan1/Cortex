@@ -1,6 +1,6 @@
 {
   "appId": "com.synora.code",
-  "productName": "Synora code",
+  "productName": "Cortex",
   "directories": {
     "output": "installer-output",
     "buildResources": "build"
@@ -33,8 +33,8 @@
         "arch": ["x64"]
       }
     ],
-    "icon": "src/renderer/synora-logo.png",
-    "artifactName": "Synora-code-Setup-${version}-${arch}.${ext}"
+    "icon": "src/renderer/cortex-logo.png",
+    "artifactName": "Cortex-Setup-${version}-${arch}.${ext}"
   },
   "nsis": {
     "oneClick": false,
@@ -44,7 +44,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Synora code",
+    "shortcutName": "Cortex",
     "deleteAppDataOnUninstall": false,
     "runAfterFinish": false,
     "packElevateHelper": false,

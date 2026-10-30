@@ -32,7 +32,7 @@ function pluginResourceAllowed(root, address, resourceType = 'other') {
 }
 
 function createPluginRuntime({ BrowserWindow, session, ipcMain, manager, getOwnerWindow = () => null,
-  getAppInfo = () => ({ name: 'Synora code', version: '', apiVersion: 1 }), getProjectInfo = () => null,
+  getAppInfo = () => ({ name: 'Cortex', version: '', apiVersion: 1 }), getProjectInfo = () => null,
   listFiles, readText, writeText, notify = () => {}, onError = () => {} } = {}) {
   if (typeof BrowserWindow !== 'function' || !session?.fromPartition || !ipcMain?.handle || !manager?.get
       || [getOwnerWindow, getAppInfo, getProjectInfo, notify, onError].some(value => typeof value !== 'function')) throw new Error('插件运行环境配置无效。');
@@ -91,7 +91,7 @@ function createPluginRuntime({ BrowserWindow, session, ipcMain, manager, getOwne
         let result;
         if (input.method === 'app.info') {
           const value = await getAppInfo(context(record));
-          result = { name: String(value?.name ?? 'Synora code').slice(0, 100), version: String(value?.version ?? '').slice(0, 64), apiVersion: 1 };
+          result = { name: String(value?.name ?? 'Cortex').slice(0, 100), version: String(value?.version ?? '').slice(0, 64), apiVersion: 1 };
         } else if (input.method === 'project.info') result = { root: record.project.root, name: String(record.project.name ?? path.basename(record.project.root)).slice(0, 200) };
         else if (input.method === 'notify') { await notify({ ...context(record), message: args.message }); result = null; }
         else {
@@ -145,7 +145,7 @@ function createPluginRuntime({ BrowserWindow, session, ipcMain, manager, getOwne
         browserSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !pluginResourceAllowed(item.root, details.url, details.resourceType) }));
         browserSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [CSP] } }));
         const window = record.window = new BrowserWindow({ width: 820, height: 620, minWidth: 420, minHeight: 320, show: false, parent: ownerWindow,
-          title: item.manifest.name + ' · Synora code 插件', autoHideMenuBar: true, backgroundColor: '#20252a',
+          title: item.manifest.name + ' · Cortex 插件', autoHideMenuBar: true, backgroundColor: '#20252a',
           webPreferences: { preload: path.join(__dirname, 'plugin-preload.cjs'), session: browserSession, sandbox: true, contextIsolation: true,
             nodeIntegration: false, nodeIntegrationInSubFrames: false, webviewTag: false, webSecurity: true, allowRunningInsecureContent: false,
             navigateOnDragDrop: false, spellcheck: false, devTools: false, disableDialogs: true, disableHtmlFullscreenWindowResize: true,

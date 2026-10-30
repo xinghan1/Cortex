@@ -262,7 +262,7 @@ test('hostile parent credentials, endpoints and permission overrides do not ente
     CLAUDE_CONFIG_DIR: 'C:/synthetic-parent-account', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CODE_USE_FOUNDRY: '1',
     CLAUDE_CODE_DISABLE_SANDBOX: '1', CLAUDE_CODE_DISABLE_ALL_HOOKS: '1', CLAUDE_CODE_SKIP_PERMISSION_CHECKS: '1',
     CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS: '1', NODE_OPTIONS: '--no-warnings', ELECTRON_RUN_AS_NODE: '1' });
-  const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=^the pinned real SDK initializes', fileURLToPath(import.meta.url)],
+  const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=^the pinned real SDK initializes', fileURLToPath(import.meta.url)],
     { env, cwd: process.cwd(), windowsHide: true, shell: false, encoding: 'utf8', timeout: 15000 });
   assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.code);
   assert.match(result.stdout, /# pass 1/u); assert.match(result.stdout, /# fail 0/u);

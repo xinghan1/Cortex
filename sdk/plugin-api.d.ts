@@ -1,6 +1,6 @@
-/** Synora code local HTML plugin API, schemaVersion / apiVersion 1. */
+/** Cortex local HTML plugin API, schemaVersion / apiVersion 1. */
 export type PluginPermission = 'project.read' | 'project.write' | 'notifications';
-export interface SynoraPluginManifest {
+export interface CortexPluginManifest {
   schemaVersion: 1;
   /** Lowercase ID, for example com.example.tools. Stable across versions. */
   id: string;
@@ -18,7 +18,7 @@ export interface PluginTextFile {
   /** Opaque revision token. Pass unchanged as writeText.expectedVersion. */
   version: string | null;
 }
-export interface SynoraPluginAPI {
+export interface CortexPluginAPI {
   info(): Promise<{ name: string; version: string; apiVersion: 1 }>;
   readonly project: {
     /** The project captured when this plugin window opened. */
@@ -39,4 +39,6 @@ export interface SynoraPluginAPI {
   /** Subscribe to a declared command selected by the user. Returns an unsubscribe function. */
   onCommand(listener: (command: Readonly<{ id: string }>) => void): () => void;
 }
-declare global { interface Window { readonly synoraPlugin: SynoraPluginAPI } }
+export type SynoraPluginManifest = CortexPluginManifest;
+export type SynoraPluginAPI = CortexPluginAPI;
+declare global { interface Window { readonly cortexPlugin: CortexPluginAPI; readonly synoraPlugin: CortexPluginAPI } }

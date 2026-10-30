@@ -18,7 +18,7 @@ module.exports = async function smokePersonalization({ win, output, dataDir }) {
     throw new Error('Text scale failed to settle at '+value);
   };
   const initial = await metrics();
-  if(initial.brand!=='Synora code'||!initial.title.startsWith('Synora code')||!initial.logo) throw new Error('Software brand or logo was not updated');
+  if(initial.brand!=='Cortex'||!initial.title.startsWith('Cortex')||!initial.logo) throw new Error('Software brand or logo was not updated');
   const minimalChrome = () => win.webContents.executeJavaScript(`(()=>{
     const removed=['#model-button','#model-label','#open-workspace','.top-actions','#text-scale-label','#composer-project'];
     const remaining=removed.filter(selector=>document.querySelector(selector));
@@ -80,5 +80,5 @@ module.exports = async function smokePersonalization({ win, output, dataDir }) {
   win.webContents.sendInputEvent({type:'mouseWheel',x:700,y:280,deltaY:120,deltaX:0});
   await new Promise(resolve=>setTimeout(resolve,120));
   if((await metrics()).scale!==100) throw new Error('Ordinary scrolling changed text size');
-  return {status:'completed',brand:'Synora code',history,minimalChrome:true,noTextScalePercentage:true,nativeCtrlWheel:true,textScaleBefore:initial.scale,textScaleAfter:expected,rapidScale:rapid,restoredAfterReload:true,resetWithCtrl0:true,layoutUnchanged:true};
+  return {status:'completed',brand:'Cortex',history,minimalChrome:true,noTextScalePercentage:true,nativeCtrlWheel:true,textScaleBefore:initial.scale,textScaleAfter:expected,rapidScale:rapid,restoredAfterReload:true,resetWithCtrl0:true,layoutUnchanged:true};
 };

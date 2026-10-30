@@ -283,7 +283,7 @@ export class ChatGPTConnection {
         const factory = this.#createClient || (await import('../vendor/siwc/index.js')).createChatGPT;
         if (typeof factory !== 'function') throw connectionError('invalid_sdk', 'ChatGPT 登录组件尚未正确安装。');
         const client = await factory({
-          appName: 'Synora code', appId: 'forgedesk', sendHostId: true, redirectPort: 0,
+          appName: 'Cortex', appId: 'forgedesk', sendHostId: true, redirectPort: 0,
           storageDir: path.join(this.#dataDir, 'chatgpt'),
           credentialEncryption: this.#credentialEncryption(),
           openBrowser: async value => {

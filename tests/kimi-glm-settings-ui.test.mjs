@@ -29,7 +29,7 @@ test('Kimi and GLM expose domestic API Key forms without compatible protocol or 
     assert.deepEqual(plain(f.context.modelSettingsDraft()),{provider,authMode:'apiKey',baseUrl:url,apiKey:'key-'+provider});
     assert.equal(f.calls.length,0,'displaying a form must not open a browser or authorize an account');
   }
-  assert.match(html,/控制台登录不会自动授权 Synora/u);
+  assert.match(html,/控制台登录不会自动授权 Cortex/u);
 });
 
 test('international URLs stay explicit and opening official console never sends a key or mutates the draft',async()=>{

@@ -564,7 +564,7 @@ function makeRequest(provider, model, messages, tools, maxOutputTokens, endpoint
       ...(!plan && maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       ...(tools.length ? { tools: plan ? [{
         type: 'namespace', name: CHATGPT_NAMESPACE,
-        description: 'Synora code local project tools. Read, edit, and run commands only through these tools.',
+        description: 'Cortex local project tools. Read, edit, and run commands only through these tools.',
         tools: functions,
       }] : functions } : {}),
     };
@@ -1568,7 +1568,7 @@ async function requestStandardModel({
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: {
         'Content-Type': 'application/json', Accept: provider === 'ollama' ? 'application/x-ndjson, application/json' : authMode === 'chatgpt' ? 'text/event-stream' : 'text/event-stream, application/json',
-        ...(vendor ? { 'User-Agent': `Synora-code/${typeof appVersion === 'string' && /^[A-Za-z0-9.+_-]{1,80}$/u.test(appVersion) ? appVersion : 'unknown'}` } : {}),
+        ...(vendor ? { 'User-Agent': `Cortex/${typeof appVersion === 'string' && /^[A-Za-z0-9.+_-]{1,80}$/u.test(appVersion) ? appVersion : 'unknown'}` } : {}),
         ...(authMode === 'deepseek-account' ? { 'x-dsh-auth-token': apiKey.trim(), 'anthropic-version': '2023-06-01' }
           : provider === 'anthropic'
           ? { 'x-api-key': apiKey.trim(), 'anthropic-version': '2023-06-01' }

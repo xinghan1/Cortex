@@ -1,6 +1,6 @@
-# Synora code 插件开发
+# Cortex 插件开发
 
-插件是一个包含 `synora-plugin.json` 和本地 HTML / JavaScript / CSS 的目录。无需 Node.js 依赖，适合项目检查器、文本转换器、文档工具和自定义开发面板。
+插件是一个包含 `cortex-plugin.json` 和本地 HTML / JavaScript / CSS 的目录。旧版 `synora-plugin.json` 和 `window.synoraPlugin` 仍受支持，单个插件只能包含一种清单。无需 Node.js 依赖，适合项目检查器、文本转换器、文档工具和自定义开发面板。
 
 在软件顶部选择“设置 → 插件管理…”，点击“创建示例插件”，选择保存位置。编辑生成的 `hello-plugin` 目录后，使用“安装本地插件”选择这个目录，再点击“启用”和“打开”。安装会复制文件；修改源目录后，需移除已安装副本并重新安装。关闭软件后，安装记录与启用状态会保留，插件窗口由用户重新打开。
 
@@ -27,10 +27,10 @@
 
 ## JavaScript API
 
-插件页面使用 `window.synoraPlugin`。HTML 内通过外部脚本加载代码，例如 `<script src="main.js" defer></script>`；不要使用内联脚本、`eval` 或动态生成代码。
+插件页面使用 `window.cortexPlugin`。HTML 内通过外部脚本加载代码，例如 `<script src="main.js" defer></script>`；不要使用内联脚本、`eval` 或动态生成代码。
 
 ```javascript
-const api = window.synoraPlugin;
+const api = window.cortexPlugin;
 const app = await api.info();
 const project = await api.project.info();
 const files = await api.project.listFiles({ path: "src" });

@@ -7,7 +7,7 @@ ipcRenderer.on('synora-plugin:command', (_event, command) => {
   latestCommand = Object.freeze({ id: command.id });
   for (const listener of listeners) { try { listener(latestCommand); } catch {} }
 });
-contextBridge.exposeInMainWorld('synoraPlugin', Object.freeze({
+const api = Object.freeze({
   info: () => invoke('app.info'),
   project: Object.freeze({
     info: () => invoke('project.info'),
@@ -23,4 +23,6 @@ contextBridge.exposeInMainWorld('synoraPlugin', Object.freeze({
     if (command) queueMicrotask(() => { if (listeners.has(listener)) { try { listener(command); } catch {} } });
     return () => listeners.delete(listener);
   },
-}));
+});
+contextBridge.exposeInMainWorld('cortexPlugin', api);
+contextBridge.exposeInMainWorld('synoraPlugin', api);

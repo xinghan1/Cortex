@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' file: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Synora code · 本地 AI 编程助手</title>
+  <title>Cortex · 本地 AI 编程助手</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./markdown.css">
   <link rel="stylesheet" href="./workbench.css">
@@ -94,8 +94,8 @@
   <div id="app-background" class="app-background" aria-hidden="true"></div>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand" aria-label="Synora code" title="Synora code">
-        <img class="brand-logo" src="./synora-logo.png" alt="" aria-hidden="true" width="30" height="30">
+      <div class="brand" aria-label="Cortex" title="Cortex">
+        <img class="brand-logo" src="./cortex-logo.png" alt="" aria-hidden="true" width="30" height="30">
       </div>
       <div class="project-switcher-wrap"><button id="project-switcher" class="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false"><span id="project-avatar" class="project-avatar">AI</span><span id="workspace-label">选择项目</span><span class="project-chevron">⌄</span></button><section id="project-dropdown" class="project-dropdown" role="menu" aria-label="项目与历史" hidden><div class="project-dropdown-actions"><button id="project-open" type="button" role="menuitem">▱ <span>打开项目…</span><small>Ctrl+O</small></button><button id="project-create" type="button" role="menuitem">＋ <span>新建项目…</span></button></div><div id="project-current-section"><h2>当前项目</h2><div id="project-current-list"></div></div><h2>最近项目与历史</h2><div id="session-list" class="recent-project-list"></div></section></div>
       <nav id="app-menu-bar" class="app-menu-bar" role="menubar" aria-label="应用菜单">
@@ -138,8 +138,8 @@
         <form id="find-bar" class="find-bar" hidden><label for="find-input" class="sr-only">查找当前窗口文字</label><input id="find-input" type="search" placeholder="在当前窗口查找…" autocomplete="off"><span id="find-result" role="status"></span><button id="find-previous" class="icon-button small" type="button" title="上一个匹配" aria-label="上一个匹配">↑</button><button id="find-next" class="icon-button small" type="submit" title="下一个匹配" aria-label="下一个匹配">↓</button><button id="find-close" class="icon-button small" type="button" title="关闭查找" aria-label="关闭查找">×</button></form>
         <div id="message-scroll" class="message-scroll">
           <section id="welcome" class="welcome">
-            <div class="welcome-mark" aria-hidden="true"><img src="./synora-logo.png" alt="" width="48" height="48"></div>
-            <p class="welcome-eyebrow">SYNORA WORKSPACE</p>
+            <div class="welcome-mark" aria-hidden="true"><img src="./cortex-logo.png" alt="" width="48" height="48"></div>
+            <p class="welcome-eyebrow">CORTEX WORKSPACE</p>
             <h2>探索未至之境</h2>
           </section>
           <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
@@ -340,7 +340,7 @@
       <label id="base-url-field" class="form-field"><span id="base-url-label">Base URL</span><input id="base-url-input" name="baseUrl" type="url" placeholder="使用服务商默认 API 地址" autocomplete="off"></label>
       <label id="ollama-context-window-field" class="form-field" hidden><span>模型上下文（Token）</span><input id="ollama-context-window-input" name="contextWindowTokens" type="number" min="4096" max="2097152" step="1" value="32768" inputmode="numeric" disabled><small>影响本地模型内存占用。</small></label>
       <label id="api-key-field" class="form-field"><span><span id="api-key-label">API Key</span> <span id="key-status" class="key-status">未配置</span></span><input id="api-key-input" name="apiKey" type="password" placeholder="输入 API Key" autocomplete="new-password"></label>
-      <section id="provider-account-panel" class="form-field" aria-label="官方账号控制台" hidden><small>在官方控制台登录后创建 API Key，填写到此处。控制台登录不会自动授权 Synora。</small><button id="provider-account-open" class="text-button" type="button">登录官方控制台</button></section>
+      <section id="provider-account-panel" class="form-field" aria-label="官方账号控制台" hidden><small>在官方控制台登录后创建 API Key，填写到此处。控制台登录不会自动授权 Cortex。</small><button id="provider-account-open" class="text-button" type="button">登录官方控制台</button></section>
       <div id="chatgpt-model-field" class="form-field"><div class="catalog-field-heading"><label for="chatgpt-model-select">模型目录</label><button id="settings-model-refresh" class="text-button" type="button">获取 / 刷新</button></div><select id="chatgpt-model-select" name="model" disabled><option value="">先获取模型目录，再选择模型</option></select><small id="settings-model-catalog-message" role="status" hidden></small></div>
       <p id="settings-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-footer"><button id="settings-role-reset" class="text-button settings-role-reset" type="button" hidden>恢复跟随主模型</button><span id="settings-footer-hint">支持自定义 API 地址</span><button id="save-settings" class="button solid" type="submit" disabled>保存配置</button></div>

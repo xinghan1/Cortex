@@ -27,7 +27,7 @@ async function dir(t) { await fs.mkdir(tmpRoot, { recursive: true }); const valu
 test('Kimi Responses uses native Moonshot API, honest product identity, a stable cache lineage and no unsupported OpenAI include override', async () => {
   const f = fixture('kimi'); const result = await f.request({ reasoningEffort: 'high' });
   assert.equal(f.calls[0].url, 'https://api.moonshot.cn/v1/responses'); assert.equal(f.calls[0].options.headers.Authorization, `Bearer ${key}`);
-  assert.equal(f.calls[0].options.headers['User-Agent'], 'Synora-code/0.22.3'); assert.equal(Object.hasOwn(f.calls[0].body, 'include'), false);
+  assert.equal(f.calls[0].options.headers['User-Agent'], 'Cortex/0.22.3'); assert.equal(Object.hasOwn(f.calls[0].body, 'include'), false);
   assert.deepEqual(f.calls[0].body.reasoning, { effort: 'high' }); assert.equal(f.calls[0].body.store, false);
   const cached = f.calls[0].body.prompt_cache_key; assert.match(cached, /^synora-[a-f\d]{64}$/u);
   await f.request({ messages: [...initial, result.message, { role: 'user', content: 'Continue' }] });

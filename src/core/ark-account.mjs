@@ -113,7 +113,7 @@ export function createArkCliRuntime() {
   };
   return { init: async () => {}, ensure: async ({ signal } = {}) => {
     check(signal); try { const result = await locate(); check(signal); return result; }
-    catch (error) { if (error.name === 'AbortError') throw error; throw fail('ARK_RUNTIME_MISSING', '官方 Ark CLI 组件缺失或校验失败，请重新安装 Synora 或更新官方组件。'); }
+    catch (error) { if (error.name === 'AbortError') throw error; throw fail('ARK_RUNTIME_MISSING', '官方 Ark CLI 组件缺失或校验失败，请重新安装 Cortex 或更新官方组件。'); }
   }, publicState: async () => { try { const value = await locate(); return { status: 'ready', version: value.version }; } catch { return { status: 'missing', version: '1.0.42' }; } } };
 }
 

@@ -22,7 +22,7 @@ const PROFILE_FILE = 'gemini-connection.json';
 function rpcFailure(method, error) {
   const { code, diagnostic } = classifyGeminiRpcError(method, error);
   const messages = {
-    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人、AI Pro 和 Ultra 账号使用旧 Gemini CLI。Synora 可改用 Gemini API Key；个人订阅请使用 Google 官方 Antigravity。',
+    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人、AI Pro 和 Ultra 账号使用旧 Gemini CLI。Cortex 可改用 Gemini API Key；个人订阅请使用 Google 官方 Antigravity。',
     GEMINI_SIGN_IN_REQUIRED: '请先通过官方 Gemini CLI 登录 Google 账号。',
     GEMINI_PROJECT_REQUIRED: '此 Google 账号需要配置 Google Cloud 项目，请按官方认证要求配置。',
     GEMINI_ACCOUNT_VALIDATION_REQUIRED: 'Google 要求额外验证此账号，请先完成官方账号验证后重试。',
@@ -142,8 +142,8 @@ function modelInput(messages, tools) {
   if (Buffer.byteLength(encoded) > MAX_INPUT) throw failure('GEMINI_INPUT_TOO_LARGE', 'Gemini 对话过长，请压缩上下文。');
   // Fixed prefix prevents ACP slash/$ commands. Text ContentBlocks, rather
   // than resource links, prevent CLI @file expansion and local file reads.
-  return { names, prompt: 'SYNORA_MODEL_REQUEST\n你是 Synora code 的模型传输层。处理下面 messages 中的对话，遵守其中 system 指令。'
-    + '这是纯文本推理：禁止调用 Gemini CLI 自带工具。需要本机操作时，仅在最终 JSON 中声明下面 tools 列出的调用，交给 Synora 的审批与执行器。'
+  return { names, prompt: 'SYNORA_MODEL_REQUEST\n你是 Cortex 的模型传输层。处理下面 messages 中的对话，遵守其中 system 指令。'
+    + '这是纯文本推理：禁止调用 Gemini CLI 自带工具。需要本机操作时，仅在最终 JSON 中声明下面 tools 列出的调用，交给 Cortex 的审批与执行器。'
     + '只输出一个完整、严格 JSON 对象，精确结构 {"content":"给用户的答复","toolCalls":[{"id":"唯一标识，可省略","name":"提供的工具名","arguments":{}}]}。'
     + 'toolCalls 无调用时为 []，arguments 必须是 JSON 对象。不要 Markdown 围栏，不要附加字段，不输出私有思考；不要声称未执行的操作已完成。\n'
     + encoded };
@@ -371,7 +371,7 @@ export class GeminiConnection {
             env: childEnvironment({ ...this.#env, ...proxyEnv }, directories.home, browser), shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] } } });
         reportPhase('initialize');
         const initialized = await client.request('initialize', { protocolVersion: 1,
-          clientInfo: { name: 'Synora code', version: this.#version }, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
+          clientInfo: { name: 'Cortex', version: this.#version }, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
         if (initialized?.protocolVersion !== 1 || initialized.agentInfo?.name !== 'gemini-cli'
             || initialized.agentInfo?.version !== GEMINI_CLI_VERSION || !initialized.authMethods?.some(value => value.id === 'oauth-personal'))
           throw failure('GEMINI_CLI_INCOMPATIBLE', '内置 Gemini CLI 版本或登录协议不匹配，请更新软件。');

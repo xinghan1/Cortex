@@ -74,7 +74,7 @@ test('browser PKCE login saves an encrypted grant before completion, restores id
   assert.match(state.session.profileId, /^[a-f\d-]{36}$/u);
   const initialization = data.calls.find(call => call.url.endsWith('/auth_init'));
   const exchange = data.calls.find(call => call.url.endsWith('/auth_exchange'));
-  assert.equal(initialization.request.headers['user-agent'], 'Synora-code/0.21.0');
+  assert.equal(initialization.request.headers['user-agent'], 'Cortex/0.21.0');
   assert.equal(initialization.request.headers['x-client-version'], '0.21.0');
   assert.equal(initialization.request.headers['x-client-bundle-id'], '');
   assert.equal(initialization.body.code_challenge_method, 'S256');

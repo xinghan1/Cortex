@@ -3,7 +3,7 @@ import { WorkspaceTools } from './workspace.mjs';
 import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.cjs';
 import { normalizeSubagentPath, SUBAGENT_LIMITS } from './subagents.mjs';
 
-const READ_TOOLS = new Set(['list_files', 'read_file', 'search_files']);
+const READ_TOOLS = new Set(['list_files', 'read_file', 'search_files', 'view_image']);
 const WRITE_TOOLS = new Set(['write_file', 'replace_in_file']);
 const pathIdentity = (root, value) => workspacePathKey(normalizeWorkspaceReference(root, value, { allowExternalPaths: true }).absolute).replaceAll('\\', '/');
 

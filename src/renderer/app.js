@@ -2206,7 +2206,7 @@ function addMessage(role, text, streaming = false, metadata = {}) {
     message.append(createUserMessageFooter(text, metadata));
   } else {
     const header = element('div', 'message-header');
-    header.append(element('span', 'message-avatar', '✳'), element('span', '', 'Synora code'));
+    header.append(element('span', 'message-avatar', '✳'), element('span', '', 'Cortex'));
     message.append(header, body);
     const images = messageImageAttachments(metadata.attachments);
     if (images.length) {
@@ -4726,7 +4726,7 @@ async function initialize() {
   }
   bindUI();
   if (!bridge) {
-    notice('桌面桥接未就绪，请通过 Synora code 桌面应用启动此界面。', true);
+    notice('桌面桥接未就绪，请通过 Cortex 桌面应用启动此界面。', true);
     document.querySelectorAll('button,input,select,textarea').forEach((node) => { node.disabled = true; });
     return;
   }

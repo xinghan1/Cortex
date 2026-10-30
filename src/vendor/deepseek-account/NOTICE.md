@@ -1,6 +1,6 @@
 # DeepSeek account protocol
 
-The Synora code account integration was written against DeepSeek's public
+The Cortex account integration was written against DeepSeek's public
 DeepSeek Harness account protocol and API documentation, inspected 2026-10-24:
 
 - https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/deepseek-account-platform
@@ -8,7 +8,7 @@ DeepSeek Harness account protocol and API documentation, inspected 2026-10-24:
 - https://api-docs.deepseek.com/guides/anthropic_api/
 
 DeepSeek Harness is Copyright (c) 2026 DeepSeek, licensed under MIT; its license is
-included in this directory. Synora code uses its own implementation and product
+included in this directory. Cortex uses its own implementation and product
 identity. DeepSeek logos, UI assets and other applications' stored credentials
 are not included.
 

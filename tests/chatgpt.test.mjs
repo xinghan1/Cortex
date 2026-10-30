@@ -93,7 +93,7 @@ function harness(initial, overrides = {}) {
 test('initialization configures official SDK and only returns safe public fields', async () => {
   const h = harness({ ...connected(), accessToken: 'private-chatgpt-access-token', credentials: { refreshToken: 'private-refresh-token' } });
   const state = await h.connection.init();
-  assert.equal(h.sdkConfig.appName, 'Synora code');
+  assert.equal(h.sdkConfig.appName, 'Cortex');
   assert.equal(h.sdkConfig.appId, 'forgedesk');
   assert.equal(h.sdkConfig.sendHostId, true);
   assert.equal(h.sdkConfig.redirectPort, 0);

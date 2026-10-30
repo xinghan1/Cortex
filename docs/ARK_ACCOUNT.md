@@ -1,6 +1,6 @@
 # 火山方舟账号连接
 
-`src/core/ark-account.mjs` 使用官方 `@volcengine/ark-cli@1.0.42` 完成火山方舟账号授权，再将所选 Profile 的运行时凭证交给 Synora 的豆包 API 适配器。此连接适用于方舟、Agent Plan 和 Coding Plan。
+`src/core/ark-account.mjs` 使用官方 `@volcengine/ark-cli@1.0.42` 完成火山方舟账号授权，再将所选 Profile 的运行时凭证交给 Cortex 的豆包 API 适配器。此连接适用于方舟、Agent Plan 和 Coding Plan。
 
 ## 授权与 Profile 选择
 
@@ -14,7 +14,7 @@ arkcli auth status --format json
 arkcli auth whoami --format json
 ```
 
-固定版本 1.0.42 默认 `auto` 会优先尝试 Broker 链路，`--no-browser` 本身不会强制旧链路。因此两段均明确传入 `--login-mode legacy`，不执行响应里的 `next_command`。Phase 1 必须返回 `authorize_pending` JSON；Synora 验证官方 HTTPS 地址后使用 Electron 打开默认浏览器，保留重新打开入口。用户将官方页面的 base64 授权码粘贴到软件的密码式输入框；提交、取消或过期后清空，不进入会话历史、日志或连接文件。兑换失败且会话未过期时可重试同一授权，取消会保留原有连接。
+固定版本 1.0.42 默认 `auto` 会优先尝试 Broker 链路，`--no-browser` 本身不会强制旧链路。因此两段均明确传入 `--login-mode legacy`，不执行响应里的 `next_command`。Phase 1 必须返回 `authorize_pending` JSON；Cortex 验证官方 HTTPS 地址后使用 Electron 打开默认浏览器，保留重新打开入口。用户将官方页面的 base64 授权码粘贴到软件的密码式输入框；提交、取消或过期后清空，不进入会话历史、日志或连接文件。兑换失败且会话未过期时可重试同一授权，取消会保留原有连接。
 
 Profile 候选来自本次返回的 `profiles_summary` 与 `active_profile`。无参 `signIn()` 在 `attempt.phase=choosing-profile` 等待；`selectProfile(profileName)` 只能选择该列表中的名称，并继续原登录任务。即使只有一个候选，也需要用户明确选择。取消授权会中止等待并清理尚未绑定的隔离目录。
 
@@ -43,7 +43,7 @@ Coding Plan 个人版文本入口使用普通后付费 API Key，套餐路径仍
 
 ## 凭证与会话隔离
 
-Synora 不读取 CLI 的凭证文件，不提取 Cookie、SSO Token 或调用非公开认证接口。官方导出命令的 stdout 只在主进程内处理。Key、Profile 主体和绑定资料经 Electron `safeStorage` 整体加密、原子保存，并在写入后解密回读校验；安全存储不可用时没有明文回退。CLI 自己的认证资料由官方进程保存在应用隔离目录中。
+Cortex 不读取 CLI 的凭证文件，不提取 Cookie、SSO Token 或调用非公开认证接口。官方导出命令的 stdout 只在主进程内处理。Key、Profile 主体和绑定资料经 Electron `safeStorage` 整体加密、原子保存，并在写入后解密回读校验；安全存储不可用时没有明文回退。CLI 自己的认证资料由官方进程保存在应用隔离目录中。
 
 Renderer 只接收 Profile 摘要、连接状态和资源目录。每次成功连接产生新的会话身份，绑定内容包含 Profile 类型、主体、区域、项目及 Key 摘要。账号切换或断连会中止进行中的请求；旧 `arkProfileId` 不能用于新连接。401 要求重新连接，失败或取消的新授权保留原有有效连接。
 

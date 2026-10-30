@@ -2,10 +2,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 
-const RELEASE_API = 'https://api.github.com/repos/xinghan1/Synora-code/releases/latest';
-const RELEASE_WEB = 'https://github.com/xinghan1/Synora-code/releases/latest';
-const RELEASE_TAG_PREFIX = 'https://github.com/xinghan1/Synora-code/releases/tag/';
-const DOWNLOAD_PREFIX = 'https://github.com/xinghan1/Synora-code/releases/download/';
+const RELEASE_API = 'https://api.github.com/repos/xinghan1/Cortex/releases/latest';
+const RELEASE_WEB = 'https://github.com/xinghan1/Cortex/releases/latest';
+const RELEASE_TAG_PREFIX = 'https://github.com/xinghan1/Cortex/releases/tag/';
+const DOWNLOAD_PREFIX = 'https://github.com/xinghan1/Cortex/releases/download/';
 const MAX_INSTALLER_BYTES = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES = 2 * 1024 * 1024, MAX_CHECKSUM_BYTES = 8192;
 const CHECK_CACHE_MS = 60 * 1000, RATE_LIMIT_DEFAULT_MS = 5 * 60 * 1000, RATE_LIMIT_MAX_MS = 60 * 60 * 1000;
@@ -147,7 +147,7 @@ class AppUpdater {
     try {
       response = await abortable(this.#fetch(url, { signal, method, redirect: 'manual', credentials: 'omit',
         headers: { Accept: web ? 'text/html' : asset ? 'application/octet-stream' : 'application/vnd.github+json',
-          'User-Agent': 'Synora-code-updater', ...(asset || web ? {} : { 'X-GitHub-Api-Version': '2022-11-28' }) } }), signal);
+          'User-Agent': 'Cortex-updater', ...(asset || web ? {} : { 'X-GitHub-Api-Version': '2022-11-28' }) } }), signal);
     } catch (error) {
       if (signal.aborted || error?.updaterSafe) throw error;
       throw networkFailure(error);
@@ -180,7 +180,7 @@ class AppUpdater {
     if (response.status === 403) throw failure('更新服务器拒绝访问，请检查网络或代理设置后重试。', 'UPDATE_ACCESS_DENIED');
     throw failure(response.status === 404 ? '官方仓库暂未提供可下载的发布版本。' : '更新服务器暂时不可用，请稍后重试。');
   }
-  async #response(url, signal, { asset = false, method = 'GET' } = {}) {
+  async #response(url, signal, { asset = false, method = 'GET', allow404 = false } = {}) {
     let current = url;
     for (let hop = 0; hop <= 2; hop++) {
       const response = await this.#request(current, signal, { asset, method });
@@ -191,7 +191,7 @@ class AppUpdater {
         current = location;
         continue;
       }
-      if (response.status !== 200) {
+      if (response.status !== 200 && !(allow404 && response.status === 404)) {
         await this.#httpFailure(response, signal, current === RELEASE_API);
       }
       return response;
@@ -242,9 +242,10 @@ class AppUpdater {
       if (compare(nextVersion, this.#current) <= 0) {
         return null;
       }
-      const name = `Synora-code-Setup-${nextVersion}-x64.exe`;
       const assets = Array.isArray(release.assets) ? release.assets : [];
-      const matches = assets.filter(value => value?.name === name);
+      const names = [`Cortex-Setup-${nextVersion}-x64.exe`, `Synora-code-Setup-${nextVersion}-x64.exe`];
+      const name = names.find(candidate => assets.some(value => value?.name === candidate));
+      const matches = name ? assets.filter(value => value?.name === name) : [];
       if (matches.length !== 1) throw failure('此版本缺少匹配的 Windows x64 安装包。');
       const asset = matches[0], size = assetSize(asset, 64, MAX_INSTALLER_BYTES), url = assetURL(asset, release.tag_name, name);
       let sha256;
@@ -271,8 +272,13 @@ class AppUpdater {
     if (!location?.startsWith(RELEASE_TAG_PREFIX)) throw failure('官方最新版本地址不属于指定仓库。');
     const tag = location.slice(RELEASE_TAG_PREFIX.length), nextVersion = version(tag);
     if (compare(nextVersion, this.#current) <= 0) return null;
-    const name = `Synora-code-Setup-${nextVersion}-x64.exe`, url = `${DOWNLOAD_PREFIX}${tag}/${name}`;
-    const checksumResponse = await this.#response(`${url}.sha256`, signal, { asset: true });
+    let name = `Cortex-Setup-${nextVersion}-x64.exe`, url = `${DOWNLOAD_PREFIX}${tag}/${name}`;
+    let checksumResponse = await this.#response(`${url}.sha256`, signal, { asset: true, allow404: true });
+    if (checksumResponse.status === 404) {
+      checksumResponse.body?.cancel?.().catch(() => {});
+      name = `Synora-code-Setup-${nextVersion}-x64.exe`; url = `${DOWNLOAD_PREFIX}${tag}/${name}`;
+      checksumResponse = await this.#response(`${url}.sha256`, signal, { asset: true });
+    }
     const sha256 = parseChecksum(await this.#text(checksumResponse, MAX_CHECKSUM_BYTES, signal), name);
     const head = await this.#response(url, signal, { asset: true, method: 'HEAD' });
     head.body?.cancel?.().catch(() => {});

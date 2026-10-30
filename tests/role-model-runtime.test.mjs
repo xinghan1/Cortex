@@ -172,6 +172,24 @@ test('text roles accept text-only models while subagents reject models without c
   assert.equal((await runtime.config('subagent')).modelCapabilities.supportsTools, true);
 });
 
+test('design roles require coding tools and route each independent connection', async t => {
+  const { runtime, configs, requests } = await fixture(t);
+  for (const role of ['frontend', 'backend', 'modeling']) {
+    const input = api({ apiKey: `${role}-secret` });
+    const preview = await runtime.preview(role, input);
+    assert.equal(preview.models.find(model => model.id === 'text-model').compatible, false);
+    await assert.rejects(runtime.save(role, { ...input, model: 'text-model', selectionToken: preview.selectionToken }),
+      { code: 'SETTINGS_CATALOG_MODEL_INCOMPATIBLE' });
+    await runtime.save(role, { ...input, model: 'coding-model', selectionToken: preview.selectionToken });
+    const config = await runtime.config(role);
+    assert.equal(config.modelRole, role);
+    assert.equal(config.apiKey, `${role}-secret`);
+    await runtime.dispatch({ ...config, tools: [] });
+    assert.equal(requests.at(-1).modelRole, role);
+    assert.equal(configs.key(role), `${role}-secret`);
+  }
+});
+
 test('model selection grants cannot be reused across roles or changed connections', async t => {
   const { runtime, configs } = await fixture(t);
   const input = api(), preview = await runtime.preview('approval', input);

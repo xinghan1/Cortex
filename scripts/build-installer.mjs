@@ -32,7 +32,7 @@ run(require.resolve('electron-builder/cli.js'), [
 
 // Ship a checksum alongside the installer for release downloads and updates.
 const { version } = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-const name = `Synora-code-Setup-${version}-x64.exe`;
+const name = `Cortex-Setup-${version}-x64.exe`;
 const installer = path.join(root, 'installer-output', name);
 const hash = createHash('sha256');
 for await (const chunk of createReadStream(installer)) hash.update(chunk);

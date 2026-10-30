@@ -53,7 +53,7 @@
       const fragment = document.createDocumentFragment();
       for (const message of state.messages || []) {
         const item = el('article', `side-chat-message ${message.role}`); item.dataset.messageId = message.id;
-        item.append(el('div', 'side-chat-message-label', message.role === 'user' ? '你' : 'Synora code'));
+        item.append(el('div', 'side-chat-message-label', message.role === 'user' ? '你' : 'Cortex'));
         if (message.quote) item.append(el('blockquote', 'side-chat-quoted', message.quote));
         const content = el('div', 'side-chat-content');
         if (message.role === 'assistant' && message.content && window.ForgeMarkdown) window.ForgeMarkdown.renderMarkdown(content, message.content, {

@@ -5,7 +5,7 @@ import os from 'node:os';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 // Public account protocol, verified against DeepSeek's MIT-licensed Harness on
-// 2026-10-24. This implementation identifies itself as Synora code and never
+// 2026-10-24. This implementation identifies itself as Cortex and never
 // reads another application's credentials or the browser's cookies.
 // https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/credentials/deepseek-account-platform
 export const DEEPSEEK_ACCOUNT_BASE = 'https://api.deepseek.com/anthropic/v1';
@@ -95,7 +95,7 @@ export class DeepSeekConnection {
   #changed() { try { Promise.resolve(this.#onChange()).catch(() => {}); } catch {} }
   #setFailure(value) { this.#failure = value ? { code: value.code || 'DEEPSEEK_CONNECTION_FAILED',
     message: this.redact(value.message || 'DeepSeek 连接失败，请重试。').slice(0, 1000) } : null; }
-  #headers() { return { 'user-agent': `Synora-code/${this.#version}`, 'x-client-bundle-id': '',
+  #headers() { return { 'user-agent': `Cortex/${this.#version}`, 'x-client-bundle-id': '',
     'x-client-platform': process.platform === 'win32' ? 'desktop-win' : process.platform === 'darwin' ? 'desktop-mac' : 'web',
     'x-client-version': this.#version, 'x-client-locale': 'zh_CN',
     'x-client-timezone-offset': String(-new Date().getTimezoneOffset() * 60) }; }
@@ -306,7 +306,7 @@ export class DeepSeekConnection {
     if (!force && this.#modelCache?.profileId === grant.profileId && Date.now() - this.#modelCache.at < 300_000) return structuredClone(this.#modelCache.models);
     try {
       const body = await this.#response(`${API}/models`, { method: 'GET', headers: {
-        'user-agent': `Synora-code/${this.#version}`, accept: 'application/json', 'x-dsh-auth-token': grant.token,
+        'user-agent': `Cortex/${this.#version}`, accept: 'application/json', 'x-dsh-auth-token': grant.token,
       } }, undefined, 2 * 1024 * 1024);
       if (this.#grant !== grant || this.#removing) throw unavailable();
       if (!Array.isArray(body?.data)) throw wireError();

@@ -3,10 +3,12 @@ import { normalizeWorkspaceReference, workspacePathKey } from './workspace-path.
 
 export const SUBAGENT_LIMITS = Object.freeze({ concurrent: 3, total: 8, taskChars: 12000,
   nameChars: 80, writePaths: 24, activity: 40, summaryChars: 6000, messages: 8, messageChars: 4000 });
+const DESIGN_ROLES = Object.freeze(['frontend', 'backend', 'modeling']);
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 export const SUBAGENT_TOOL_DEFINITIONS = [
   { name: 'spawn_agent', description: '启动一个独立子智能体并立即返回 ID；最多同时 3 个、每次主任务累计 8 个。适合可独立完成的明确任务。默认只读且不能运行命令。write_paths 可授予项目内相对路径或任务授权的项目外绝对路径，目录必须以 / 结尾；活跃子任务的写入范围不能重叠。目录范围仅限制文件工具，不是命令的系统沙箱；命令仍需遵守当前审批规则。子智能体不能再次委派。',
     parameters: schema({ name: { type: 'string', maxLength: 80 }, task: { type: 'string', maxLength: 12000 },
+      role: { type: 'string', enum: DESIGN_ROLES, description: '仅用于明确的前端设计、后端设计或三维、数据、系统等建模设计子任务；省略时使用普通子智能体模型。' },
       write_paths: { type: 'array', maxItems: 24, items: { type: 'string', description: '项目内相对路径或项目外完整绝对路径；目录必须以 / 结尾。不可包含 .. 或授予无关目录。' } } }, ['name', 'task']) },
   { name: 'wait_agents', description: '等待指定子智能体结束并返回摘要、错误和用量。省略 ids 时等待目前所有子智能体；不会创建额外模型请求。',
     parameters: schema({ ids: { type: 'array', maxItems: 8, items: { type: 'string' } } }) },
@@ -55,7 +57,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
   const records = new Map();
   let closed = false;
   const safe = (value, max = 6000) => String(redact(String(value ?? ''))).slice(0, max);
-  const snapshot = record => ({ id: record.id, name: record.name, task: record.task, writePaths: record.writePaths.map(path => safe(path, 500)),
+  const snapshot = record => ({ id: record.id, name: record.name, task: record.task, role: record.role, writePaths: record.writePaths.map(path => safe(path, 500)),
     status: record.status, startedAt: record.startedAt, endedAt: record.endedAt,
     elapsedMs: Math.max(0, Date.parse(record.endedAt || new Date().toISOString()) - Date.parse(record.startedAt)),
     summary: record.summary, error: record.error, activity: record.activity.map(item => structuredClone(item)),
@@ -120,18 +122,20 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
     }
   };
   const spawn = async args => {
-    argsObject(args, ['name', 'task', 'write_paths'], ['name', 'task']);
+    argsObject(args, ['name', 'task', 'role', 'write_paths'], ['name', 'task']);
     if (closed) throw new Error('主任务已经结束，不能启动子智能体。');
     parentSignal?.throwIfAborted();
     const name = textArg(args.name, SUBAGENT_LIMITS.nameChars, '子任务名称');
     const task = textArg(args.task, SUBAGENT_LIMITS.taskChars, '子任务内容');
+    if (args.role !== undefined && !DESIGN_ROLES.includes(args.role)) throw new Error('子任务角色无效。');
+    const role = args.role ?? 'subagent';
     if (args.write_paths !== undefined && (!Array.isArray(args.write_paths) || args.write_paths.length > SUBAGENT_LIMITS.writePaths)) throw new Error('写入范围最多 24 项。');
     const writePaths = [...new Set((args.write_paths || []).map(value => normalizeSubagentPath(value, { root })))];
     const scopes = writePaths.map(value => identity(root, value));
     if (records.size >= SUBAGENT_LIMITS.total) throw new Error('本次主任务最多创建 8 个子智能体。');
     if (pending().length >= SUBAGENT_LIMITS.concurrent) throw new Error('最多同时运行 3 个子智能体，请先等待现有任务。');
     if (scopes.some(scope => activeScopes().some(active => overlap(scope, active)))) throw new Error('写入范围与正在运行的子智能体重叠，请等待它完成或分配不同文件。');
-    const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), writePaths, scopes,
+    const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), role, writePaths, scopes,
       status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', activity: [],
       inputTokens: 0, outputTokens: 0, controller: new AbortController(), queue: [], delivered: false, promise: null,
       commandBuffers: {}, commandActivity: {} };
@@ -141,11 +145,11 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
       try {
         record.controller.signal.throwIfAborted();
         const childEmit = eventFor(record);
-        const workspace = await createWorkspace({ id: record.id, name: record.name, task: record.task, writePaths: [...writePaths], onEvent: childEmit });
+        const workspace = await createWorkspace({ id: record.id, name: record.name, task: record.task, role: record.role, writePaths: [...writePaths], onEvent: childEmit });
         record.controller.signal.throwIfAborted();
         if (!workspace || typeof workspace.execute !== 'function' || typeof workspace.root !== 'string') throw new Error('子任务工作区不可用。');
-        const allowed = new Set(['list_files', 'read_file', 'search_files', ...(writePaths.length ? ['write_file', 'replace_in_file', 'run_command'] : [])]);
-        await runChild({ id: record.id, name: record.name, task: record.task, writePaths: [...writePaths],
+        const allowed = new Set(['list_files', 'read_file', 'search_files', ...(DESIGN_ROLES.includes(role) ? ['view_image'] : []), ...(writePaths.length ? ['write_file', 'replace_in_file', 'run_command'] : [])]);
+        await runChild({ id: record.id, name: record.name, task: record.task, role: record.role, writePaths: [...writePaths],
           workspace: { root: workspace.root, execute: async (tool, parameters, options) => {
             record.controller.signal.throwIfAborted();
             if (!allowed.has(tool)) throw new Error('此工具不在子智能体授权范围内。');
@@ -172,7 +176,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
         publish(record);
       }
     })();
-    return { id: record.id, name: record.name, status: record.status, writePaths: writePaths.map(path => safe(path, 500)) };
+    return { id: record.id, name: record.name, role: record.role, status: record.status, writePaths: writePaths.map(path => safe(path, 500)) };
   };
   const wait = async args => {
     argsObject(args, ['ids']);

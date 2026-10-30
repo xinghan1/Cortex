@@ -7,6 +7,9 @@
     Object.freeze({ id: 'sidebar', name: '侧边问答', description: '在侧栏进行独立问答' }),
     Object.freeze({ id: 'pet', name: '宠物模型', description: '与大肥鱼聊天和生成动作台词' }),
     Object.freeze({ id: 'image', name: '图片模型', description: '为任务生成图片' }),
+    Object.freeze({ id: 'frontend', name: '前端设计', description: '执行委派的前端设计任务' }),
+    Object.freeze({ id: 'backend', name: '后端设计', description: '执行委派的后端设计任务' }),
+    Object.freeze({ id: 'modeling', name: '建模', description: '执行委派的建模任务' }),
   ]);
   const names = { openai: 'OpenAI', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi', glm: 'GLM', anthropic: 'Claude', relay: '中转站', ollama: 'Ollama' };
   const roleInfo = role => roles.find(item => item.id === role);
@@ -15,7 +18,7 @@
     if (!roleInfo(role)) throw new Error('未识别的模型分工。');
     return state?.roleModels?.[role] || { enabled: false, settings: {}, chatgpt: {} };
   }
-  const requiresTools = role => role == null || role === 'subagent';
+  const requiresTools = role => role == null || ['subagent', 'frontend', 'backend', 'modeling'].includes(role);
   const selectable = (role, model) => !!model && (role === 'image' ? /^gpt-image-/iu.test(model.id || '') : requiresTools(role)
     ? model.compatible !== false && model.supportsTools !== false
     : model.textCompatible !== false && (model.compatible !== false || model.textCompatible === true));
@@ -45,7 +48,7 @@
         const entry = scope(state, role.id), settings = entry.enabled ? entry.settings || {} : state.settings || {};
         const effective = entry.effective || settings;
         const legacy = role.id === 'approval' && !entry.enabled && state.approvalReviewer?.model;
-        const officialAgent = !entry.enabled && ['antigravity-agent', 'kimi-agent', 'glm-agent']
+        const officialAgent = !entry.enabled && ['antigravity-agent', 'kimi-agent', 'glm-agent', 'claude-agent', 'ark-account']
           .includes(state.settings?.authMode || state.settings?.providers?.[state.settings?.provider]?.authMode);
         const model = legacy || effective.model || effective.providers?.[effective.provider]?.model || '尚未配置';
         const row = node('section', 'role-model-row'), copy = node('div', 'role-model-copy');

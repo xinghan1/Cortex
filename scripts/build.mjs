@@ -11,7 +11,7 @@ await import('./prepare-accounts.mjs');
 await fs.access(path.join(root, 'src', 'vendor', 'siwc', 'index.js')).catch(() => { throw new Error('请先运行 npm run prepare:sdk 构建官方登录组件。'); });
 await fs.access(path.join(root, 'src', 'vendor', 'gemini-cli', 'provenance.json')).catch(() => { throw new Error('请先运行 npm run prepare:gemini 准备官方 Gemini CLI。'); });
 await fs.access(path.join(root, 'src', 'vendor', 'zcode-agent', 'provenance.json')).catch(() => { throw new Error('请先运行 npm run prepare:zcode 准备 ZCode 账号代理。'); });
-const destination = path.join(root, 'dist', `Synora-code-${pkg.version}-win32-x64`);
+const destination = path.join(root, 'dist', `Cortex-${pkg.version}-win32-x64`);
 // Refuse to overwrite a running or older portable directory and its local user data.
 try { await fs.access(destination); throw new Error(`${destination} 已存在，请将旧版本移走后再构建。`); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -31,7 +31,7 @@ for (const relative of runtime) {
   copied.push(relative);
 }
 await fs.writeFile(path.join(resources, 'package.json'), JSON.stringify({ name: pkg.name, productName: pkg.productName, version: pkg.version, type: 'module', main: 'src/main.cjs' }, null, 2));
-await fs.rename(path.join(destination, 'electron.exe'), path.join(destination, 'Synora code.exe'));
+await fs.rename(path.join(destination, 'electron.exe'), path.join(destination, 'Cortex.exe'));
 await fs.copyFile(path.join(root, 'README.md'), path.join(destination, '使用说明.md'));
 await fs.copyFile(path.join(root, 'THIRD_PARTY_NOTICES.md'), path.join(destination, 'THIRD_PARTY_NOTICES.md'));
 const developerDir = path.join(destination, '开发者插件');

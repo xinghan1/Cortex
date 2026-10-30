@@ -27,19 +27,19 @@ module.exports = async function smokeUpdater({ win, output, dataDir, configureUp
     const location = String(url);
     assert.equal(options.credentials, 'omit'); assert.equal(options.redirect, 'manual');
     requests.push(location);
-    if (location === 'https://api.github.com/repos/xinghan1/Synora-code/releases/latest') {
+    if (location === 'https://api.github.com/repos/xinghan1/Cortex/releases/latest') {
       if (control.failCheck) throw new Error('Isolated offline fixture');
       if (control.holdCheck) await new Promise((resolve, reject) => {
         releaseCheck = resolve;
         options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
       });
-      const name = `Synora-code-Setup-${control.version}-x64.exe`;
+      const name = `Cortex-Setup-${control.version}-x64.exe`;
       return new Response(JSON.stringify({ tag_name: 'v' + control.version, draft: false, prerelease: false,
         assets: [{ name, state: 'uploaded', size: bytes.length, digest: 'sha256:' + digest,
-          browser_download_url: `https://github.com/xinghan1/Synora-code/releases/download/v${control.version}/${name}` }] }),
+          browser_download_url: `https://github.com/xinghan1/Cortex/releases/download/v${control.version}/${name}` }] }),
       { headers: { 'content-type': 'application/json' } });
     }
-    assert.equal(location, `https://github.com/xinghan1/Synora-code/releases/download/v${nextVersion}/Synora-code-Setup-${nextVersion}-x64.exe`);
+    assert.equal(location, `https://github.com/xinghan1/Cortex/releases/download/v${nextVersion}/Cortex-Setup-${nextVersion}-x64.exe`);
     const payload = Buffer.from(bytes);
     if (control.corruptDownload) payload[payload.length - 1] ^= 1;
     return new Response(new ReadableStream({ start(controller) {

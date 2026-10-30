@@ -1,4 +1,4 @@
-# Synora code
+# Cortex
 
 **本项目 100% 由 Codex 编写。**
 
@@ -18,11 +18,11 @@
 
 关闭窗口后，软件会保留在右下角系统托盘，正在运行的模型任务继续执行；点击托盘图标恢复窗口，右键选择“退出应用”结束后台运行。
 
-从 [GitHub Releases](https://github.com/xinghan1/Synora-code/releases/latest) 下载 Windows x64 安装包，无需安装 Node.js。发布资源中的同名 `.exe.sha256` 文件用于核对安装包 SHA-256。账号、API Key 和会话保存在本机，不随源码或发布包分发。
+从 [GitHub Releases](https://github.com/xinghan1/Cortex/releases/latest) 下载 Windows x64 安装包，无需安装 Node.js。发布资源中的同名 `.exe.sha256` 文件用于核对安装包 SHA-256。账号、API Key 和会话保存在本机，不随源码或发布包分发。
 
 ## 模型连接
 
-在 **模型设置** 中选择服务商和连接方式。API Key 模式由 Synora 管理模型请求与工具；官方代理模式由对应官方程序完整执行主会话任务，Synora 显示过程并转交审批、提问及停止操作。
+在 **模型设置** 中选择服务商和连接方式。API Key 模式由 Cortex 管理模型请求与工具；官方代理模式由对应官方程序完整执行主会话任务，Cortex 显示过程并转交审批、提问及停止操作。
 
 | 服务商 | API Key | 账号登录 |
 | --- | --- | --- |
@@ -36,7 +36,7 @@
 
 账号连接流程：选择“账号登录”及对应地区 → 准备官方组件 → 在官方页面登录 → 刷新模型目录 → 选择模型并保存。Antigravity 与 Kimi 的原版组件从官方地址按需下载并校验；ZCode 组件随安装包提供，首次使用复制到本机运行目录。Claude SDK 与 Ark CLI 官方组件随包提供并校验完整性，安装组件本身不会登录账号。切换地区后需要连接对应地区账号，原先保存的 API Key、API 地址和 API 模型会保留。
 
-可用模型、会员 / Coding 套餐资格、额度及地区限制以官方账号实际返回为准，API Key 计费与订阅额度不能自动互换。控制台登录按钮只打开官方页面，不代表已向 Synora 授权。官方代理模式目前仅用于主会话；使用子智能体、AI 审批、Tab 补齐、侧栏问答或宠物模型时，需在 **设置 → 模型分工** 为对应功能单独配置可用连接。
+可用模型、会员 / Coding 套餐资格、额度及地区限制以官方账号实际返回为准，API Key 计费与订阅额度不能自动互换。控制台登录按钮只打开官方页面，不代表已向 Cortex 授权。官方代理模式目前仅用于主会话；使用子智能体、AI 审批、Tab 补齐、侧栏问答或宠物模型时，需在 **设置 → 模型分工** 为对应功能单独配置可用连接。
 
 推理滑条只显示官方组件为当前模型提供的档位，并保留官方名称、顺序与真实值；没有提供可选档位时显示“由官方代理管理”。切换模型会重新核对能力，恢复默认时交回官方设置，不通过提示词模拟推理强度。
 
@@ -59,8 +59,8 @@ Google 已于 [2026 年 6 月 18 日停止个人、AI Pro 和 Ultra 的旧 Gemin
 需要 **Windows x64、Node.js 22.12+ 和 npm**，在 PowerShell 执行：
 
 ```powershell
-git clone https://github.com/xinghan1/Synora-code.git
-cd Synora-code
+git clone https://github.com/xinghan1/Cortex.git
+cd Cortex
 $env:CI = '1'                  # 避免 Ark CLI 安装附带技能到其他软件
 npm.cmd ci
 npm.cmd run prepare:sdk

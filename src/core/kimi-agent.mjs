@@ -186,7 +186,7 @@ export class KimiAgent {
             if (client) { const closing = client.close(error); this.#closing.add(closing); closing.finally(() => this.#closing.delete(closing)).catch(() => {}); }
             if (this.#client === client) { this.#client = null; for (const session of this.#sessions.values()) session.live = false; this.#setError(error, 'connection'); }
           } });
-        const initialized = await client.request('initialize', { protocolVersion: 1, clientInfo: { name: 'Synora code', version: this.#version },
+        const initialized = await client.request('initialize', { protocolVersion: 1, clientInfo: { name: 'Cortex', version: this.#version },
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: true } } }, { signal: controller.signal, timeoutMs: this.#startTimeout });
         check(controller.signal); if (epoch !== this.#epoch || this.#closed) throw cancelled();
         if (initialized?.protocolVersion !== 1 || initialized.agentInfo?.name !== 'Kimi Code CLI' || initialized.agentInfo?.version !== runtime.version

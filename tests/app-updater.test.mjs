@@ -7,11 +7,11 @@ import { createRequire } from 'node:module';
 
 const { AppUpdater } = createRequire(import.meta.url)('../src/core/app-updater.cjs');
 const testRoot = path.resolve('tests', '.tmp');
-const api = 'https://api.github.com/repos/xinghan1/Synora-code/releases/latest';
-const web = 'https://github.com/xinghan1/Synora-code/releases/latest';
-const tagURL = 'https://github.com/xinghan1/Synora-code/releases/tag/';
+const api = 'https://api.github.com/repos/xinghan1/Cortex/releases/latest';
+const web = 'https://github.com/xinghan1/Cortex/releases/latest';
+const tagURL = 'https://github.com/xinghan1/Cortex/releases/tag/';
 const nextVersion = '0.18.4', name = `Synora-code-Setup-${nextVersion}-x64.exe`;
-const url = `https://github.com/xinghan1/Synora-code/releases/download/v${nextVersion}/${name}`;
+const url = `https://github.com/xinghan1/Cortex/releases/download/v${nextVersion}/${name}`;
 const bytes = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(8190, 65)]);
 const hash = data => createHash('sha256').update(data).digest('hex');
 const release = () => ({ tag_name: `v${nextVersion}`, draft: false, prerelease: false, assets: [
@@ -51,6 +51,7 @@ function fallbackClient(f, override = () => null) {
     if (custom) return custom;
     if (address === api) return new Response(null, { status: 403, headers: { 'x-ratelimit-remaining': '0' } });
     if (address === web) return new Response(null, { status: 302, headers: { location: `${tagURL}v${nextVersion}` } });
+    if (address === `${url.replace('Synora-code-Setup-', 'Cortex-Setup-')}.sha256`) return new Response(null, { status: 404 });
     if (address === `${url}.sha256`) return new Response(`${hash(bytes)}  ${name}\n`);
     if (address === url) return options.method === 'HEAD' ? new Response(null, { headers: { 'content-length': String(bytes.length) } }) : binary();
     assert.fail('Unexpected fallback request: ' + address);
@@ -155,7 +156,7 @@ test('draft, prerelease, malformed versions and version-mismatched installers ar
 
 test('asset locations must exactly match the fixed repository, release tag and expected filename', async t => {
   const { updater, client } = await fixture(t);
-  for (const address of [url.replace('xinghan1', 'untrusted'), url.replace('Synora-code/releases', 'another/releases'),
+  for (const address of [url.replace('xinghan1', 'untrusted'), url.replace('Cortex/releases', 'another/releases'),
     url.replace('v0.18.4', 'v0.18.5'), url.replace('https:', 'http:'), `${url}?download=1`,
     'https://github.com.evil.invalid/xinghan1/Synora-code/file.exe', 'file:///C:/installer.exe']) {
     client.metadata = release(); client.metadata.assets[0].browser_download_url = address;
@@ -368,6 +369,7 @@ test('real API limits use the official stable tag, matching checksum and HEAD si
     assert.equal((await f.updater.check()).status, 'available');
     assert.deepEqual(requests, [
       { address: api, method: 'GET' }, { address: web, method: 'GET' },
+      { address: `${url.replace('Synora-code-Setup-', 'Cortex-Setup-')}.sha256`, method: 'GET' },
       { address: `${url}.sha256`, method: 'GET' }, { address: url, method: 'HEAD' },
     ]);
     assert.equal(JSON.stringify(f.updater.snapshot()).includes('github'), false);
@@ -416,12 +418,12 @@ test('fallback checksum files and HEAD sizes are mandatory, bounded and tied to 
   for (const response of [() => new Response(null, { status: 404 }), () => new Response(`${hash(bytes)}  another.exe\n`),
     () => new Response('not a checksum'), () => new Response('a'.repeat(8193))]) {
     const f = await fixture(t), requests = fallbackClient(f, address => address === `${url}.sha256` ? response() : null);
-    await assert.rejects(f.updater.check()); assert.equal(requests.length, 3);
+    await assert.rejects(f.updater.check()); assert.equal(requests.length, 4);
   }
   for (const length of [null, '0', '63', '-1', '1.5', String(512 * 1024 * 1024 + 1), '9007199254740993', '8192, 8192']) {
     const f = await fixture(t), requests = fallbackClient(f, (address, options) => address === url && options.method === 'HEAD'
       ? new Response(null, { headers: length === null ? {} : { 'content-length': length } }) : null);
-    await assert.rejects(f.updater.check(), /大小/u); assert.equal(requests.length, 4);
+    await assert.rejects(f.updater.check(), /大小/u); assert.equal(requests.length, 5);
     await assert.rejects(f.updater.download(), /先检查/u);
   }
 });
@@ -437,13 +439,13 @@ test('fallback preserves GET versus HEAD across approved CDN hops and never foll
   });
   await f.updater.check(); await f.updater.download(); await f.updater.verifiedInstaller();
   assert.deepEqual(requests.map(item => [item.address, item.method]), [
-    [api, 'GET'], [web, 'GET'], [`${url}.sha256`, 'GET'], [checksumCDN, 'GET'], [url, 'HEAD'], [installerCDN, 'HEAD'], [url, 'GET'], [installerCDN, 'GET'],
+    [api, 'GET'], [web, 'GET'], [`${url.replace('Synora-code-Setup-', 'Cortex-Setup-')}.sha256`, 'GET'], [`${url}.sha256`, 'GET'], [checksumCDN, 'GET'], [url, 'HEAD'], [installerCDN, 'HEAD'], [url, 'GET'], [installerCDN, 'GET'],
   ]);
   for (const location of ['https://evil.invalid/installer.exe', 'http://objects.githubusercontent.com/github-production-release-asset/123/file',
     'https://objects.githubusercontent.com/unexpected/file']) {
     const rejected = await fixture(t), calls = fallbackClient(rejected, (address, options) => address === url && options.method === 'HEAD'
       ? new Response(null, { status: 302, headers: { location } }) : null);
-    await assert.rejects(rejected.updater.check(), /非官方/u); assert.equal(calls.length, 4);
+    await assert.rejects(rejected.updater.check(), /非官方/u); assert.equal(calls.length, 5);
   }
 });
 
@@ -454,10 +456,10 @@ test('successful checks cache for sixty seconds and API limits use web checks un
     if (address !== api) return null;
     apiCalls++; return apiCalls === 1 ? new Response(null, { status: 429, headers: { 'retry-after': '120' } }) : json(release());
   });
-  await f.updater.check(); assert.equal(requests.length, 4);
-  await f.updater.check(); assert.equal(requests.length, 4);
-  now += 61000; await f.updater.check(); assert.equal(apiCalls, 1); assert.equal(requests.length, 7);
-  now += 61000; await f.updater.check(); assert.equal(apiCalls, 2); assert.equal(requests.length, 8);
+  await f.updater.check(); assert.equal(requests.length, 5);
+  await f.updater.check(); assert.equal(requests.length, 5);
+  now += 61000; await f.updater.check(); assert.equal(apiCalls, 1); assert.equal(requests.length, 9);
+  now += 61000; await f.updater.check(); assert.equal(apiCalls, 2); assert.equal(requests.length, 10);
   const current = await fixture(t, { now: () => now, checkCacheMs: undefined }); current.client.metadata = { ...release(), tag_name: '0.18.3' };
   await current.updater.check(); await current.updater.check(); assert.equal(current.calls.length, 1);
   now += 60001; await current.updater.check(); assert.equal(current.calls.length, 2);
@@ -482,7 +484,7 @@ test('failed web fallback is briefly cooled down without losing an earlier usabl
   await assert.rejects(f.updater.check(), /暂时不可用/u);
   await assert.rejects(f.updater.check(), /暂时不可用/u); assert.equal(requests.length, 2);
   assert.equal(f.updater.snapshot().version, nextVersion);
-  now += 60001; failWeb = false; await f.updater.check(); assert.equal(requests.length, 5);
+  now += 60001; failWeb = false; await f.updater.check(); assert.equal(requests.length, 6);
   await f.updater.download(); await f.updater.verifiedInstaller();
 });
 
@@ -495,4 +497,21 @@ test('normal network failures retry immediately and fallback cancellation cannot
   const first = stalled.updater.check(); assert.equal(first, stalled.updater.check());
   await assert.rejects(first, { code: 'UPDATE_TIMEOUT' }); assert.equal(cancelled, true);
   assert.equal(requests.some(item => item.method === 'HEAD'), false);
+});
+
+
+test('Cortex installers are supported by metadata and rate-limited web fallback', async t => {
+  const cortexName = name.replace('Synora-code-Setup-', 'Cortex-Setup-');
+  const cortexURL = url.replace(name, cortexName);
+  const f = await fixture(t);
+  f.client.metadata = { ...release(), assets: [{ ...release().assets[0], name: cortexName, browser_download_url: cortexURL }] };
+  f.client.fetch = async address => address === api ? json(f.client.metadata) : address === cortexURL ? binary() : assert.fail(address);
+  assert.equal((await f.updater.check()).status, 'available');
+  assert.equal(f.updater.snapshot().totalBytes, bytes.length);
+  const fallback = await fixture(t);
+  fallbackClient(fallback, (address, options) => address === `${cortexURL}.sha256`
+    ? new Response(`${hash(bytes)}  ${cortexName}\n`)
+    : address === cortexURL ? (options.method === 'HEAD' ? new Response(null, { headers: { 'content-length': String(bytes.length) } }) : binary()) : null);
+  assert.equal((await fallback.updater.check()).status, 'available');
+  assert.equal(fallback.updater.snapshot().totalBytes, bytes.length);
 });

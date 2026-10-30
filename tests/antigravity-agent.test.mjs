@@ -244,7 +244,7 @@ test('initialization uses original ACP identity and a dedicated GEMINI_HOME with
   const child = f.fake.children[0]; assert.deepEqual(child.args, []); assert.equal(child.options.shell, false); assert.equal(child.options.windowsHide, true);
   assert.equal(child.options.env.GEMINI_HOME, path.join(f.dir, 'antigravity-agent', 'home'));
   for (const name of ['GEMINI_CLI_SURFACE', 'GOOGLE_APPLICATION_CREDENTIALS', 'GEMINI_API_KEY', 'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE']) assert.equal(child.options.env[name], undefined);
-  const init = f.fake.calls[0].rpc; assert.equal(init.params.clientInfo.name, 'Synora code'); assert.equal(init.params.clientCapabilities.terminal, false);
+  const init = f.fake.calls[0].rpc; assert.equal(init.params.clientInfo.name, 'Cortex'); assert.equal(init.params.clientCapabilities.terminal, false);
   assert.equal(f.fake.calls.some(call => call.rpc.method === 'authenticate'), false);
 });
 test('official authenticate ACK connects without creating sessions or inference; disconnect never logs out a shared keyring', async t => {

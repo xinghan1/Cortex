@@ -13,11 +13,11 @@ module.exports = async function smokeUpdateTransport({ output, dataDir, net, ele
   const root = await fs.mkdtemp(path.join(dataDir, 'update-transport-'));
   const body = Buffer.alloc(256 * 1024, 65); body.write('MZ_SYNORA_TRANSPORT_FIXTURE_NOT_EXECUTABLE');
   const sha256 = createHash('sha256').update(body).digest('hex');
-  const api = 'https://api.github.com/repos/xinghan1/Synora-code/releases/latest';
-  const name = 'Synora-code-Setup-1.0.1-x64.exe';
-  const asset = `https://github.com/xinghan1/Synora-code/releases/download/v1.0.1/${name}`;
-  const webLatest = 'https://github.com/xinghan1/Synora-code/releases/latest';
-  const stableTag = 'https://github.com/xinghan1/Synora-code/releases/tag/v1.0.1';
+  const api = 'https://api.github.com/repos/xinghan1/Cortex/releases/latest';
+  const name = 'Cortex-Setup-1.0.1-x64.exe';
+  const asset = `https://github.com/xinghan1/Cortex/releases/download/v1.0.1/${name}`;
+  const webLatest = 'https://github.com/xinghan1/Cortex/releases/latest';
+  const stableTag = 'https://github.com/xinghan1/Cortex/releases/tag/v1.0.1';
   const checksumAsset = asset + '.sha256';
   const cdn = 'https://release-assets.githubusercontent.com/github-production-release-asset/123/fixture?sig=not-a-credential';
   const checksumCdn = 'https://release-assets.githubusercontent.com/github-production-release-asset/123/checksum?sig=fixture';

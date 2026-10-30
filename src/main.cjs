@@ -27,7 +27,7 @@ const { approvalDecision, validateMode } = require('./core/approval-policy.cjs')
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
 const { createRemoteOperationIndicator } = require('./core/remote-operation-indicator.cjs');
 const { isXmlURL } = require('./core/xml-reader.cjs');
-const { resolveDataDirectory } = require('./core/data-path.cjs');
+const { resolveDataDirectory, migrateInstalledProfile } = require('./core/data-path.cjs');
 const { SessionRestore } = require('./core/session-restore.cjs');
 const { PluginManager } = require('./core/plugin-manager.cjs');
 const { createPluginExample } = require('./core/plugin-template.cjs');
@@ -48,17 +48,25 @@ const dataDir = resolveDataDirectory({
   projectDir,
   smoke,
 });
-app.setName('Synora code');
+let legacyMigrationSource = null, legacyMigrationError = null;
+if (app.isPackaged && isInstalledBuild && !smoke && !process.env.FORGEDESK_DATA_DIR) {
+  try { migrateInstalledProfile(app.getPath('appData')); } catch (error) {
+    dialog.showErrorBox('Cortex 数据迁移失败', `无法迁移旧版数据，原目录已保留。请关闭旧版后重试。\n${error.message}`);
+    app.exit(1);
+    throw error;
+  }
+}
+app.setName('Cortex');
 app.setPath('userData', dataDir);
 app.setPath('sessionData', path.join(dataDir, 'chromium'));
 const imageAssetStore = createImageAssetStore({ dataDir, nativeImage, clipboard, shell });
 if (smoke) app.disableHardwareAcceleration();
 
-let legacyMigrationSource = null, legacyMigrationError = null;
 function preparePortableMigration() {
-  if (!app.isPackaged || isInstalledBuild || smoke || process.env.FORGEDESK_DATA_DIR) return;
+  if (!app.isPackaged || smoke || process.env.FORGEDESK_DATA_DIR) return;
+  if (isInstalledBuild) return;
   const previousVersions = ['Synora-code-0.16.7-win32-x64', 'Synora-code-0.16.6-win32-x64', 'Synora-code-0.16.5-win32-x64', 'Synora-code-0.16.4-win32-x64', 'Synora-code-0.16.3-win32-x64', 'Synora-code-0.16.2-win32-x64', 'Synora-code-0.16.1-win32-x64', 'Synora-code-0.16.0-win32-x64', 'Synora-code-0.15.0-win32-x64', 'Synora-code-0.14.2-win32-x64', 'Synora-code-0.14.1-win32-x64', 'Synora-code-0.14.0-win32-x64', 'Synora-code-0.13.0-win32-x64', 'Synora-code-0.12.0-win32-x64', 'AI-code-0.11.0-win32-x64', 'AI-code-0.10.0-win32-x64', 'AI-code-0.9.0-win32-x64', 'AI-code-0.8.0-win32-x64', 'AI-code-0.7.0-win32-x64', 'AI-code-0.6.0-win32-x64', 'AI-code-0.5.0-win32-x64', 'ForgeDesk-0.4.0-win32-x64', 'ForgeDesk-0.3.0-win32-x64', 'ForgeDesk-0.2.0-win32-x64', 'ForgeDesk-win32-x64'];
-  previousVersions.unshift('Synora-code-0.24.0-win32-x64', 'Synora-code-0.23.5-win32-x64', 'Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
+  previousVersions.unshift('Synora-code-0.24.7-win32-x64', 'Synora-code-0.24.6-win32-x64', 'Synora-code-0.24.0-win32-x64', 'Synora-code-0.23.5-win32-x64', 'Synora-code-0.19.2-win32-x64', 'Synora-code-0.19.1-win32-x64', 'Synora-code-0.18.5-win32-x64', 'Synora-code-0.16.8-win32-x64');
   legacyMigrationSource = findLegacyData(dataDir, previousVersions.map(previous =>
     path.join(path.dirname(path.dirname(process.execPath)), previous, 'data')));
   if (legacyMigrationSource) prepareLegacyEncryptionState(dataDir, legacyMigrationSource);
@@ -1641,7 +1649,7 @@ async function startTask(input) {
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
           });
-        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL, { name: 'get_generated_image', description: '取得当前会话中此前生成图片的本机文件路径，供继续编辑、制作文档或设计文件使用。recent_index 为从最新开始的序号。', parameters: { type: 'object', properties: { recent_index: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } }, { name: 'generate_image', description: '当用户要求生成图片或任务需要图像素材时，使用配置的图片模型生成图片；成功结果中的 path 是可用于后续任务的本机原图路径。仅在任务确实需要生图时调用。', parameters: { type: 'object', properties: { prompt: { type: 'string', description: '图片内容和风格的具体描述' } }, required: ['prompt'], additionalProperties: false } }], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal }) => roleRequestConfig('subagent', { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
+        } }, toolDefinitions: [...TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS, PET_QUESTION_TOOL, { name: 'get_generated_image', description: '取得当前会话中此前生成图片的本机文件路径，供继续编辑、制作文档或设计文件使用。recent_index 为从最新开始的序号。', parameters: { type: 'object', properties: { recent_index: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } }, { name: 'generate_image', description: '当用户要求生成图片或任务需要图像素材时，使用配置的图片模型生成图片；成功结果中的 path 是可用于后续任务的本机原图路径。仅在任务确实需要生图时调用。', parameters: { type: 'object', properties: { prompt: { type: 'string', description: '图片内容和风格的具体描述' } }, required: ['prompt'], additionalProperties: false } }], requestModel: async options => { await run.checkpoints.flush(); return dispatchModelRequest(options); }, getRequestConfig: () => currentRequestConfig(run), getSubagentRequestConfig: ({ signal, role }) => roleRequestConfig(role, { ...run, controller: { signal } }), signal: run.controller.signal, emit, redact, runId: run.id, sessionId: currentSession.id, messageStartIndex: run.messageStartIndex,
           subagentFactory: meta => createSubagentWorkspace({ root: tools.root, ...meta, approve, history: tools.history,
             onCommitted: change => {
               recordRunFileChange(run, change);
@@ -2430,7 +2438,7 @@ function menuHandlers() {
         const guide = app.isPackaged ? path.join(path.dirname(process.execPath), '使用说明.md') : path.join(projectDir, 'README.md');
         if (await shell.openPath(guide)) throw new Error('无法打开使用说明，请在应用目录查看说明文件。');
       } else if (arg?.topic === 'about') {
-        await dialog.showMessageBox(win, { type: 'info', title: '关于 Synora code', message: 'Synora code', detail: `版本 ${app.getVersion()}\n本地项目 AI 编程助手`, buttons: ['确定'] });
+        await dialog.showMessageBox(win, { type: 'info', title: '关于 Cortex', message: 'Cortex', detail: `版本 ${app.getVersion()}\n本地项目 AI 编程助手`, buttons: ['确定'] });
       } else throw new Error('帮助主题无效。');
       return null;
     },
@@ -2563,7 +2571,7 @@ const context = {
     initialized = true;
     if (host.win) { win = host.win; initializeBrowser(); return context; }
     const palette = nativeAppearance(appearance.snapshot());
-    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Synora code', backgroundColor: palette.background, autoHideMenuBar: true,
+    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Cortex', backgroundColor: palette.background, autoHideMenuBar: true,
       ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: palette.caption, symbolColor: palette.symbol, height: 44 } } : {}),
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false, backgroundThrottling: false, offscreen: smoke } });
     host.win = win; initializeBrowser();
@@ -2760,7 +2768,7 @@ async function boot() {
   win = primaryContext.win;
   ({ setWorkspace, createSession, broadcastState } = primaryContext);
   if (!smoke || process.env.FORGEDESK_SMOKE_ONLY === 'background-tray') {
-    const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'synora-logo.png')).resize({ width: 20, height: 20 });
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'cortex-logo.png')).resize({ width: 20, height: 20 });
     backgroundTray = createBackgroundTray({ Tray, Menu, icon,
       getWindows: () => [activeWindowHost?.win, ...[...windows.values()].map(host => host.win)],
       createWindow: createAppWindow,
@@ -3218,9 +3226,9 @@ else {
     if (target) { if (target.isMinimized()) target.restore(); target.show(); target.focus(); }
   });
   app.whenReady().then(boot).catch(error => {
-    console.error('Synora code startup failed:', error.message);
+    console.error('Cortex startup failed:', error.message);
     if (smoke && rendererErrors.length) console.error('SMOKE_RENDERER_ERRORS', rendererErrors.join(' | '));
-    if (!smoke) dialog.showErrorBox('Synora code 无法启动', error.message);
+    if (!smoke) dialog.showErrorBox('Cortex 无法启动', error.message);
     app.exit(1);
   });
 }

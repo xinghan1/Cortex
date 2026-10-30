@@ -4,7 +4,7 @@
     GEMINI_STORAGE_UNREADABLE: '无法读取本机保存的 Google 连接信息，原信息已保留，请重试读取。',
     GEMINI_CLI_UNAVAILABLE: 'Gemini 登录组件暂不可用，请重新检测或更新软件。',
     GEMINI_CLI_INCOMPATIBLE: 'Gemini 登录组件版本不匹配，请更新软件。',
-    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务。请使用官方 Antigravity，或在 Synora 中改用 Gemini API Key。',
+    GEMINI_CLIENT_UNSUPPORTED: 'Google 已停止个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务。请使用官方 Antigravity，或在 Cortex 中改用 Gemini API Key。',
     GEMINI_REGION_UNAVAILABLE: 'Google 服务明确提示当前地区不可用，请按 Google 官方要求使用可用服务。',
     GEMINI_ACCESS_DENIED: '当前 Google 账号被拒绝访问 Gemini 服务，请检查账号权限。',
     GEMINI_CLI_REQUEST_FAILED: 'Gemini 账号服务请求失败，请检查当前账号额度或网络后重试。',
@@ -66,7 +66,7 @@
     mode.value = 'apiKey'; modeField.append(el('span', '', '', '连接方式'), mode); $('openai-auth-mode-field').after(modeField);
     const panel = el('section', 'gemini-login-panel', 'gemini-login-panel'); panel.hidden = true; panel.setAttribute('aria-label', 'Google 账号连接');
     const status = el('strong', 'gemini-login-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-    const help = el('p', 'gemini-login-help', 'gemini-login-help', '个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务已停用，请使用官方 Antigravity。Synora 可通过 Gemini API Key 连接。');
+    const help = el('p', 'gemini-login-help', 'gemini-login-help', '个人及 Google AI Pro/Ultra 账号的旧 Gemini CLI 服务已停用，请使用官方 Antigravity。Cortex 可通过 Gemini API Key 连接。');
     const actions = el('div', '', 'gemini-login-actions'), buttons = {};
     const addButton = (name, label, callback, className = 'button') => {
       const button = el('button', 'gemini-login-' + name, className, label); button.type = 'button'; button.addEventListener('click', callback); actions.append(button); buttons[name] = button;
