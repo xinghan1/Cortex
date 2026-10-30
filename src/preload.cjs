@@ -8,6 +8,9 @@ const dispatchEvent = (_event, value) => {
 };
 contextBridge.exposeInMainWorld('forge', Object.freeze({
   getState: () => call('getState'),
+  mobileRemoteStatus: () => call('mobileRemoteStatus'),
+  mobileRemoteStart: () => call('mobileRemoteStart'),
+  mobileRemoteStop: () => call('mobileRemoteStop'),
   getUsageAnalytics: () => call('getUsageAnalytics'),
   getAppearance: () => call('getAppearance'),
   importBackground: () => call('importBackground'),

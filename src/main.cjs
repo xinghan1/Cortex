@@ -371,7 +371,7 @@ function createWindowHost({ restoreTarget = null } = {}) {
   let switching = Promise.resolve();
   let publishTimer = null, lastPublished = 0;
   const host = {
-    win: null, active: null, nativePet: null, contexts: new Set(),
+    win: null, active: null, nativePet: null, mobileRemote: null, contexts: new Set(),
     get handlers() { return host.active.handlers; },
     get tools() { return host.active.tools; },
     get currentSession() { return host.active.currentSession; },
@@ -1960,6 +1960,9 @@ function buildHandlers() {
     },
     browserLayout: arg => browser.setLayout(arg),
     petNativeUpdate: arg => host.nativePet?.update(arg),
+    mobileRemoteStatus: () => host.mobileRemote.status(),
+    mobileRemoteStart: () => host.mobileRemote.start(),
+    mobileRemoteStop: () => host.mobileRemote.stop(),
     browserCommand: async arg => {
       if (!['back', 'forward', 'reload', 'stop', 'close'].includes(arg?.action)) throw new Error('浏览器操作无效。');
       await browser[arg.action](); return browser.state();
@@ -2559,7 +2562,7 @@ const context = {
   get hasPendingPrompts() { return pendingPrompts.length > 0; },
   get editorDirty() { return editorDirty; },
   get hasFileOperation() { return !!fileOperationDone; },
-  emit, approve, state, broadcastState, setWorkspace, createSession, shutdown, requestEditorClose, scheduleNextPrompt,
+  emit, approve, state, broadcastState, setWorkspace, createSession, shutdown, requestEditorClose, scheduleNextPrompt, submitPrompt,
   handlers: buildHandlers(),
   async initialize({ restoreTarget = null } = {}) {
     if (!activeWindowHost) activeWindowHost = host;
@@ -2580,7 +2583,27 @@ const context = {
     win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Cortex', backgroundColor: palette.background, autoHideMenuBar: true,
       ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: palette.caption, symbolColor: palette.symbol, height: 44 } } : {}),
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false, backgroundThrottling: false, offscreen: smoke && process.env.FORGEDESK_SMOKE_VISIBLE !== '1' } });
-    host.win = win; host.nativePet = createNativePetWindow({ owner: win, screen, BrowserWindow, ipcMain }); initializeBrowser();
+    host.win = win; host.nativePet = createNativePetWindow({ owner: win, screen, BrowserWindow, ipcMain });
+    host.mobileRemote = require('./core/mobile-remote.cjs').createMobileRemote({
+      snapshot: async () => {
+        const context = host.active, session = context.currentSession;
+        return { workspace: context.tools?.root || null, sessionId: session?.id || null,
+          title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun),
+          pendingApprovals: (await context.state()).pendingApprovals,
+          streamText: redact(String(context.activeRun?.streamText || '')).slice(-12000),
+          operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
+            .slice(-20).map(event => ({ type: event.type, name: redact(String(event.name || '')).slice(0, 200) })),
+          messages: (session?.messages || []).filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string' && m.content)
+            .map(m => ({ role: m.role, content: redact(m.content) })) };
+      },
+      stopTask: () => host.active.handlers.stopTask(),
+      approve: arg => host.active.handlers.respondApproval(arg),
+      submit: async text => {
+        const context = host.active;
+        return context.submitPrompt({ text }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });
+      },
+    });
+    initializeBrowser();
     const contentsId = win.webContents.id;
     windows.set(contentsId, host);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -2610,7 +2633,7 @@ const context = {
       }).catch(error => { closing = false; emit({ type: 'storage-error', error: error.message || '关闭窗口失败，请先保存文件。' }); });
     });
     win.on('resize', () => { for (const value of host.contexts) value.refreshBrowserVisibility(); });
-    win.on('closed', () => { host.abortAll(); for (const value of host.contexts) { value.cancelEditorClose(); value.dispose(); } windows.delete(contentsId); });
+    win.on('closed', () => { host.mobileRemote?.stop().catch(() => {}); host.abortAll(); for (const value of host.contexts) { value.cancelEditorClose(); value.dispose(); } windows.delete(contentsId); });
     win.webContents.on('render-process-gone', () => { host.abortAll(); });
     const refresh = setInterval(() => { if (!win.isDestroyed()) host.broadcastState().catch(() => {}); }, 60000);
     refresh.unref();
@@ -2905,7 +2928,7 @@ async function smokeTest() {
     console.log('SYNORA_DEEPSEEK_LOGIN_SMOKE_OK ' + JSON.stringify(result));
     app.quit(); return;
   }
-  if (['pet-browser', 'scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'pet-dialog', 'pet-task', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'deepseek-easter-egg', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
+  if (['mobile-remote', 'pet-browser', 'scroll', 'permissions', 'window-chrome', 'compaction', 'operation-progress', 'prompt-completion', 'pet-dialog', 'pet-task', 'markdown', 'command-result', 'conversation-colors', 'background-presets', 'editor-highlight', 'editor-completion', 'disclosure-motion', 'disclosure-visibility', 'image-viewed', 'explorer', 'explorer-drag', 'explorer-selection', 'usage-analytics', 'sessions', 'history-delete', 'round-usage', 'chat-selection', 'color-style', 'external-files', 'subagents', 'live-controls', 'context-settings', 'ollama', 'editor-context-menu', 'startup-restore', 'deepseek-account', 'deepseek-easter-egg', 'task-change-summary', 'persistent-undo', 'dropdown-motion', 'queue', 'pending-compact', 'tool-operation-groups', 'xml-reading', 'browser', 'ui-styles', 'accent-palette', 'round-navigator', 'reconnect'].includes(process.env.FORGEDESK_SMOKE_ONLY)) {
     const name = process.env.FORGEDESK_SMOKE_ONLY;
     const result = { version: app.getVersion(), [name]: await require(`./core/smoke-${name}.cjs`)({ win, output, dataDir, store }) };
     if (rendererErrors.length) throw new Error('Renderer errors: ' + rendererErrors.join(' | '));

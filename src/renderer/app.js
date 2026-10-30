@@ -4820,6 +4820,7 @@ window.aiCodeCommands = Object.freeze({
       case 'settings': return openSettings();
       case 'extensions': return window.synoraExtensions?.open();
       case 'pet-settings': return window.synoraPetSettings?.open();
+      case 'mobile-remote': return window.CortexMobileRemote?.open();
       case 'role-settings': return window.synoraRoleModels?.openList();
       case 'role-subagent-settings': return window.synoraRoleModels?.open('subagent');
       case 'role-approval-settings': return window.synoraRoleModels?.open('approval');

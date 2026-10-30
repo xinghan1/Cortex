@@ -32,7 +32,7 @@
       ['import-background', '导入背景图…'], ['appearance-settings', '外观与背景…']
     ],
     settings: [
-      ['extensions', '插件管理…'], ['pet-settings', '宠物设置…'], null,
+      ['extensions', '插件管理…'], ['pet-settings', '宠物设置…'], ['mobile-remote', '手机远程连接…'], null,
       ['settings', '主模型设置…', 'Ctrl+,', locked], ['role-settings', '模型分工…', '', locked], null,
       ['role-subagent-settings', '子智能体模型…', '', locked], ['role-approval-settings', '帮我批准模型…', '', locked],
       ['role-completion-settings', 'TAB 提示词补齐模型…', '', locked], ['role-sidebar-settings', '侧边问答模型…', '', locked],

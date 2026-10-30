@@ -16,6 +16,10 @@ node_modules/
 /.npm-cache/
 /.electron-cache/
 /tests/.tmp/
+/android-app/.gradle/
+/android-app/build/
+/android-app/app/build/
+/android-app/local.properties
 *.log
 *.tmp
 
