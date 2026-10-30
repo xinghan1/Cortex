@@ -45,7 +45,7 @@ module.exports = async function smokeCommandResult({ win, output }) {
     return {open:card?.open,status:result?.querySelector('.command-result-status')?.textContent||'',
       cardState:card?.dataset.status,running:card?.classList.contains('running'),title:card?.querySelector('.tool-title')?.textContent||'',badge:card?.querySelector('.tool-badge')?.textContent||'',
       state:result?.dataset.status||'',command:extract('.command-result-command'),stdout:extract('.command-result-stdout'),stderr:extract('.command-result-stderr'),
-      rawOpen:raw?.open,rawSummary:raw?.querySelector(':scope > summary')?.textContent||'',rawVisible:(${visible})(pre),raw:pre?.textContent||'',
+      rawOpen:!!raw?.open,rawSummary:raw?.querySelector(':scope > summary')?.textContent||'',rawVisible:(${visible})(pre),raw:pre?.textContent||'',
       resultVisible:(${visible})(result),unsafe:card?.querySelectorAll('img[src="x"],script,svg[onload]').length||0};
   })()`);
   const capture = async name => {
@@ -76,6 +76,7 @@ module.exports = async function smokeCommandResult({ win, output }) {
       await emit({ type: 'tool-start', name: 'run_command', toolCallId: fixture.id, args });
       await emit({ type: 'tool-result', name: 'run_command', toolCallId: fixture.id, result: fixture.result });
       await js(`document.querySelector('.tool-card:last-of-type').dataset.commandSmokeId=${JSON.stringify(fixture.id)}`);
+      await js(`(()=>{const group=document.querySelector(${JSON.stringify(cardSelector(fixture.id))}).closest('.tool-operation-group');if(group)group.open=true;})()`);
       const initial = await inspect(fixture.id);
       assert.equal(initial.open, false, 'A completed command must stay collapsed until requested');
       await js(`document.querySelector(${JSON.stringify(cardSelector(fixture.id) + ' > summary')}).click()`);
@@ -84,20 +85,17 @@ module.exports = async function smokeCommandResult({ win, output }) {
       assert.match(current.status, fixture.status, fixture.id + ': accurate human-readable status');
       if (fixture.success) assert.equal(current.state, 'success', 'An exit-zero command must be presented as successful');
       else assert.notEqual(current.state, 'success', 'Unknown/interrupted/error output must never be green success');
-      assert.equal(current.rawOpen, false, 'Raw JSON must remain separately collapsed');
-      assert.equal(current.rawVisible, false);
-      assert.match(current.rawSummary, /原始数据/u);
+      assert.equal(current.rawOpen, false, 'Raw JSON has no separate disclosure');
+      assert.equal(current.rawVisible, true);
+      assert.equal(current.rawSummary, '');
       assert.equal(current.command, command, 'Multiline commands must not be shown as JSON escapes');
       assert.equal(current.unsafe, 0, 'Command/result text must never be interpreted as HTML');
       if (fixture.id === 'success') {
         assert.equal(current.stdout, stdout, 'Readable stdout must preserve all original characters');
         assert.equal(current.stderr, stderr, 'stderr must remain readable without declaring exit zero a failure');
         await capture('human-readable-command.png');
-        await js(`document.querySelector(${JSON.stringify(cardSelector(fixture.id) + ' .tool-technical-details > summary')}).click()`);
-        await until('raw JSON explicitly expanded', async () => (await inspect(fixture.id)).rawVisible);
         const raw = (await inspect(fixture.id)).raw;
         assert.deepEqual(JSON.parse(raw), success, 'Full original result must remain available for troubleshooting');
-        await js(`document.querySelector(${JSON.stringify(cardSelector(fixture.id) + ' .tool-technical-details > summary')}).click()`);
       } else if (fixture.id === 'failed') {
         assert.equal(current.stderr, fixture.result.stderr);
         await capture('human-readable-command-failed.png');
@@ -130,7 +128,7 @@ module.exports = async function smokeCommandResult({ win, output }) {
     await until('history readable result painted', async () => (await inspect('history')).resultVisible);
     const historical = await inspect('history');
     assert.match(historical.status, fixtures[0].status);assert.equal(historical.stdout, stdout);assert.equal(historical.stderr, stderr);assert.equal(historical.command, command);
-    assert.equal(historical.rawOpen, false);assert.equal(historical.rawVisible, false);assert.equal(historical.unsafe, 0);
+    assert.equal(historical.rawOpen, false);assert.equal(historical.rawVisible, true);assert.equal(historical.unsafe, 0);
     await capture('human-readable-command-history.png');
     stage = 'historical command missing its result';
     const missingRecord = { ...record, status: 'stopped', messageIndex: 2 };

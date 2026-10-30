@@ -401,8 +401,7 @@ module.exports = async function smokeUiStyles({ win, output, dataDir }) {
         await js(`$(${JSON.stringify(id)}).querySelector(':scope > summary').addEventListener('click',event=>window.__photoOperationTrusted=event.isTrusted,{once:true});true`);
         await click('#'+id+' > summary'); await until('photo operation opens',()=>js(`$(${JSON.stringify(id)}).open&&!fileDisclosureReveal`)); await settle();
         const opened = await inspectOperation(id); assert.equal(rgb(opened.outer).a,0); assert.equal(rgb(opened.summary).a,0); assert.equal(await js('window.__photoOperationTrusted'),true);
-        const detailSelector = '#'+id+(kind==='agent'?' .subagent-raw > summary':' .tool-technical-details > summary');
-        await click(detailSelector); await settle();
+        if (kind === 'agent') { await click('#'+id+' .subagent-activity-item > summary'); await settle(); }
         const literal = await js(`(() => {const n=$(${JSON.stringify(id)}),p=[...n.querySelectorAll('pre')].find(p=>p.textContent.includes(${JSON.stringify(kind==='agent'?'PHOTO_OPERATION_OUTPUT_agent':'PHOTO_OPERATION_LITERAL_'+kind)}));
           return {text:p?.textContent,visible:p?.checkVisibility({visibilityProperty:true,opacityProperty:true}),background:p&&getComputedStyle(p).backgroundColor};})()`);
         assert.equal(literal.visible,true,'Original tool/subagent output must remain accessible'); assert.ok(literal.text); assert.equal(rgb(literal.background).a,1,'Expanded literal output must retain its opaque material');

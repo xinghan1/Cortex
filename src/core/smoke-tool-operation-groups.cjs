@@ -82,7 +82,7 @@ module.exports = async function smokeToolOperationGroups({ win, output }) {
     assert.equal(groups[0].label, '读取了文件和文件列表'); assert.equal(groups[0].countLabel, '5 次');
     await js(`document.querySelector('.tool-operation-group').id='first-read-group';true`);
     await click('#first-read-group > summary'); await until('native read group opens', () => js('$("first-read-group").open'));
-    await click('#' + readIds[0] + ' > summary'); await click('#' + readIds[0] + ' .tool-technical-details > summary');
+    await click('#' + readIds[0] + ' > summary');
     assert.equal(await js(`$(${JSON.stringify(readIds[0])}).open`), true);
     assert.match(await js(`$(${JSON.stringify(readIds[0])}).textContent`), /Display fixture result/u);
     await click('#first-read-group > summary'); await until('native read group closes', () => js('!$("first-read-group").open'));

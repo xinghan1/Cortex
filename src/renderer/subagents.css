@@ -69,9 +69,9 @@
 .subagent-section-text, .subagent-activity-text { white-space: pre-wrap; line-height: 1.65; }
 .subagent-activity-text { margin: 6px 0; }
 .subagent-activity-item, .subagent-raw { margin: 6px 0; min-width: 0; }
-.subagent-activity-item > summary, .subagent-raw > summary { cursor: pointer; padding: 3px 0; overflow-wrap: anywhere; }
+.subagent-activity-item > summary { cursor: pointer; padding: 3px 0; overflow-wrap: anywhere; }
 .subagent-operation-body { padding-left: 13px; border-left: 1px solid rgb(170 199 240 / 16%); }
-.subagent-raw > summary { font-size: .85em; color: #95abc8; }
+.subagent-raw-label { padding: 3px 0; font-size: .85em; color: #95abc8; }
 .subagent-raw > pre {
   max-height: 260px;
   margin: 5px 0;
@@ -107,6 +107,6 @@
 }
 @media (forced-colors: active) {
   .subagent-card[open], .subagent-stop, .subagent-raw > pre { border-color: CanvasText; }
-  .subagent-card, .subagent-name, .subagent-status, .subagent-usage, .subagent-section-title, .subagent-raw > summary, .subagent-raw > pre { color: CanvasText !important; }
+  .subagent-card, .subagent-name, .subagent-status, .subagent-usage, .subagent-section-title, .subagent-raw-label, .subagent-raw > pre { color: CanvasText !important; }
   .subagent-badge { color: LinkText; }
 }

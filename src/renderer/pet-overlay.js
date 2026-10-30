@@ -258,6 +258,47 @@
     const visibility = () => playback();
     const motionChanged = () => playback();
     const cursorMoved = event => { if (event.pointerType !== 'touch') gaze?.point({ x: event.clientX, y: event.clientY }); };
+    // A native browser view sits above this document. Mirror the pet in a
+    // transparent native child window only while it overlaps that view.
+    let nativeRevision = 0, nativeSignature = '', nativeBusy = false;
+    const syncNativePet = () => {
+      if (disposed || nativeBusy || typeof bridge.petNativeUpdate !== 'function') return;
+      const viewport = document.getElementById('browser-viewport');
+      const browser = document.getElementById('browser-preview'), panel = document.getElementById('preview-panel');
+      const empty = document.getElementById('browser-empty');
+      const a = overlay.getBoundingClientRect(), b = viewport?.getBoundingClientRect();
+      const overlapsBrowser = node => {
+        if (!node || node.hidden || !b) return false;
+        const r = node.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.right > b.left && r.left < b.right && r.bottom > b.top && r.top < b.bottom;
+      };
+      const visible = !overlay.hidden && !browser?.hidden && !panel?.hidden && empty?.hidden === true && b
+        && a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom
+        && menu.hidden && !document.querySelector('dialog[open]')
+        && !overlapsBrowser(document.getElementById('pet-dialog'))
+        && !overlapsBrowser(document.getElementById('pet-dialog-input-bubble'));
+      const target = fallback.hidden ? hit : fallback, h = target.getBoundingClientRect();
+      let gazeData = null;
+      if (visible && overlay.classList.contains('gaze-active')) {
+        try { gazeData = gazeCanvas.toDataURL('image/png'); } catch { /* Canvas may be unavailable. */ }
+      }
+      const value = visible ? { visible: true,
+        bounds: { x: Math.round(a.x), y: Math.round(a.y), width: Math.round(a.width), height: Math.round(a.height) },
+        hit: { x: Math.round(h.x - a.x), y: Math.round(h.y - a.y), width: Math.round(h.width), height: Math.round(h.height) },
+        src: video.src || '', loop: video.loop, paused: video.paused && !gazeData,
+        time: Number.isFinite(video.currentTime) ? video.currentTime : 0, gazeData, fallback: !fallback.hidden,
+      } : { visible: false };
+      const signature = JSON.stringify({ ...value, time: undefined });
+      if (signature === nativeSignature) return;
+      nativeSignature = signature; nativeBusy = true; const token = ++nativeRevision;
+      Promise.resolve(bridge.petNativeUpdate(value)).then(result => {
+        if (!disposed && token === nativeRevision) {
+          overlay.style.opacity = result?.visible ? '0' : '';
+          if (visible && !result?.visible) nativeSignature = '';
+        }
+      }).catch(() => { nativeSignature = ''; if (!disposed) overlay.style.opacity = ''; }).finally(() => { nativeBusy = false; });
+    };
+    const nativeTimer = typeof bridge.petNativeUpdate === 'function' ? view.setInterval(syncNativePet, 250) : null;
     hit.addEventListener('pointerdown', pointerDown); hit.addEventListener('pointermove', pointerMove);
     hit.addEventListener('pointerup', pointerEnd); hit.addEventListener('pointercancel', pointerEnd);
     hit.addEventListener('contextmenu', contextMenu); hit.addEventListener('keydown', keyDown);
@@ -283,6 +324,8 @@
       subscribe(listener) { listeners.add(listener); listener(state); return () => listeners.delete(listener); },
       destroy() {
         if (disposed) return; disposed = true; drag = null; listeners.clear(); unsubscribe?.();
+        if (nativeTimer !== null) view.clearInterval(nativeTimer);
+        if (typeof bridge.petNativeUpdate === 'function') void bridge.petNativeUpdate({ visible: false }).catch(() => {});
         document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape);
         document.removeEventListener('visibilitychange', visibility); view.removeEventListener?.('resize', resized);
         document.removeEventListener('pointermove', cursorMoved); gaze?.destroy();

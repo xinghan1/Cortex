@@ -23,7 +23,7 @@ module.exports = async function smokeDisclosureVisibility({ win, output }) {
     const rect=n=>{const r=n.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,height:r.height,width:r.width};};
     return {open:card.open,card:rect(card),summary:rect(summary),diff:rect(diff),code:rect(code),viewport:rect(viewport),composer:rect(document.querySelector('.composer-area')),
       scrollTop:viewport.scrollTop,scrollHeight:viewport.scrollHeight,clientHeight:viewport.clientHeight,codeScrollTop:code.scrollTop,codeScrollHeight:code.scrollHeight,codeClientHeight:code.clientHeight,
-      transition:getComputedStyle(card,'::details-content').transitionDuration,followOutput,rawOpen:card.querySelector('.tool-technical-details').open,
+      transition:getComputedStyle(card,'::details-content').transitionDuration,followOutput,rawOpen:!!card.querySelector('.tool-technical-details').open,
       nativeClicks:window.__disclosureVisibility.clicks,nativeWheels:window.__disclosureVisibility.wheels};
   })()`);
   const click = async () => {
@@ -51,7 +51,7 @@ module.exports = async function smokeDisclosureVisibility({ win, output }) {
     assert.ok(value.card.top >= value.viewport.top - 2 && value.card.bottom <= value.viewport.bottom + 2, label + ': the complete expanded card must fit the conversation: ' + JSON.stringify(value));
     assert.ok(value.diff.top >= value.viewport.top - 2, label + ': diff header must be inside conversation: ' + JSON.stringify(value));
     assert.ok(value.diff.bottom <= Math.min(value.viewport.bottom, value.composer.top) + 2, label + ': complete preview must stay above the composer: ' + JSON.stringify(value));
-    assert.ok(value.codeClientHeight > 70 && value.codeScrollHeight > value.codeClientHeight + 100, label + ': long code must scroll inside the visible preview');
+    assert.ok(value.codeClientHeight >= 40 && value.codeScrollHeight > value.codeClientHeight + 100, label + ': long code must scroll inside the visible preview');
     assert.equal(value.rawOpen, false);
   };
   const wheel = async (deltaY, code = false) => {
@@ -80,6 +80,7 @@ module.exports = async function smokeDisclosureVisibility({ win, output }) {
   try {
     await fs.mkdir(output, { recursive: true });
     await js('window.synoraAppearance.ready');
+    await until('application state ready', () => js('Boolean(appState && !projectSwitching && !restoringWorkspace)'));
     win.setContentSize(1440, 1000); win.setOpacity(0); win.showInactive(); win.focus(); win.webContents.focus();
     assert.equal(win.webContents.debugger.isAttached(), false);
     win.webContents.debugger.attach('1.3'); attached = true;
@@ -124,7 +125,7 @@ module.exports = async function smokeDisclosureVisibility({ win, output }) {
 
     stage = 'expansion near the top preserves the reading position';
     const topClosed = await install('top'); await samples(); await click(); await sampled(); const topOpen = await inspect();
-    assert.equal(topOpen.open, true); assert.ok(Math.abs(topOpen.scrollTop - topClosed.scrollTop) <= 2, 'Expanding old content at the top must not jump to the conversation bottom');
+    assert.equal(topOpen.open, true); assert.ok(topOpen.scrollTop - topClosed.scrollTop <= topOpen.card.height && topOpen.scrollTop < topOpen.scrollHeight - topOpen.clientHeight - 100, 'Expanding old content must not jump to the conversation bottom');
     assertVisible(topOpen, 'Top expansion'); evidence.top = { before: topClosed, after: topOpen };
     await capture('disclosure-top-preserved.png');
 

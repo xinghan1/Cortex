@@ -50,11 +50,11 @@ function fixture() {
   vm.runInContext('let pendingTools = tools; let commandOutput = null;', context);
   vm.runInContext(groupSource, context);
   context.window.ForgeToolOperationGroups = context.ForgeToolOperationGroups;
-  for (const name of ['createCommandOutput', 'commandOutputForEvent', 'refreshGroupedToolCard', 'completeTool'])
+  for (const name of ['toolPayload', 'createCommandOutput', 'commandOutputForEvent', 'refreshGroupedToolCard', 'completeTool'])
     vm.runInContext(appFunction(name), context);
   const makeTool = (name, toolCallId, runId = 'round-one') => {
     const card = new Element('details', 'tool-card running'), details = new Element('div', 'tool-details');
-    const technical = new Element('details', 'tool-technical-details'), title = new Element('span', 'tool-title', name), badge = new Element('span', 'tool-badge');
+    const technical = new Element('div', 'tool-technical-details'), title = new Element('span', 'tool-title', name), badge = new Element('span', 'tool-badge');
     details.append(technical); card.append(title, badge, details);
     return { name, toolCallId, runId, args: { command: `Write-Output '${toolCallId}'` }, card, details, technical, title, badge };
   };

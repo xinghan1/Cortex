@@ -241,12 +241,11 @@ module.exports = async function smokeTaskHistory({ win, output }) {
     await js(`(() => { const card=document.querySelector(${JSON.stringify(select(runId) + ' .tool-card')}); if(!card)throw new Error('Tool operation missing'); card.querySelector('summary').click(); })()`);
     assert.equal(await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card')}).open`), true);
     await until('expanded native operation details painted', () => js(`(${visibleSource})(document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-details')}))`), 1000);
-    assert.equal((await inspect(runId)).rawToolPayloadVisible, false, 'Opening an operation should still keep technical payloads collapsed');
-    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details > summary')}).click()`);
-    await until('explicitly expanded full tool payload painted', () => js(`(${visibleSource})(document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details > pre')}))`), 1000);
+    await until('operation payload painted', () => js(`(${visibleSource})(document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details > pre')}))`), 1000);
+    assert.equal((await inspect(runId)).rawToolPayloadVisible, true);
     const expandedReadResult = await js(`document.querySelector(${JSON.stringify(select(runId) + ' .tool-card .tool-technical-details')}).querySelector('pre:last-of-type')?.textContent`);
     assert.deepEqual(JSON.parse(expandedReadResult), readResult, 'Expanded details must retain the complete read result');
-    await js(`document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure > summary')}).click()`);
+    await js(`(()=>{const output=document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure')}); for(let p=output.parentElement;p&&p!==document;p=p.parentElement) if(p.tagName==='DETAILS')p.open=true; output.querySelector(':scope > summary').click();})()`);
     await until('explicitly expanded command logs painted', async () => (await inspect(runId)).commandOutputVisible, 1000);
     assert.equal((await inspect(runId)).commandText, commandLog + commandStderr, 'Expanding logs must expose their complete original text');
     await js(`document.querySelector(${JSON.stringify(select(runId) + ' .command-output-disclosure > summary')}).click()`);

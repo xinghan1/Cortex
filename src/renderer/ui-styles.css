@@ -354,7 +354,7 @@ html:is([data-ui-style='black'], [data-ui-style='white'], [data-ui-style='indust
   .approval-actions > span, .approval-resolved, .change-status,
   .pending-heading, .pending-prompt-mark, .pending-prompt-mode, .pending-more,
   .completion-detail, .completion-help, .subagent-status, .subagent-usage,
-  .subagent-chevron, .subagent-section-title, .subagent-raw > summary,
+  .subagent-chevron, .subagent-section-title, .subagent-raw-label,
   .task-change-warning, .task-change-status, .terminal-heading, .terminal-command,
   .terminal-form label, .terminal-run-result, :where(#terminal-status), .editor-status,
   .browser-address, .browser-status, .usage-dashboard-intro, .usage-dashboard-eyebrow,

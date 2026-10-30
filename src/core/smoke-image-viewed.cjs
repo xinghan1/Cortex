@@ -264,6 +264,7 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
     assert.equal(localSecond.toolImageCount, 1); assert.equal(await cards(), 0); assert.equal((await views('local')).length, 0);
     const loadedEvents = (await events()).filter(event => event.type === 'tool-result' && event.name === 'view_image');
     assert.equal(loadedEvents.length, 1); assert.equal(JSON.stringify(loadedEvents).includes(localImage.dataUrl), false);
+    assert.equal(await js(`Array.from(document.querySelectorAll('.tool-card .tool-title')).some(node => node.textContent.includes('已读取图片'))`), false);
     finish(localSecond, [{ type: 'function_call', call_id: 'local-view-again', name: 'view_image', arguments: JSON.stringify({ path: localImage.name }) }]);
     const localThird = await until('repeated local screenshot reaches next tool continuation', () => requests.find(record => record.scene === 'local' && record.turn === 3));
     assert.equal(localThird.toolImageCount, 2);
@@ -293,6 +294,7 @@ module.exports = async function smokeImageViewed({ win, output, dataDir, store }
     await js(`loadSession(${JSON.stringify(localSession.id)})`);
     const localReload = new Promise(resolve => child.webContents.once('did-finish-load', resolve)); child.webContents.reload(); await localReload;
     await until('generated screenshot card restores from archived tool messages', () => js(`Boolean(appState&&!projectSwitching&&sessionId===${JSON.stringify(localSession.id)}&&document.querySelectorAll('.image-view-card').length===1&&document.querySelector('.image-view-thumbnail')?.naturalWidth===${localImage.width})`));
+    assert.equal(await js(`Array.from(document.querySelectorAll('.tool-card .tool-title')).some(node => node.textContent.includes('已读取图片'))`), false);
     assert.equal(sha(await js('document.querySelector(".image-view-thumbnail").src')), sha(localImage.dataUrl));
     if (await js(`!document.querySelector(${JSON.stringify(cardSelector('local'))}).closest('.task-activity').open`))
       await click(`.task-activity[data-run-id="${runIds.get('local')}"] > summary`);

@@ -87,14 +87,20 @@
     if (!state || state.historical || state.agent?.status !== 'running') return;
     updateElapsed(state, liveElapsed(state));
   }
-  function raw(parent, label, value, key) {
+  function raw(parent, label, value, key, pathHint) {
     if (value === undefined || value === null || value === '') return;
-    const details = node('details', 'subagent-raw'); details.dataset.stateKey = key;
-    details.append(node('summary', '', label));
+    const details = node('div', 'subagent-raw');
+    details.append(node('div', 'subagent-raw-label', label));
     let content;
     try { content = typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
     catch { content = '无法显示此项数据。'; }
-    details.append(node('pre', '', content)); parent.append(details);
+    const pre = node('pre');
+    let json = typeof value !== 'string';
+    if (!json) try { JSON.parse(content); json = true; } catch {}
+    const language = json ? 'json' : typeof pathHint === 'string' ? window.ForgeSyntax?.languageForPath(pathHint) : '';
+    if (language && window.ForgeSyntax) window.ForgeSyntax.append(document, pre, content, language);
+    else pre.textContent = content;
+    details.append(pre); parent.append(details);
   }
   function section(parent, label, content, className = '') {
     if (!content) return;
@@ -127,7 +133,7 @@
         const body = node('div', 'subagent-operation-body');
         if (item.text) body.append(node('div', 'subagent-activity-text', item.text));
         raw(body, '输入参数', item.args, key + '-args');
-        raw(body, '执行结果', item.result, key + '-result');
+        raw(body, '执行结果', item.result, key + '-result', item.args?.path);
         operation.append(body); log.append(operation);
       });
       fragment.append(log);

@@ -45,6 +45,10 @@
       const y = keyboard ? anchor.bottom : event.clientY;
       positioning?.style.setProperty('left', `${Math.max(8, Math.min(x, innerWidth - bounds.width - 8))}px`);
       positioning?.style.setProperty('top', `${Math.max(8, Math.min(y, innerHeight - bounds.height - 8))}px`);
+      // The animation starts at the actual invocation point, even when the
+      // menu is shifted inside the viewport near an edge.
+      menu.dataset.dropdownAnchorX = String(x);
+      menu.dataset.dropdownAnchorY = String(y);
       buttons.find(button => !button.disabled)?.focus({ preventScroll: true });
     }
 

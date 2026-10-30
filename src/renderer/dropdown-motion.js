@@ -34,12 +34,18 @@
     return rect.top + rect.height / 2 > innerHeight / 2 ? 'up' : 'down';
   }
   function reveal(element, direction, opening, fromClip, fromOpacity = 1) {
-    const height = element.getBoundingClientRect().height;
+    const rect = element.getBoundingClientRect(), height = rect.height;
     const radius = getComputedStyle(element).borderRadius || '0px';
     const full = `inset(0px 0px 0px 0px round ${radius})`;
     const cut = Math.max(0, height - 1);
-    const collapsed = direction === 'up' ? `inset(${cut}px 0px 0px 0px round ${radius})`
-      : `inset(0px 0px ${cut}px 0px round ${radius})`;
+    const anchorX = Number(element.dataset.dropdownAnchorX), anchorY = Number(element.dataset.dropdownAnchorY);
+    const anchored = element.dataset.dropdownAnchorX !== undefined && element.dataset.dropdownAnchorY !== undefined
+      && Number.isFinite(anchorX) && Number.isFinite(anchorY);
+    const x = Math.max(0, Math.min(rect.width - 1, anchorX - rect.left));
+    const y = Math.max(0, Math.min(height - 1, anchorY - rect.top));
+    const collapsed = anchored ? `inset(${y}px ${Math.max(0, rect.width - x - 1)}px ${Math.max(0, height - y - 1)}px ${x}px round ${radius})`
+      : direction === 'up' ? `inset(${cut}px 0px 0px 0px round ${radius})`
+        : `inset(0px 0px ${cut}px 0px round ${radius})`;
     element.dataset.dropdownDirection = direction;
     element.dataset.dropdownRevealHeight = String(height);
     // Insets change the actual revealed height from one pixel to the complete
@@ -86,6 +92,10 @@
           || attribute.name.startsWith('aria-') || attribute.name.startsWith('data-') || attribute.name.startsWith('on')) part.removeAttribute(attribute.name);
     }
     clone.hidden = false; clone.inert = true; clone.dataset.dropdownGhost = 'true'; clone.setAttribute('aria-hidden', 'true');
+    if (element.dataset.dropdownAnchorX !== undefined && element.dataset.dropdownAnchorY !== undefined) {
+      clone.dataset.dropdownAnchorX = element.dataset.dropdownAnchorX;
+      clone.dataset.dropdownAnchorY = element.dataset.dropdownAnchorY;
+    }
     const style = clone.style;
     style.position = 'fixed'; style.inset = 'auto'; style.left = rect.left + 'px'; style.top = rect.top + 'px';
     style.width = rect.width + 'px'; style.height = rect.height + 'px'; style.margin = '0'; style.boxSizing = 'border-box';

@@ -303,6 +303,16 @@ function safeString(value) {
   try { return JSON.stringify(value, null, 2) ?? ''; } catch { return String(value); }
 }
 
+function toolPayload(value, pathHint) {
+  const content = safeString(value), pre = element('pre');
+  let json = typeof value !== 'string' && value !== undefined;
+  if (!json) try { JSON.parse(content); json = true; } catch {}
+  const language = json ? 'json' : typeof pathHint === 'string' ? window.ForgeSyntax?.languageForPath(pathHint) : '';
+  if (language && window.ForgeSyntax) window.ForgeSyntax.append(document, pre, content, language);
+  else pre.textContent = content;
+  return pre;
+}
+
 function baseName(path) {
   return String(path || '').split(/[\\/]/).filter(Boolean).pop() || path || '';
 }
@@ -3788,10 +3798,9 @@ function createToolCard(event) {
   svg.append(path); mark.append(svg);
   summary.append(mark, title, badge);
   const details = element('div', 'tool-details');
-  const technical = element('details', 'tool-technical-details');
+  const technical = element('div', 'tool-technical-details');
   const commandView = id === 'run_command' && window.ForgeCommandResult ? window.ForgeCommandResult.create(event.args) : null;
-  technical.append(element('summary', 'technical-details-summary', commandView ? '原始数据' : '查看详情'));
-  technical.append(element('div', 'tool-label', '输入参数'), element('pre', '', safeString(event.args)));
+  technical.append(element('div', 'tool-label', '输入参数'), toolPayload(event.args));
   if (commandView) details.append(commandView);
   details.append(technical);
   card.append(summary, details);
@@ -3806,6 +3815,14 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
   let result = event.result;
   if (typeof result === 'string') { try { result = JSON.parse(result); } catch { /* Human-readable failures stay in the original tool detail. */ } }
   const denied = result?.denied === true || result?.canceled === true || (typeof result === 'string' && /^操作已停止，未执行/.test(result));
+  // Loading pixels is not a view receipt. Hide only the successful local read
+  // row; an images-viewed card is emitted separately after the model receives
+  // the image, while failed/denied reads remain visible for diagnosis.
+  if (String(event.name || '').replace(/（模拟）/g, '') === 'view_image' && result?.status === 'loaded' && !denied) {
+    tool.card.remove();
+    if (updateActivity) setTaskActivityPhase('waiting', '等待模型');
+    return;
+  }
   const command = String(event.name || '').replace(/（模拟）/g, '') === 'run_command';
   if (command && result?.outputTruncated === true && typeof result.output === 'string' && tool.commandOutput) {
     tool.commandOutput.textContent = result.output;
@@ -3861,10 +3878,10 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
     tool.title.after(brief);
     const raw = tool.technical;
     raw.classList.add('code-diff-raw');
-    raw.append(element('div', 'tool-label', '执行结果'), element('pre', '', safeString(event.result)));
+    raw.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));
     tool.details.replaceChildren(diff, raw);
     tool.card.open = false;
-  } else tool.technical.append(element('div', 'tool-label', '执行结果'), element('pre', '', safeString(event.result)));
+  } else tool.technical.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));
   const status = commandResult ? commandResult.label : denied ? command ? '命令未执行' : '操作未执行'
     : failed ? '工具未完成，继续处理'
     : command && result?.terminated ? '命令已停止'

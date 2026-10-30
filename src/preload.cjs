@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   setApprovalReviewer: arg => call('setApprovalReviewer', arg),
   browserOpen: arg => call('browserOpen', arg),
   browserLayout: arg => call('browserLayout', arg),
+  petNativeUpdate: arg => call('petNativeUpdate', arg),
   browserCommand: arg => call('browserCommand', arg),
   fileSave: arg => call('fileSave', arg),
   setEditorDirty: arg => call('setEditorDirty', arg),

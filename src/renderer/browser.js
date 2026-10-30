@@ -10,7 +10,12 @@
           layoutFrame = 0;
           const rect = $('browser-viewport').getBoundingClientRect();
           const visible = !$('preview-panel').hidden && !$('browser-preview').hidden && rect.width > 0 && rect.height > 0;
-          const overlayHidden = !!document.querySelector('dialog[open]') || ['app-menu-popup', 'app-menu-submenu', 'file-context-menu', 'chat-selection-menu', 'project-dropdown', 'reasoning-popup', 'permission-popup', 'session-dropdown'].some(id => { const node = $(id); return node && !node.hidden; });
+          const petOverlay = ['pet-overlay-menu', 'pet-dialog', 'pet-dialog-input-bubble'].some(id => {
+            const node = $(id); if (!node || node.hidden) return false;
+            const box = node.getBoundingClientRect();
+            return box.width > 0 && box.height > 0 && box.right > rect.left && box.left < rect.right && box.bottom > rect.top && box.top < rect.bottom;
+          });
+          const overlayHidden = petOverlay || !!document.querySelector('dialog[open]') || ['app-menu-popup', 'app-menu-submenu', 'file-context-menu', 'chat-selection-menu', 'project-dropdown', 'reasoning-popup', 'permission-popup', 'session-dropdown'].some(id => { const node = $(id); return node && !node.hidden; });
           const layout = { visible, overlayHidden, bounds: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.max(0, Math.round(rect.width)), height: Math.max(0, Math.round(rect.height)) } };
           const encoded = JSON.stringify(layout);
           if (lastLayout === encoded) return;

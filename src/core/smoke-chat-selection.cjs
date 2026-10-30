@@ -58,8 +58,8 @@ module.exports = async function smokeChatSelection({ win, output, dataDir }) {
     await pointer(point, 'right');
     await until('native chat menu opens', () => js(`!$('chat-selection-menu').hidden&&$('chat-selection-menu').getBoundingClientRect().height>90`));
     await wait(320);
-    const value = await inspect(); assert.deepEqual(value.items.map(item => item.action), ['copy', 'select-all', 'search']);
-    assert.deepEqual(value.items.map(item => item.text), ['复制', '选择全部', '搜索浏览器']);
+    const value = await inspect(); assert.deepEqual(value.items.map(item => item.action), ['copy', 'select-all', 'search', 'ask']);
+    assert.deepEqual(value.items.map(item => item.text), ['复制', '选择全部', '搜索浏览器', '在侧边栏中提问']);
     assert.ok(value.bounds.left >= 0 && value.bounds.top >= 0 && value.bounds.right <= value.viewport.width && value.bounds.bottom <= value.viewport.height, 'The complete menu stays inside the viewport');
     return value;
   };
@@ -101,7 +101,17 @@ module.exports = async function smokeChatSelection({ win, output, dataDir }) {
     child.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: Math.round(drag.x2), y: Math.round(drag.y) });
     await until('exact selected text from native drag', () => js(`window.getSelection().toString()===${JSON.stringify(query)}`));
     const selectedPoint = { x: Math.round(drag.x1 + 8), y: Math.round(drag.y) };
-    let value = await right(selectedPoint); assert.ok(value.items.every(item => !item.disabled));
+    await pointer(selectedPoint, 'right');
+    await until('point-anchored menu animation', () => js(`!$('chat-selection-menu').hidden && $('chat-selection-menu').getAnimations().some(a=>a.effect?.getKeyframes().length)`));
+    const motion = await js(`(()=>{const n=$('chat-selection-menu'),r=n.getBoundingClientRect(),a=n.getAnimations().find(a=>a.effect?.getKeyframes().length);a.pause();a.currentTime=0;return {rect:{left:r.left,top:r.top,width:r.width,height:r.height},frame:a.effect.getKeyframes()[0].clipPath};})()`);
+    const inset = motion.frame.match(/^inset\(([\d.]+)px ([\d.]+)px ([\d.]+)px ([\d.]+)px/u);
+    assert.ok(inset, 'Context menu reveals from a point');
+    const [, top, rightInset, bottom, left] = inset.map(Number);
+    assert.ok(Math.abs(motion.rect.left + left - Math.max(motion.rect.left, Math.min(selectedPoint.x, motion.rect.left + motion.rect.width - 1))) <= 1);
+    assert.ok(Math.abs(motion.rect.top + top - Math.max(motion.rect.top, Math.min(selectedPoint.y, motion.rect.top + motion.rect.height - 1))) <= 1);
+    assert.ok(motion.rect.width - left - rightInset <= 1.1 && motion.rect.height - top - bottom <= 1.1);
+    await js(`$('chat-selection-menu').getAnimations().forEach(a=>a.finish());true`);
+    let value = await inspect(); assert.ok(value.items.every(item => !item.disabled));
     await capture('chat-selection-native-menu.png');
 
     stage = 'copy uses captured selected text even after focus or range changes';
@@ -129,10 +139,10 @@ module.exports = async function smokeChatSelection({ win, output, dataDir }) {
     stage = 'empty and foreign selections disable copy/search without reading other UI text';
     await js('window.getSelection().removeAllRanges();true');
     value = await right(await at('#chat-selection-first', true));
-    assert.deepEqual(value.items.map(item => item.disabled), [true, false, true]); await key('Escape'); await menuClosed();
+    assert.deepEqual(value.items.map(item => item.disabled), [true, false, true, true]); await key('Escape'); await menuClosed();
     await js(`(()=>{const r=document.createRange();r.selectNodeContents($('project-switcher'));const s=window.getSelection();s.removeAllRanges();s.addRange(r);})()`);
     value = await right(await at('#chat-selection-first', true));
-    assert.deepEqual(value.items.map(item => item.disabled), [true, false, true]); await key('Escape');
+    assert.deepEqual(value.items.map(item => item.disabled), [true, false, true, true]); await key('Escape');
     if (clipboardReadbackAvailable) assert.equal(await clipboard.readText(), query);
     assert.equal(clipboardWrites.at(-1).text, query);
 
@@ -142,7 +152,7 @@ module.exports = async function smokeChatSelection({ win, output, dataDir }) {
     await selectedRight(); await click('#task-input'); await menuClosed();
     await selectedRight(); await js(`$('message-scroll').dispatchEvent(new Event('scroll'));true`); await menuClosed();
 
-    stage = 'all four appearance styles preserve exactly three fully visible actions';
+    stage = 'all four appearance styles preserve exactly four fully visible actions';
     for (const style of ['glass', 'black', 'white', 'industrial']) {
       await call('setAppearance', { uiStyle: style }); await js('window.synoraAppearance.settled()'); await selectedRight();
       await capture('chat-selection-' + style + '.png'); await key('Escape');
@@ -164,7 +174,7 @@ module.exports = async function smokeChatSelection({ win, output, dataDir }) {
     assert.ok(input.filter(event => event.type === 'contextmenu' && event.inside).length >= 10);
     assert.ok(input.every(event => event.trusted), 'Menu opening and text drag use native input events');
     const result = { status: 'completed', version: require('../../package.json').version, realExternalApi: false, realNetwork: false, realCommands: false,
-      nativeLeftDragSelectsExactText: true, nativeRightClickThreeActions: true, capturedTextDispatchedThroughRealClipboardAPI: true,
+      nativeLeftDragSelectsExactText: true, nativeRightClickFourActions: true, capturedTextDispatchedThroughRealClipboardAPI: true,
       systemClipboardReadbackUnavailable: !clipboardReadbackAvailable, systemClipboardReadbackVerified: clipboardReadbackAvailable, clipboardWrites,
       selectAllOnlyConversation: true, internalBrowserPanelShown: true, selectedKeywordsURLEncoded: true, browserOpenInterceptedBeforeNetwork: true,
       emptyAndForeignSelectionDisabled: true, composerExcluded: true, escapeOutsideScrollAndSessionDismiss: true, staleStreamingSelectionRejected: true, fourMaterialsVisible: true,
