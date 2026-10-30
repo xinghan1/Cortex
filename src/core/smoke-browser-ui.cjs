@@ -108,6 +108,9 @@ module.exports = async function smokeBrowserUI({ win, output, dataDir }) {
     await call('newSession'); await call('setPermissionMode', { mode: 'request' });
     await js(`(()=>{window.__browserUISmoke={events:[],nativeApprovals:0};window.__browserUISmoke.off=window.forge.onEvent(event=>window.__browserUISmoke.events.push(event));window.__browserUISmoke.onClick=event=>{if(event.isTrusted&&event.target.closest('#composer-approval .approval-accept'))window.__browserUISmoke.nativeApprovals++;};document.addEventListener('click',window.__browserUISmoke.onClick,true);true;})()`);
     await call('submitPrompt', { text: 'Verify the isolated browser fixture using the browser tools.', mode: 'queue' });
+    // The fixture validates only browser tools, not the next-prompt suggestion.
+    // Keep a draft in the composer so post-round completion cannot add a fifth request.
+    await js(`(()=>{const input=document.getElementById('task-input');input.value='browser smoke draft';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     for(const action of ['navigate','type','click'])await nativeApprove(action);
     await until('live agent finished', async () => rounds.length === 4 && !(await call('getState')).activeTask.running);
     assert.deepEqual(problems, []);

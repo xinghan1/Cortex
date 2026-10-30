@@ -26,6 +26,7 @@ const { RecentProjects } = require('./core/recent-projects.cjs');
 const { approvalDecision, validateMode } = require('./core/approval-policy.cjs');
 const { BrowserPanel, BROWSER_TOOL_DEFINITIONS } = require('./core/browser-panel.cjs');
 const { createRemoteOperationIndicator } = require('./core/remote-operation-indicator.cjs');
+const { createRemoteOperationSession } = require('./core/remote-operation-session.cjs');
 const { isXmlURL } = require('./core/xml-reader.cjs');
 const { resolveDataDirectory, migrateInstalledProfile } = require('./core/data-path.cjs');
 const { SessionRestore } = require('./core/session-restore.cjs');
@@ -447,9 +448,8 @@ function createWindowHost({ restoreTarget = null } = {}) {
 
 function createWindowContext(host) {
 let win, tools, currentSession, activeRun, terminal, fileManager, editorFiles;
-const remoteIndicator = createRemoteOperationIndicator({ BrowserWindow, screen, onExit: () => {
-  if (activeRun?.kind === 'agent') { ++stopGeneration; pauseQueue('远程操作已停止，待发送消息已暂停。'); activeRun.controller.abort(); browser?.stop(); }
-} });
+const remoteSession = createRemoteOperationSession({ onStop: () => { remoteIndicator.hide(); browser?.stop(); } });
+const remoteIndicator = createRemoteOperationIndicator({ BrowserWindow, screen, onExit: () => remoteSession.exit() });
 const workspaceId = randomUUID();
 let modelSelection = null, configRevision = 0, approvalReviewerModel = null;
 let approvalReviewerScope = null, approvalReviewerConnectionCache = null;
@@ -1642,7 +1642,12 @@ async function startTask(input) {
           options.signal?.throwIfAborted();
           if (name === 'read_url' || name.startsWith('browser_')) {
             if (name !== 'read_url' && !(name === 'browser_navigate' && isXmlURL(args.url))) emit({ type: 'browser-open' });
-            if (['browser_navigate', 'browser_click', 'browser_type'].includes(name) && !(name === 'browser_navigate' && isXmlURL(args.url))) remoteIndicator.show(win);
+            if (['browser_navigate', 'browser_click', 'browser_type', 'browser_scroll'].includes(name) && !(name === 'browser_navigate' && isXmlURL(args.url))) {
+              return remoteSession.execute(options.toolBatchId, options.signal, signal => {
+                remoteIndicator.show(win);
+                return browser.execute(name, args, { ...options, signal, approve });
+              });
+            }
             return browser.execute(name, args, { ...options, approve });
           }
           return tools.execute(name, args, { ...options, onFileChange: change => { recordRunFileChange(run, change); options.onFileChange?.(change); } });
@@ -1655,6 +1660,7 @@ async function startTask(input) {
               emit({ type: 'files-changed', operation: 'subagent', path: change.path });
             } }),
           onSubagentManager: manager => { run.subagentManager = manager; },
+          onToolBatchStart: id => remoteSession.observeBatch(id),
           takeSteering: () => takeSteering(run),
           contextStartIndex: currentSession.modelContext?.startIndex || 0,
           contextReference: currentSession.modelContext?.startIndex ? externalAgentPrompt('', currentSession.messages.slice(0, currentSession.modelContext.startIndex).map(message => ({ ...message, content: typeof message.content === 'string' ? redact(message.content) : message.content }))) : '',

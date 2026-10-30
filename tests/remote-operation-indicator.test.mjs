@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRemoteOperationIndicator } from '../src/core/remote-operation-indicator.cjs';
 
-test('screen indicator passes clicks through borders and AI cursor; exit requests operation stop and cleanup', async () => {
+test('screen indicator passes clicks through borders and AI cursor; exit requests ending screen control', async () => {
   const windows=[]; let tick, stopped=0, cleared=0;
   class Mock extends EventEmitter {
     constructor(options){super();this.options=options;this.webContents=new EventEmitter();this.webContents.setWindowOpenHandler=()=>{};this.dead=false;windows.push(this);}
-    setAlwaysOnTop(){} setIgnoreMouseEvents(value){this.passthrough=value;} loadURL(){return Promise.resolve();}
+    setAlwaysOnTop(){} setIgnoreMouseEvents(value){this.passthrough=value;} loadURL(url){this.url=url;return Promise.resolve();}
     showInactive(){} hide(){} isDestroyed(){return this.dead;} destroy(){this.dead=true;this.emit('closed');} setPosition(x,y){this.position=[x,y];}
   }
   const screen={getDisplayMatching:()=>({bounds:{x:100,y:0,width:1200,height:800}}),getCursorScreenPoint:()=>({x:400,y:300})};
@@ -15,6 +15,7 @@ test('screen indicator passes clicks through borders and AI cursor; exit request
   const indicator=createRemoteOperationIndicator({BrowserWindow:Mock,screen,onExit:()=>{stopped++;},setIntervalImpl:fn=>(tick=fn,1),clearIntervalImpl:()=>cleared++});
   indicator.show(owner); assert.equal(indicator.active,true); assert.equal(windows.length,3);
   assert.equal(windows[0].passthrough,true); assert.equal(windows[1].passthrough,undefined); assert.equal(windows[2].passthrough,true);
+  assert.match(decodeURIComponent(windows[1].url), /退出屏幕控制/); assert.match(decodeURIComponent(windows[1].url), /任务继续运行/);
   assert.deepEqual(windows[2].position,[412,312]); tick();
   let prevented=false; windows[1].webContents.emit('will-navigate',{preventDefault(){prevented=true;}},'https://synora.invalid/exit');
   assert.equal(prevented,true); assert.equal(stopped,1);

@@ -37,6 +37,26 @@ test('partial reports show a star, known input/output and missing coverage', () 
   assert.equal(describe(run({ usage: usage(0, 0, { historicalApproximate: true }) })).label, '用量 0 tok*');
 });
 
+test('round badge displays the recorded total including children once, including after history projection', () => {
+  const record = run({ messageStartIndex: 0, messageIndex: 1, elapsedMs: 1200,
+    usage: usage(12700, 3800, { requests: 3, reportedRequests: 3 }),
+    subagents: [{ inputTokens: 6000, outputTokens: 2500 }] });
+  const current = describe(record);
+  assert.equal(current.label, '用量 16.5K tok');
+  assert.match(current.title, /输入 12,700 \/ 输出 3,800 Token，共 16,500 Token/u);
+  assert.match(current.title, /子任务/u);
+  const blocks = plain(context.ForgeTaskHistory.project({ messages: [{ role: 'user', content: 'start' },
+    { role: 'assistant', content: 'done' }], taskRuns: [record] }));
+  assert.equal(describe(blocks.find(block => block.type === 'run').record).label, current.label);
+});
+
+test('a child request without reported usage keeps the round visibly partial', () => {
+  const value = describe(run({ usage: usage(1000, 200, { requests: 2, reportedRequests: 1,
+    unreportedRequests: 1, status: 'partial' }) }));
+  assert.equal(value.label, '用量 1.2K tok*');
+  assert.match(value.title, /仅累计已回报用量；缺失部分未计入/u);
+});
+
 test('missing or unusable reports stay unavailable and never pretend to be zero', () => {
   for (const bad of [undefined, {}, { status: 'unavailable', inputTokens: 0, outputTokens: 0, totalTokens: 0 }, { status: 'reported', inputTokens: -10, outputTokens: NaN }, { status: 'reported', totalTokens: '100' }]) {
     const value = describe(run({ status: 'stopped', usage: bad }));

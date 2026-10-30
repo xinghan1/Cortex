@@ -64,7 +64,7 @@ async function fixture(t,{external=false,temporary=false,storageFailure=false}={
     runAgent:fakeTurn,runExternalAgentTurn:fakeTurn,runDemo:async()=>{},lastPetGreetingAt:0,
     TOOL_DEFINITIONS:[],BROWSER_TOOL_DEFINITIONS:[],PET_QUESTION_TOOL:{name:'ask_user_question'},
     dispatchModelRequest:async()=>{models.push('inference');return{};},currentRequestConfig:async()=>({}),roleRequestConfig:async()=>({}),
-    createSubagentWorkspace:()=>({}),takeSteering:async()=>[],officialAgentPermission:async()=>({allowed:true}),officialAgentUserInput:async()=>({}),
+    createSubagentWorkspace:()=>({}),remoteSession:{observeBatch(){}},takeSteering:async()=>[],officialAgentPermission:async()=>({allowed:true}),officialAgentUserInput:async()=>({}),
     recordRunUsage:async()=>{},recordRunFileChange(){},emitSessionMetrics(){},telemetrySnapshot:()=>({}),rememberTerminalEvent(){},
     liveImageViewSources:()=>[],eventSequence:0,approvals:new Map(),approvalController:{drain:async()=>{}},
     persistentTaskUndo:{copySession:async()=>{},seal:async()=>{}},app:{getVersion:()=> '0.24.1'},

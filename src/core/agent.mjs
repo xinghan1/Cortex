@@ -51,7 +51,7 @@ function nativeStateMatches(state, config) {
   return true;
 }
 
-export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage, contextStartIndex = 0, contextReference = '' }) {
+export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, onToolBatchStart = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage, contextStartIndex = 0, contextReference = '' }) {
   if (getRequestConfig !== undefined && typeof getRequestConfig !== 'function') throw new Error('实时模型配置读取器无效。');
   if (getSubagentRequestConfig !== undefined && typeof getSubagentRequestConfig !== 'function') throw new Error('子智能体模型配置读取器无效。');
   if (subagentFactory || getRequestConfig) config = freezeConfig(config);
@@ -495,6 +495,8 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     }
     // Every requested call receives a result, including refusals and cancellation, so history remains valid.
     let commandCleanupError = null;
+    const toolBatchId = randomUUID();
+    onToolBatchStart(toolBatchId);
     for (const call of message.toolCalls) {
       let result, fileChange, toolImage;
       if (signal.aborted) result = '操作已停止，未执行此工具。';
@@ -508,7 +510,7 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
             subagents?.assertParentTool(call.name, call.arguments);
             if (call.name === 'view_image' && appliedConfig.modelCapabilities?.supportsImages === false)
               throw new Error('当前模型不支持图片输入，请切换支持图片的模型后再核对界面。');
-            result = await workspace.execute(call.name, call.arguments, { signal,
+            result = await workspace.execute(call.name, call.arguments, { signal, toolBatchId,
               ...(call.name === 'view_image' ? { onImage: value => {
                 signal.throwIfAborted();
                 if (toolImage || !value || typeof value.path !== 'string' || !value.path

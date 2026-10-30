@@ -222,7 +222,17 @@ module.exports = async function smokeSubagents({ win, output, dataDir, store }) 
     const parallelLedger = store.usage.records.slice(initialUsage).filter(record => record.runId === parallelRun);
     assert.equal(parallelLedger.length, 9, 'All parent and child requests must be recorded exactly once');
     assert.equal(new Set(parallelLedger.map(record => record.id)).size, 9);
-    assert.equal(parallelLedger.reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0), parallelRecords.reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0));
+    const parallelInput = parallelLedger.reduce((sum, record) => sum + record.inputTokens, 0);
+    const parallelOutput = parallelLedger.reduce((sum, record) => sum + record.outputTokens, 0);
+    assert.equal(parallelInput + parallelOutput, parallelRecords.reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0));
+    assert.deepEqual([parallelEnd.usage.inputTokens, parallelEnd.usage.outputTokens, parallelEnd.usage.requests, parallelEnd.usage.status],
+      [parallelInput, parallelOutput, 9, 'reported'], 'Completed turn includes all unique child and parent requests');
+    const parallelBadge = await until('parallel usage badge', () => js(`(() => {
+      const badge=[...document.querySelectorAll('.round-token-usage')].find(item=>item.dataset.runId===${JSON.stringify(parallelRun)});
+      return badge&&{text:badge.textContent,status:badge.dataset.status,title:badge.title};})()`));
+    assert.equal(parallelBadge.status, 'reported');
+    assert.ok(parallelBadge.title.includes((parallelInput + parallelOutput).toLocaleString('en-US')));
+    assert.equal((await js(`[...document.querySelectorAll('.round-token-usage')].filter(item=>item.dataset.runId===${JSON.stringify(parallelRun)}).length`)), 1);
 
     stage = 'native individual child stop aborts its held request';
     const individualRun = await run('individual'); const held = await recordFor('individual', 'individual');
@@ -268,6 +278,8 @@ module.exports = async function smokeSubagents({ win, output, dataDir, store }) 
       records.filter(record => record.released).map(record => [record.inputTokens, record.outputTokens]).sort((a, b) => a[0] - b[0]),
       'Unique per-request usage values must each appear once, including every child request');
     assert.equal(ledger.filter(record => record.reported).reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0), records.filter(record => record.released).reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0));
+    const sessionUsage = store.sessionMetrics(archived);
+    assert.equal(sessionUsage.totalTokens, ledger.filter(record => record.reported).reduce((sum, record) => sum + record.inputTokens + record.outputTokens, 0));
     assert.deepEqual(problems, []);
 
     stage = 'history reload retains terminal agent rows and summaries';
@@ -280,6 +292,10 @@ module.exports = async function smokeSubagents({ win, output, dataDir, store }) 
     assert.deepEqual([...withoutRunEnd].sort(), beforeArchive.map(agent => agent.id).sort());
     child.webContents.reload(); await wait(50);
     await until('restored project and session', () => js(`Boolean(appState?.workspace?.root===${JSON.stringify(project)}&&sessionId===${JSON.stringify(sessionId)}&&!projectSwitching&&document.querySelectorAll('.subagent-card').length===7)`));
+    const restoredBadge = await until('restored parallel usage badge', () => js(`(() => {
+      const badges=[...document.querySelectorAll('.round-token-usage')].filter(item=>item.dataset.runId===${JSON.stringify(parallelRun)});
+      return badges.length===1&&{text:badges[0].textContent,status:badges[0].dataset.status,title:badges[0].title};})()`));
+    assert.deepEqual(restoredBadge, parallelBadge, 'Reload retains the exact single completed-turn badge');
     assert.deepEqual((await session()).subagents.map(agent => ({ id: agent.id, parentRunId: agent.parentRunId, status: agent.status, summary: agent.summary, elapsedMs: agent.elapsedMs })), beforeArchive);
     await openRow(writer.id);
     const view = await inspect();

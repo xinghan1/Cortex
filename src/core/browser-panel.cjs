@@ -278,7 +278,7 @@ class BrowserPanel {
     signal?.throwIfAborted();
     const url = detail.url || this.state().url;
     const ok = await approve({ kind: 'browser', action, title: detail.title || '浏览器：' + ({ navigate: '打开页面', click: '点击元素', type: '填写文本', scroll: '滚动页面' }[action] || action),
-      detail: detail.detail || '', url, local: Boolean(this.previewServer?.isLocalURL(url)), ...detail });
+      detail: detail.detail || '', url, local: Boolean(this.previewServer?.isLocalURL(url)), ...detail }, { signal });
     signal?.throwIfAborted();
     if (!ok) throw new Error('用户未批准此次浏览器操作，未执行。');
   }
