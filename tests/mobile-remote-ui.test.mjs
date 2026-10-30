@@ -12,33 +12,50 @@ class Element {
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.children = nodes; }
   addEventListener(name, callback) { this.listeners[name] = callback; }
+  getContext() { return { fillRect() {} }; }
   showModal() { this.open = true; }
-  close() { this.open = false; }
+  close() { this.open = false; this.listeners.close?.(); }
   click() { return this.disabled ? undefined : this.listeners.click?.(); }
 }
-function fixture() {
+function fixture(qr = async () => ({size:21,modules:Array.from({length:21},()=>Array(21).fill(false))})) {
   const document = { nodes: new Map(), createElement() { return new Element(document); } }; document.body = new Element(document);
   let state = { enabled: false, addresses: [], token: null, fingerprint: null }, fail = false;
-  const calls = [];
+  const calls = [], qrCalls = [];
   const bridge = {
     async mobileRemoteStatus() { calls.push('status'); if (fail) throw Error('secret'); return state; },
     async mobileRemoteStart() { calls.push('start'); state = { enabled: true, addresses: ['https://10.0.0.1:123', '<script>'], token: 'private-token', fingerprint: 'AA:BB' }; return state; },
-    async mobileRemoteStop() { calls.push('stop'); state = { enabled: false, addresses: [], token: null, fingerprint: null }; return state; }
+    async mobileRemoteStop() { calls.push('stop'); state = { enabled: false, addresses: [], token: null, fingerprint: null }; return state; },
+    async mobileRemoteQr(arg) { qrCalls.push(arg.url); return qr(arg); }
   };
   const window = { forge: bridge }; vm.runInNewContext(source, { window, document });
-  return { ui: window.CortexMobileRemote, calls, node: id => document.nodes.get(id), fail: value => { fail = value; } };
+  return { ui: window.CortexMobileRemote, calls, qrCalls, node: id => document.nodes.get(id), fail: value => { fail = value; }, setState: value => { state=value; } };
 }
 
 test('remote access is explicit, credentials are text, and close does not stop it', async () => {
   const f = fixture(); await f.ui.open();
   assert.deepEqual(f.calls, ['status']); assert.equal(f.node('mobile-remote-start').disabled, false); assert.equal(f.node('mobile-remote-stop').disabled, true);
   await f.node('mobile-remote-start').click();
+  await new Promise(resolve=>setImmediate(resolve));
   assert.equal(f.node('mobile-remote-info').hidden, false); assert.equal(f.node('mobile-remote-token').textContent, 'private-token');
   assert.equal(f.node('mobile-remote-addresses').children[1].textContent, '<script>');
-  f.node('mobile-remote-dialog').close(); assert.deepEqual(f.calls, ['status', 'start']);
+  assert.deepEqual(f.qrCalls, ['https://10.0.0.1:123']); assert.equal(f.node('mobile-remote-qr-image').hidden,false);
+  f.node('mobile-remote-dialog').close(); assert.equal(f.node('mobile-remote-token').textContent,''); assert.equal(f.node('mobile-remote-qr-image').width,1); assert.deepEqual(f.calls, ['status', 'start']);
   await f.ui.open(); await f.node('mobile-remote-stop').click();
   assert.equal(f.node('mobile-remote-info').hidden, true); assert.equal(f.node('mobile-remote-token').textContent, '');
   assert.deepEqual(f.calls, ['status', 'start', 'status', 'stop']);
+});
+
+test('late QR result after closing the panel cannot expose credentials', async () => {
+  let finish; const f=fixture(()=>new Promise(resolve=>{finish=resolve;})); await f.ui.open(); await f.node('mobile-remote-start').click();
+  f.node('mobile-remote-dialog').close(); finish({size:21,modules:Array.from({length:21},()=>Array(21).fill(true))}); await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.node('mobile-remote-qr-image').hidden,true); assert.equal(f.node('mobile-remote-token').textContent,'');
+});
+
+test('selecting another network address refreshes the QR without external requests', async () => {
+  const f=fixture(); f.setState({enabled:true,addresses:['https://192.168.1.5:1234','https://100.64.0.1:1234'],fingerprint:'AA:BB',token:'fake'});
+  await f.ui.open(); await new Promise(resolve=>setImmediate(resolve));
+  const selector=f.node('mobile-remote-qr-address'); selector.value='https://100.64.0.1:1234';selector.listeners.change();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.qrCalls,['https://192.168.1.5:1234','https://100.64.0.1:1234']); assert.deepEqual(f.calls,['status']);
 });
 
 test('status failure hides sensitive error and allows retry', async () => {

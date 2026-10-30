@@ -1,7 +1,7 @@
 {
   "name": "cortex",
   "productName": "Cortex",
-  "version": "0.24.15",
+  "version": "0.24.16",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",
@@ -32,6 +32,7 @@
     "@volcengine/ark-cli": "1.0.42",
     "jose": "^6.1.0",
     "openai": "^7.21.0",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "qrcode-generator": "^2.0.4"
   }
 }

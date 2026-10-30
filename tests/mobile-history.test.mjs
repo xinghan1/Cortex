@@ -15,6 +15,11 @@ test('mobile timeline includes the latest child progress near its task and strip
   const agent=rows.find(x=>x.type==='subagent');assert.equal(agent.status,'completed');assert.equal(agent.summary,'完成');assert.match(agent.activity,/结果/);
 });
 test('mobile timeline bounds individual fields and announces omitted history',()=>{
-  const rows=mobileTimeline({messages:Array.from({length:300},(_,i)=>({role:'user',content:`${i}:`+'x'.repeat(10000)}))});
-  assert.equal(rows[0].type,'notice');assert.match(rows[0].content,/省略/);assert(rows.at(-1).content.endsWith('[内容已截断]'));assert(JSON.stringify(rows).length<150000);
+  const rows=mobileTimeline({messages:Array.from({length:300},(_,i)=>({role:'user',content:`${i}:`+'x'.repeat(60000)}))});
+  assert.equal(rows[0].type,'notice');assert.match(rows[0].content,/省略/);assert(rows.at(-1).content.endsWith('[内容已截断]'));assert(JSON.stringify(rows).length<210000);
+});
+test('a reasonably long streamed answer remains intact when it becomes a saved message',()=>{
+  const content='answer '.repeat(3000);
+  const [row]=mobileTimeline({messages:[{role:'assistant',content}]});
+  assert.equal(row.content,content);
 });

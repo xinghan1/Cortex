@@ -31,6 +31,11 @@ final class ToolEventView {
         return original;
     }
     private void code(TextView target,String value){if(JsonValidity.isContainer(value))MarkdownRenderer.applyJsonCode(target,value,light);else target.setText(value);}
+    private String location(String input){
+        if(!JsonValidity.isContainer(input))return "";
+        try { Object parsed=new JSONTokener(input).nextValue();if(parsed instanceof JSONObject){JSONObject obj=(JSONObject)parsed;for(String key:new String[]{"path","file_path","url"}){Object v=obj.opt(key);if(v instanceof String&&!((String)v).isEmpty())return (String)v;}} }catch(Exception ignored) { }
+        return "";
+    }
     private boolean failed(Object value) {
         try { Object parsed=value instanceof String?new JSONTokener((String)value).nextValue():value; if(parsed instanceof JSONObject) { JSONObject obj=(JSONObject)parsed; String status=obj.optString("status",""); return obj.optBoolean("isError",false) || obj.optBoolean("error",false) || (obj.has("error") && !obj.isNull("error") && !"false".equals(obj.optString("error"))) || (obj.has("success") && !obj.optBoolean("success",true)) || (obj.has("ok") && !obj.optBoolean("ok",true)) || status.equals("error") || status.equals("failed"); } }
         catch(Exception ignored) { }
@@ -58,7 +63,7 @@ final class ToolEventView {
         LinearLayout detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);box.addView(detail);
         String[] fields={"task","summary","activity"}, labels={"任务","总结","操作过程"};
         for(int i=0;i<fields.length;i++){Object value=agent.opt(fields[i]);if(value==null||value==JSONObject.NULL||String.valueOf(value).isEmpty())continue;TextView label=text(labels[i],12,muted);label.setPadding(0,dp(7),0,dp(4));detail.addView(label);TextView body=text(pretty(value),13,fg);body.setTextIsSelectable(true);detail.addView(body);}
-        String name=agent.optString("name","子任务"), status=agent.optString("status","");
+        String name=agent.optString("name","子任务"), status=ToolNames.status(agent.optString("status",""));
         Runnable title=()->header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+(status.isEmpty()?"":"  ·  "+status));title.run();
         header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);title.run();});
     }
@@ -77,6 +82,6 @@ final class ToolEventView {
             resultText=text("",13,fg);resultText.setTypeface(Typeface.MONOSPACE);resultText.setTextIsSelectable(true);detail.addView(resultText);
             header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);update();});
         }
-        void update(){header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+"  ·  "+(done?(error?"失败":"已完成"):"进行中"));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));}
+        void update(){header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolNames.caption(name,done,error,location(input)));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));}
     }
 }

@@ -5,6 +5,10 @@ dialog.mobile-remote-dialog { width: 600px; max-width: calc(100vw - 40px); max-h
 .mobile-remote-info { display: grid; gap: 12px; margin: 0 0 18px; }
 .mobile-remote-label { margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .mobile-remote-value { padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-control, 8px); background: var(--panel2); color: var(--text); font: 12px/1.6 monospace; user-select: text; overflow-wrap: anywhere; }
+.mobile-remote-qr { display: grid; justify-items: start; gap: 8px; padding-top: 4px; }
+.mobile-remote-qr-address { max-width: 100%; padding: 8px; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
+.mobile-remote-qr-image { display: block; width: auto; max-width: 100%; height: auto; image-rendering: pixelated; background: white; border-radius: 4px; }
+.mobile-remote-qr-status { margin: 0; color: var(--muted); font-size: 12px; }
 .mobile-remote-guidance { color: var(--muted); font-size: 12px; line-height: 1.65; }
 .mobile-remote-guidance p { margin: 8px 0; }
 .mobile-remote-dialog [hidden] { display: none; }

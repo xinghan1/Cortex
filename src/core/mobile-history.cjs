@@ -3,10 +3,10 @@
 // Bounded, display-only projection. Never return raw event objects, image
 // payloads, provider state, credentials, or other internal session metadata.
 function mobileTimeline({ messages = [], events = [], subagents = [], taskRuns = [], redact = x => x } = {}) {
-  const LIMIT=6000, MAX_ITEMS=250, MAX_CHARS=140000;
-  const text = value => {
+  const LIMIT=6000, MESSAGE_LIMIT=50000, MAX_ITEMS=250, MAX_CHARS=200000;
+  const text = (value, limit=LIMIT) => {
     let raw;
-    if (typeof value === 'string') { raw=value.slice(0,12000); if (/^\s*[\[{]/.test(raw)) { try { const parsed=JSON.parse(raw); if(parsed && typeof parsed==='object') raw=JSON.stringify(clean(parsed)); } catch { /* Plain text is preserved. */ } } }
+    if (typeof value === 'string') { raw=value.slice(0,Math.max(12000,limit+1)); if (limit===LIMIT && /^\s*[\[{]/.test(raw)) { try { const parsed=JSON.parse(raw); if(parsed && typeof parsed==='object') raw=JSON.stringify(clean(parsed)); } catch { /* Plain text is preserved. */ } } }
     else { try { raw=JSON.stringify(clean(value)); } catch { raw='[无法显示]'; } }
     if (typeof raw !== 'string') return '';
     raw=raw.replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]')
@@ -15,7 +15,7 @@ function mobileTimeline({ messages = [], events = [], subagents = [], taskRuns =
       .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,'Bearer [已隐藏]')
       .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[已隐藏]@');
     try { raw=String(redact(raw)); } catch { return '[无法显示]'; }
-    return raw.length>LIMIT ? raw.slice(0,LIMIT)+'\n[内容已截断]' : raw;
+    return raw.length>limit ? raw.slice(0,limit)+'\n[内容已截断]' : raw;
   };
   function clean(value, depth=0) {
     if(depth>7) return '[嵌套内容已省略]';
@@ -31,7 +31,7 @@ function mobileTimeline({ messages = [], events = [], subagents = [], taskRuns =
   const add=(entry,index,order)=>rows.push({ entry, index, order, seq:rows.length });
   messages.forEach((m,i)=>{
     if(!m || typeof m!=='object')return;
-    if((m.role==='user'||m.role==='assistant') && typeof m.content==='string' && m.content) add({type:'message',role:m.role,content:text(m.content)},i,0);
+    if((m.role==='user'||m.role==='assistant') && typeof m.content==='string' && m.content) add({type:'message',role:m.role,content:text(m.content,MESSAGE_LIMIT)},i,0);
     if(m.role==='assistant' && Array.isArray(m.toolCalls)) for(const c of m.toolCalls) {
       if(!c || typeof c!=='object')continue;const id=text(c.id||'');if(id)calls.add(id);
       add({type:'tool_call',id,name:text(c.name||'工具'),content:text(c.arguments ?? {})},i,1);

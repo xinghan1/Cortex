@@ -1963,6 +1963,7 @@ function buildHandlers() {
     mobileRemoteStatus: () => host.mobileRemote.status(),
     mobileRemoteStart: () => host.mobileRemote.start(),
     mobileRemoteStop: () => host.mobileRemote.stop(),
+    mobileRemoteQr: arg => require('./core/mobile-pairing-qr.cjs').mobilePairingQr(host.mobileRemote.status(), arg?.url),
     browserCommand: async arg => {
       if (!['back', 'forward', 'reload', 'stop', 'close'].includes(arg?.action)) throw new Error('浏览器操作无效。');
       await browser[arg.action](); return browser.state();
@@ -2594,7 +2595,7 @@ const context = {
         return { workspace: context.tools?.root || null, sessionId: session?.id || null,
           title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: (await context.state()).settings?.model || '',
           pendingApprovals: (await context.state()).pendingApprovals,
-          streamText: redact(String(context.activeRun?.streamText || '')).replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]').slice(-12000),
+          streamText: (() => { const value=redact(String(context.activeRun?.streamText || '')).replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]'); return value.length>50000 ? value.slice(0,50000)+'\n[内容已截断]' : value; })(),
           operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
             .slice(-20).map(event => ({ type: event.type, name: redact(String(event.name || '')).slice(0, 200) })),
           timeline,

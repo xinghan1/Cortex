@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('forge', Object.freeze({
   mobileRemoteStatus: () => call('mobileRemoteStatus'),
   mobileRemoteStart: () => call('mobileRemoteStart'),
   mobileRemoteStop: () => call('mobileRemoteStop'),
+  mobileRemoteQr: arg => call('mobileRemoteQr', arg),
   getUsageAnalytics: () => call('getUsageAnalytics'),
   getAppearance: () => call('getAppearance'),
   importBackground: () => call('importBackground'),

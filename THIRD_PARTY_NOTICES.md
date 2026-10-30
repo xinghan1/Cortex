@@ -1,5 +1,37 @@
 # 第三方组件说明
 
+## QR Code Generator（桌面端）
+
+本地配对二维码使用 [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 2.0.4，不向第三方发送配对信息。该组件采用 MIT License：
+
+```text
+MIT License
+
+Copyright (c) 2009 Kazuhiko Arase
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## ZXing Core（Android）
+
+Android 端使用 [ZXing Core 3.5.3](https://github.com/zxing/zxing) 解码配对二维码。该组件采用 Apache License 2.0；许可证原文随 Android 应用打包，见 [ZXing 许可证](android-app/app/src/main/assets/licenses/zxing-LICENSE.txt)。
+
 ## OpenAI Sign-in with ChatGPT DevKit
 
 来源：<https://github.com/openai/sign-in-with-chatgpt-devkit>
