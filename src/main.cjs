@@ -2015,6 +2015,7 @@ function buildHandlers() {
     selectModel: async arg => {
       if (typeof arg?.model !== 'string' || !arg.model || arg.model.length > 200) throw new Error('模型标识无效。');
       const context = await catalogContext();
+      if (arg?.requireIdle && activeRun) throw new Error('电脑任务进行中，请完成或停止任务后切换模型。');
       const model = catalogSnapshots.get(context.key)?.models.find(item => item.id === arg.model);
       if (!model) throw new Error('请先刷新当前连接的模型目录，再选择模型。');
       if (model.supportsTools === false) throw new Error('此模型不支持当前编程助手使用的工具，请选择支持工具调用的模型。');
@@ -2588,7 +2589,7 @@ const context = {
       snapshot: async () => {
         const context = host.active, session = context.currentSession;
         return { workspace: context.tools?.root || null, sessionId: session?.id || null,
-          title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun),
+          title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: (await context.state()).settings?.model || '',
           pendingApprovals: (await context.state()).pendingApprovals,
           streamText: redact(String(context.activeRun?.streamText || '')).slice(-12000),
           operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
@@ -2598,6 +2599,19 @@ const context = {
       },
       stopTask: () => host.active.handlers.stopTask(),
       approve: arg => host.active.handlers.respondApproval(arg),
+      listModels: async () => {
+        const context = host.active, catalog = await context.handlers.listModels({});
+        if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
+        const state = await context.state();
+        return { model: state.settings?.model || '', models: (catalog.models || []).map(item => ({ id: item.id, name: item.displayName || item.id, supportsTools: item.supportsTools !== false })) };
+      },
+      selectModel: async model => {
+        const context = host.active;
+        if (context.activeRun) throw new Error('电脑任务进行中，请完成或停止任务后切换模型。');
+        const state = await context.handlers.selectModel({ model, requireIdle: true });
+        if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
+        return { model: state.settings?.model || '' };
+      },
       submit: async text => {
         const context = host.active;
         return context.submitPrompt({ text }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });

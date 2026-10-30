@@ -11,3 +11,16 @@ test('remote access requires pairing and serves requests over TLS; stop revokes 
  try {const denied=await request(port,'wrong','GET','/v1/state');assert.equal(denied.code,401);const state=await request(port,pair.token,'GET','/v1/state');assert.equal(state.body.sessionId,'s');assert.equal(state.fingerprint,pair.fingerprint);const sent=await request(port,pair.token,'POST','/v1/messages',JSON.stringify({text:'hello'}));assert.equal(sent.body.text,'hello');const forbidden=await request(port,'wrong','POST','/v1/stop','{}');assert.equal(forbidden.code,401);assert.equal(stopped,0);const stop=await request(port,pair.token,'POST','/v1/stop','{}');assert.equal(stop.body.stopped,true);assert.equal(stopped,1);const old=await request(port,pair.token,'POST','/v1/approval',JSON.stringify({id:'old',approved:true}));assert.equal(old.code,409);const approval=await request(port,pair.token,'POST','/v1/approval',JSON.stringify({id:'pending',approved:true}));assert.equal(approval.body.accepted,true);assert.deepEqual(decisions.at(-1),{id:'pending',approved:true});}finally{await service.stop();}
  assert.equal(service.status().enabled,false);const next=await service.start();try{assert.notEqual(next.token,pair.token);assert.notEqual(next.fingerprint,pair.fingerprint);}finally{await service.stop();}
 });
+test('model listing and selection require pairing, validate input, and delegate to host',async()=>{
+ let selected=[]; const service=createMobileRemote({snapshot:()=>({}),submit:()=>({}),stopTask:()=>{},approve:()=>false,listModels:()=>({model:'a',models:[{id:'a',name:'A'}]}),selectModel:id=>{selected.push(id);return {model:id}}});
+ const pair=await service.start(),port=Number(new URL(pair.addresses[0]).port);
+ try {
+  assert.equal((await request(port,'wrong','GET','/v1/models')).code,401);
+  assert.equal((await request(port,'wrong','POST','/v1/model',JSON.stringify({model:'a'}))).code,401);
+  assert.deepEqual(selected,[]);
+  assert.equal((await request(port,pair.token,'GET','/v1/models')).body.models[0].id,'a');
+  assert.equal((await request(port,pair.token,'POST','/v1/model',JSON.stringify({model:''}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/model',JSON.stringify({model:'a'}))).body.model,'a');
+  assert.deepEqual(selected,['a']);
+ } finally { await service.stop(); }
+});
