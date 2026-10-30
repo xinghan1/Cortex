@@ -185,6 +185,9 @@ module.exports = async function smokeSubagents({ win, output, dataDir, store }) 
     await until('isolated project active', async () => (await state()).workspace?.root === project && await js('!projectSwitching'));
     await call('saveSettings', { provider: 'openai', authMode: 'apiKey', apiProtocol: 'responses', model, baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey, reasoningEffort: 'default' }); configured = true;
     await call('setPermissionMode', { mode: 'request' });
+    await call('setPet', { enabled: false });
+    // Keep the unrelated next-prompt suggestion from making an extra model request.
+    await js(`$('task-input').value='smoke draft';$('task-input').dispatchEvent(new Event('input',{bubbles:true}));true`);
     const sessionId = (await state()).sessionId, initialUsage = store.usage.records.length;
 
     stage = 'two child model requests enter concurrently';
@@ -197,6 +200,8 @@ module.exports = async function smokeSubagents({ win, output, dataDir, store }) 
     const writer = parallelAgents.find(agent => agent.name === '写入检查'), readonly = parallelAgents.find(agent => agent.name === '只读检查');
     assert.ok(writer?.id && readonly?.id); await openRow(writer.id);
     assert.equal((await inspect()).rows.find(row => row.id === writer.id)?.open, true);
+    await until('streamed child text visible before response completes', async () => (await inspect()).rows.find(row => row.id === writer.id)?.text.includes(deltaMarker));
+    assert.equal(a.released, false, 'Child text must appear while its response is still in progress');
     assert.equal((await inspect()).rawParentText.includes(deltaMarker), false, 'Child deltas must never appear as the parent assistant stream');
     await capture('subagents-parallel-running.png');
     finish(a, childFirst('writer')); finish(b, childFirst('readonly'));

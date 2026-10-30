@@ -298,24 +298,68 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
   };
   const askModel = async options => {
     let incomplete = '';
+    let malformedRetries = options.malformedRetryAttempts || 0;
+    let needsRepairPrompt = false;
     try {
-      return await retryModelRequest(() => {
-        incomplete = '';
-        return askModelAttempt({ ...options, onIncomplete: partial => { incomplete = partial; } });
-      }, { signal, initialRetries: options.retryAttempts || 0, beforeAttempt: async retryAttempts => {
-        if (!retryAttempts || !getRequestConfig) return;
-        const latest = await readConfig();
-        if (configIdentity(latest) !== configIdentity(options.requestConfig || config)) {
-          throw { type: retryConfigChanged, config: latest, retryAttempts };
+      while (true) {
+        try {
+          const requestMessages = needsRepairPrompt ? options.requestMessages.map((message, index) => index === 0 && message.role === 'system'
+            ? { ...message, content: `${message.content}\n上一次回复中的工具参数不是有效 JSON，整批工具均未执行。请重新生成工具调用，arguments 必须是完整、合法的 JSON 对象；不要猜测未提供的信息。` }
+            : message) : options.requestMessages;
+          const result = await retryModelRequest(() => {
+            incomplete = '';
+            return askModelAttempt({ ...options, requestMessages, onIncomplete: partial => { incomplete = partial; } });
+          }, { signal, initialRetries: options.retryAttempts || 0, beforeAttempt: async retryAttempts => {
+            if (!retryAttempts || !getRequestConfig) return;
+            const latest = await readConfig();
+            if (configIdentity(latest) !== configIdentity(options.requestConfig || config)) {
+              throw { type: retryConfigChanged, config: latest, retryAttempts };
+            }
+          }, onEvent: event => {
+            // Only the failed attempt's visible stream is discarded.
+            if (event.status === 'waiting') incomplete = '';
+            emit({ ...event, ...(event.status === 'waiting' ? { resetText: !options.compaction } : {}),
+              ...(options.compaction ? { purpose: 'context-compaction' } : {}) });
+          } });
+          if (needsRepairPrompt) emit({ type: 'reconnect', status: 'recovered', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
+          return result;
+        } catch (error) {
+          if (signal.aborted) {
+            if (error?.retryableMalformedToolJson === true) signal.throwIfAborted();
+            throw error;
+          }
+          if (error?.type === retryConfigChanged) {
+            error.malformedRetryAttempts = malformedRetries;
+            throw error;
+          }
+          const current = options.requestConfig || config;
+          if (options.compaction || current.provider !== 'relay' || (current.apiProtocol || 'chat-completions') !== 'chat-completions'
+              || error?.code !== 'INVALID_TOOL_ARGUMENTS' || error?.retryableMalformedToolJson !== true) {
+            if (!signal.aborted && malformedRetries) emit({ type: 'reconnect', status: 'failed', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
+            throw error;
+          }
+          if (malformedRetries >= 2) {
+            emit({ type: 'reconnect', status: 'failed', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
+            const failure = new Error(`${error.message} 已自动重新生成两次，仍未获得有效参数。`);
+            failure.code = error.code;
+            throw failure;
+          }
+          malformedRetries++;
+          needsRepairPrompt = true;
+          incomplete = '';
+          emit({ type: 'reconnect', status: 'waiting', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format', resetText: true });
+          signal.throwIfAborted();
+          if (getRequestConfig) {
+            const latest = await readConfig();
+            if (configIdentity(latest) !== configIdentity(current)) {
+              emit({ type: 'reconnect', status: 'recovered', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
+              throw { type: retryConfigChanged, config: latest, retryAttempts: options.retryAttempts || 0, malformedRetryAttempts: malformedRetries };
+            }
+          }
+          signal.throwIfAborted();
+          emit({ type: 'reconnect', status: 'retrying', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
         }
-      }, onEvent: event => {
-        // A retry starts this reply over; it does not resume model bytes. Only
-        // the failed attempt's visible stream is discarded. Previous completed
-        // messages, tool results, and file changes remain untouched.
-        if (event.status === 'waiting') incomplete = '';
-        emit({ ...event, ...(event.status === 'waiting' ? { resetText: !options.compaction } : {}),
-          ...(options.compaction ? { purpose: 'context-compaction' } : {}) });
-      } });
+      }
     } catch (error) {
       // Intermediate attempts never enter history. Keep only the final failed
       // or cancelled attempt as a local-only partial, with no executable calls.
@@ -333,7 +377,7 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     steeringAlreadyApplied = false;
     signal.throwIfAborted();
     let plannedConfig = await readConfig(), reply, appliedConfig, rebuiltForConfig = null;
-    let retryAttempts = 0, summaryRetryAttempts = 0;
+    let retryAttempts = 0, summaryRetryAttempts = 0, malformedRetryAttempts = 0;
     const changed = Symbol('request configuration changed');
     // A summary is its own API boundary. If configuration changes during
     // planning, restart with its new capacity before paying for any request.
@@ -416,10 +460,11 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
       }
       appliedConfig = nextConfig;
       try {
-        reply = await askModel({ requestMessages, tools: toolDefinitions, requestConfig: nextConfig, compressionMetadata: prepared.metadata, retryAttempts });
+        reply = await askModel({ requestMessages, tools: toolDefinitions, requestConfig: nextConfig, compressionMetadata: prepared.metadata, retryAttempts, malformedRetryAttempts });
       } catch (error) {
         if (error?.type !== retryConfigChanged) throw error;
         retryAttempts = error.retryAttempts;
+        malformedRetryAttempts = error.malformedRetryAttempts || malformedRetryAttempts;
         plannedConfig = error.config;
         continue;
       }

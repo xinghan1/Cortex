@@ -39,7 +39,7 @@ function streamedToolResponse(protocol, calls, usagePlacement = 'after') {
   return new Response(wire, { headers: { 'content-type': 'text/event-stream' } });
 }
 
-async function rejectToolBatch(protocol, calls, transport, { usagePlacement = 'after', usageReported = true } = {}) {
+async function rejectToolBatch(protocol, calls, transport, { usagePlacement = 'after', usageReported = true, retryableMalformed = false } = {}) {
   let requests = 0, executions = 0, caught;
   const messages = [{ role: 'user', content: 'Use the fixture tools.' }], events = [], records = [], context = [];
   await assert.rejects(runAgent({
@@ -59,19 +59,22 @@ async function rejectToolBatch(protocol, calls, transport, { usagePlacement = 'a
     assert.equal(error.code, 'INVALID_TOOL_ARGUMENTS');
     return true;
   });
-  assert.equal(requests, 1, 'A format error must not trigger another billed model request');
+  const expectedRequests = retryableMalformed ? 3 : 1;
+  assert.equal(requests, expectedRequests, 'Only eligible malformed JSON gets bounded retries');
   assert.equal(executions, 0, 'The whole batch must validate before any tool executes');
   assert.equal(events.some(value => value.type === 'tool-start' || value.type === 'tool-result'), false);
   assert.equal(messages.some(value => value.toolCalls?.length || value.role === 'tool'), false);
-  assert.equal(records.length, 1);
-  assert.deepEqual({ inputTokens: records[0].inputTokens, outputTokens: records[0].outputTokens,
-    cachedInputTokens: records[0].cachedInputTokens }, usageReported ? reportedUsage
-      : { inputTokens: null, outputTokens: null, cachedInputTokens: undefined });
-  assert.equal(records[0].reported, usageReported);
-  assert.equal(records[0].partial, true);
-  assert.equal(records[0].status, 'failed');
+  assert.equal(records.length, expectedRequests);
+  for (const record of records) {
+    assert.deepEqual({ inputTokens: record.inputTokens, outputTokens: record.outputTokens,
+      cachedInputTokens: record.cachedInputTokens }, usageReported ? reportedUsage
+        : { inputTokens: null, outputTokens: null, cachedInputTokens: undefined });
+    assert.equal(record.reported, usageReported);
+    assert.equal(record.partial, true);
+    assert.equal(record.status, 'failed');
+  }
   assert.deepEqual(events.filter(value => value.type === 'usage').at(-1), { type: 'usage',
-    inputTokens: usageReported ? 43 : 0, outputTokens: usageReported ? 17 : 0 });
+    inputTokens: usageReported ? 43 * expectedRequests : 0, outputTokens: usageReported ? 17 * expectedRequests : 0 });
   const surfaced = JSON.stringify({ error: { code: caught.code, message: caught.message,
     cause: caught.cause?.message }, messages, events, records, context });
   assert.equal(surfaced.includes(privateMarker), false, 'Arguments must not leak through errors, history, telemetry, or accounting');
@@ -84,7 +87,7 @@ test('invalid arguments in the second tool prevent the first valid tool from exe
       await rejectToolBatch(protocol, [
         call('valid-first', JSON.stringify({ path: 'first.txt', content: privateMarker })),
         call('invalid-second', `{"path":"second.txt","content":"${privateMarker}"`),
-      ], transport);
+      ], transport, { retryableMalformed: protocol === 'chat-completions' });
     });
   }
 });
@@ -95,6 +98,8 @@ test('malformed or non-object parameters fail closed and retain reported usage f
     ['illegal escape', String.raw`{"path":"folder\qfixture.txt","content":"${privateMarker}"}`],
     ['trailing text', JSON.stringify({ path: 'fixture.txt', content: privateMarker }) + ' trailing'],
     ['empty arguments', ''],
+    ['whitespace arguments', '  '],
+    ['missing arguments', undefined],
     ['JSON null', 'null'],
     ['JSON array', JSON.stringify([{ path: privateMarker }])],
     ['null arguments', null],
@@ -106,7 +111,8 @@ test('malformed or non-object parameters fail closed and retain reported usage f
         await rejectToolBatch(protocol, [call('invalid-tool', args)], transport, {
           // A known invalid type can stop the stream immediately. A later
           // usage-only frame is not an already-reported consumption value.
-          usageReported: !(protocol === 'chat-completions' && transport === 'sse' && typeof args !== 'string'),
+          usageReported: !(protocol === 'chat-completions' && transport === 'sse' && args !== undefined && typeof args !== 'string'),
+          retryableMalformed: protocol === 'chat-completions' && ['unfinished JSON', 'illegal escape', 'trailing text', 'empty arguments', 'whitespace arguments'].includes(label),
         });
       });
     }
@@ -119,6 +125,52 @@ test('fail-fast tool type errors retain only usage already received, without rea
       usagePlacement, usageReported: usagePlacement !== 'after',
     });
   });
+});
+
+test('a relay can recover malformed JSON without executing or storing the rejected batch', async t => {
+  for (const transport of ['json', 'sse']) await t.test(transport, async () => {
+    let requests = 0;
+    const executions = [], events = [], records = [];
+    const messages = [{ role: 'user', content: 'Write the synthetic fixture.' }];
+    const invalid = [call('valid-first', JSON.stringify({ path: 'ignored.txt', content: privateMarker })),
+      call('invalid-second', `{"path":"broken.txt","content":"${privateMarker}"`)];
+    const valid = [call('fixed', JSON.stringify({ path: 'fixed.txt', content: 'OK' }))];
+    await runAgent({ config: { provider: 'relay', apiProtocol: 'chat-completions', apiKey: secret,
+      baseUrl: 'https://fixture.invalid/v1', model: 'fixture-model', fetchImpl: async (_endpoint, init) => {
+        requests++;
+        const body = JSON.parse(init.body);
+        if (requests === 2) assert.equal(JSON.stringify(body).includes(privateMarker), false, 'Rejected arguments must not be replayed');
+        if (requests <= 2) {
+          const calls = requests === 1 ? invalid : valid;
+          return transport === 'sse' ? streamedToolResponse('chat-completions', calls) : json(toolResponse('chat-completions', calls));
+        }
+        assert.equal(requests, 3);
+        return json({ choices: [{ message: { content: 'Fixture complete.' }, finish_reason: 'stop' }], usage: usageFor('chat-completions') });
+      } }, messages, workspace: { root: 'C:/synthetic-fixture', execute: async (name, args) => {
+        executions.push({ name, args }); return 'OK';
+      } }, toolDefinitions: tools, requestModel, signal: new AbortController().signal,
+    emit: value => events.push(value), onUsage: async value => records.push(value) });
+    assert.equal(requests, 3);
+    assert.deepEqual(executions, [{ name: 'write_file', args: { path: 'fixed.txt', content: 'OK' } }]);
+    assert.equal(records.length, 3);
+    assert.deepEqual(records.map(value => value.status), ['failed', 'completed', 'completed']);
+    assert.ok(records.every(value => value.reported && value.inputTokens === 43 && value.outputTokens === 17));
+    assert.equal(JSON.stringify({ messages, events, records }).includes(privateMarker), false);
+    assert.equal(messages.at(-1).content, 'Fixture complete.');
+  });
+});
+
+test('malformed tool arguments from an official OpenAI connection are not automatically retried', async () => {
+  let requests = 0, executions = 0;
+  const records = [];
+  await assert.rejects(runAgent({ config: { provider: 'openai', apiProtocol: 'chat-completions', apiKey: secret,
+    baseUrl: 'https://fixture.invalid/v1', model: 'fixture-model', fetchImpl: async () => {
+      requests++; return json(toolResponse('chat-completions', [call('bad', '{"path":')]));
+    } }, messages: [{ role: 'user', content: 'Use the fixture tool.' }],
+  workspace: { root: 'C:/synthetic-fixture', execute: async () => { executions++; } }, toolDefinitions: tools,
+  requestModel, signal: new AbortController().signal, emit: () => {}, onUsage: async value => records.push(value) }),
+  { code: 'INVALID_TOOL_ARGUMENTS' });
+  assert.equal(requests, 1); assert.equal(executions, 0); assert.equal(records.length, 1);
 });
 
 function byteFragmentedStream(values) {

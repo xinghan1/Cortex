@@ -1808,6 +1808,7 @@ function renderTaskActivityElapsed(activity = activeTaskActivity) {
   if (!activity) return;
   if (activity === activeTaskActivity && activity.status === 'running' && activity.reconnect) renderTaskReconnect(activity);
   activity.elapsed.textContent = activityDuration(taskElapsed(activity));
+  if (activity.status === 'running') for (const card of activity.events.querySelectorAll('.subagent-card')) window.ForgeSubagents?.tick(card);
 }
 
 function createTaskActivity(record = {}) {
@@ -1976,8 +1977,10 @@ function renderTaskReconnect(activity = activeTaskActivity) {
   const state = activity.reconnect;
   activity.compaction?.reconnect(state);
   const seconds = state.status === 'waiting' ? Math.max(0, Math.ceil((state.retryAt - Date.now()) / 1000)) : 0;
-  setTaskActivityPhase('reconnecting', `正在重连 ${state.attempt}/${state.maxAttempts}${seconds ? ` · ${seconds}秒后重试` : ''}`);
-  activity.phaseNode.title = '模型连接中断，将重新请求当前回复。';
+  setTaskActivityPhase('reconnecting', state.reason === 'format'
+    ? `工具参数格式有误，正在重新生成 ${state.attempt}/${state.maxAttempts}`
+    : `正在重连 ${state.attempt}/${state.maxAttempts}${seconds ? ` · ${seconds}秒后重试` : ''}`);
+  activity.phaseNode.title = state.reason === 'format' ? '无效的工具调用未执行，正在请求模型重新生成。' : '模型连接中断，将重新请求当前回复。';
 }
 
 function handleReconnect(event) {
@@ -1997,6 +2000,7 @@ function handleReconnect(event) {
     const maxAttempts = Number.isInteger(event.maxAttempts) && event.maxAttempts > 0 ? Math.min(10, event.maxAttempts) : 5;
     activity.reconnect = {
       status: event.status,
+      reason: event.reason === 'format' ? 'format' : undefined,
       attempt: Math.max(1, Math.min(maxAttempts, Number.isInteger(event.attempt) ? event.attempt : 1)), maxAttempts,
       retryAt: Number.isFinite(event.retryAt) ? event.retryAt : Date.now() + Math.max(0, Math.min(60_000, Number(event.delayMs) || 0)),
     };
@@ -2004,10 +2008,11 @@ function handleReconnect(event) {
     setSessionTokenRate(null);
     renderTaskReconnect(activity);
   } else if (event.status === 'recovered' || event.status === 'failed') {
+    const formatRetry = activity.reconnect?.reason === 'format';
     clearTaskReconnect();
     if (event.status === 'failed' && contextCompacting) finishContextCompaction('failed');
     setTaskActivityPhase(event.status === 'failed' ? 'reconnect-failed' : contextCompacting ? 'compacting' : 'waiting',
-      event.status === 'failed' ? '重连失败' : contextCompacting ? '正在压缩上下文…' : '连接已恢复');
+      event.status === 'failed' ? formatRetry ? '工具参数重试失败' : '重连失败' : contextCompacting ? '正在压缩上下文…' : formatRetry ? '工具参数已重新生成' : '连接已恢复');
   }
 }
 

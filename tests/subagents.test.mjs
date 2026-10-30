@@ -384,7 +384,7 @@ test('public activity is bounded and snapshots cannot mutate private task state'
   const manager = createSubagentManager(managerOptions({ emit: event => events.push(event), runChild: async child => {
     for (let index = 0; index < 80; index++) child.emit({ type: 'tool-start', name: 'read_file',
       args: { path: `fixture-${index}.js`, content: 'PRIVATE_BODY', apiKey: 'fixture-secret' }, providerState: 'PRIVATE_REASONING' });
-    child.emit({ type: 'text-delta', text: 'PRIVATE_UNPUBLISHED_DELTA' });
+    child.emit({ type: 'text-delta', text: 'PUBLIC_STREAM_DELTA' });
     child.emit({ type: 'assistant-message', text: 'x'.repeat(10000) + 'fixture-secret', providerState: 'PRIVATE_REASONING' });
     child.emit({ type: 'usage', inputTokens: 8, outputTokens: 4 });
   } }));
@@ -396,9 +396,63 @@ test('public activity is bounded and snapshots cannot mutate private task state'
   assert.notEqual(manager.snapshots()[0].activity[0].args.path, 'mutated');
   assert.equal(manager.snapshots()[0].writePaths.length, 0);
   const serialized = JSON.stringify(events);
-  for (const privateValue of ['PRIVATE_BODY', 'PRIVATE_REASONING', 'PRIVATE_UNPUBLISHED_DELTA', 'fixture-secret'])
+  for (const privateValue of ['PRIVATE_BODY', 'PRIVATE_REASONING', 'fixture-secret'])
     assert.equal(serialized.includes(privateValue), false);
   await manager.abortAndWait();
+});
+
+test('child text streams into isolated replacement snapshots, clears on retry and becomes one final activity', async () => {
+  const entered = deferred(), continueChild = deferred(), events = [];
+  const manager = createSubagentManager(managerOptions({ emit: event => events.push(structuredClone(event)), runChild: async child => {
+    child.emit({ type: 'text-delta', text: 'first fixture-', replace: true });
+    child.emit({ type: 'text-delta', text: 'first fixture-secret', replace: true });
+    entered.resolve(); await continueChild.promise;
+    child.emit({ type: 'reconnect', resetText: true });
+    child.emit({ type: 'text-delta', text: 'new text', replace: true });
+    child.emit({ type: 'assistant-message', text: 'new text finished' });
+  } }));
+  const child = await spawn(manager);
+  await entered.promise;
+  const running = manager.snapshots().find(item => item.id === child.id);
+  assert.equal(running.status, 'running');
+  assert.equal(running.summary, 'first [redacted]');
+  assert.deepEqual(running.activity, [{ type: 'message', text: 'first [redacted]', streaming: true }]);
+  assert.ok(events.some(event => event.agent?.activity.some(item => item.text === 'first [redacted]' && item.streaming)));
+  assert.equal(JSON.stringify(events).includes('fixture-secret'), false);
+  continueChild.resolve();
+  await manager.execute('wait_agents', {});
+  const done = manager.snapshots().find(item => item.id === child.id);
+  assert.deepEqual(done.activity, [{ type: 'message', text: 'new text finished', streaming: false }]);
+  assert.equal(done.summary, 'new text finished');
+  await manager.abortAndWait();
+});
+
+test('retry restores the last confirmed summary and a failed or stopped stream is not presented as the final summary', async () => {
+  for (const outcome of ['failed', 'stopped']) {
+    const entered = deferred(), leave = deferred(), events = [];
+    const manager = createSubagentManager(managerOptions({ emit: event => events.push(structuredClone(event)), runChild: async child => {
+      child.emit({ type: 'assistant-message', text: 'confirmed' });
+      child.emit({ type: 'text-delta', text: 'discarded draft', replace: true });
+      child.emit({ type: 'reconnect', resetText: true });
+      child.emit({ type: 'text-delta', text: 'partial retry', replace: true });
+      entered.resolve();
+      if (outcome === 'stopped') await abortWait(child.signal);
+      else { await leave.promise; throw new Error('failure'); }
+    } }));
+    const child = await spawn(manager); await entered.promise;
+    assert.equal(manager.snapshots()[0].summary, 'partial retry');
+    const discarded = events.findIndex(event => event.agent?.summary === 'discarded draft');
+    assert.ok(discarded >= 0 && events.slice(discarded + 1).some(event => event.agent?.summary === 'confirmed'
+      && !event.agent.activity.some(item => item.text === 'discarded draft')));
+    if (outcome === 'stopped') await manager.stop({ id: child.id });
+    else { leave.resolve(); await manager.execute('wait_agents', {}); }
+    const snapshot = manager.snapshots()[0];
+    assert.equal(snapshot.status, outcome);
+    assert.equal(snapshot.summary, 'confirmed');
+    assert.equal(snapshot.activity.at(-1).text, 'partial retry');
+    assert.equal(snapshot.activity.at(-1).streaming, false);
+    await manager.abortAndWait();
+  }
 });
 
 test('command output stays in child snapshots and split credentials are redacted before replacing a public frame', async () => {

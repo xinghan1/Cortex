@@ -83,6 +83,18 @@ test('answered choices and custom text render once in the current task flow with
   assert.equal(messages.children.length, 1); assert.equal(messages.querySelectorAll('article.message').length, 0);
 });
 
+test('malformed tool arguments display a format retry and clear it after exhaustion', () => {
+  const { context, activity } = fixture();
+  context.setSessionTokenRate = () => {};
+  vm.runInContext('let streamedMessage = null; let streamedText = "";', context);
+  for (const name of ['renderTaskReconnect', 'handleReconnect']) vm.runInContext(appFunction(name), context);
+  context.handleReconnect({ type: 'reconnect', status: 'waiting', attempt: 1, maxAttempts: 2, reason: 'format', resetText: true, runId: 'current' });
+  assert.match(activity.phaseNode.textContent, /工具参数格式有误，正在重新生成 1\/2/);
+  context.handleReconnect({ type: 'reconnect', status: 'failed', attempt: 2, maxAttempts: 2, reason: 'format', runId: 'current' });
+  assert.equal(activity.reconnect, null);
+  assert.equal(activity.phaseNode.textContent, '工具参数重试失败');
+});
+
 test('generated images are deduplicated by id and attached to the final answer; failed turns retain images outside the folded process', () => {
   for (const status of ['completed', 'failed', 'stopped']) {
     const { context, activity, messages } = fixture();

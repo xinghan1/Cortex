@@ -51,6 +51,35 @@ const source = [
 ].join('\r\n');
 const args = { path: 'C:\\fixture\\中文\\new.html', content: source };
 
+test('only complete relay Chat Completions JSON syntax errors are marked safe to retry', async () => {
+  const bad = '{"path":"private-marker"';
+  const cases = [
+    { response: () => json(chatReply(bad)), retryable: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => stream([chatDelta({ tool_calls: [{ index: 0, ...chatCall(bad) }] }), chatDelta({}, { finish_reason: 'tool_calls' }), '[DONE]']), retryable: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => stream([chatDelta({ tool_calls: [{ index: 0, ...chatCall(bad) }] })]), retryable: false, code: 'PROVIDER_INCOMPLETE_STREAM' },
+    { response: () => stream([chatDelta({ tool_calls: [{ index: 0, ...chatCall(bad) }] }), chatDelta({}, { finish_reason: 'length' }), '[DONE]']), retryable: false, code: 'PROVIDER_TRUNCATED' },
+    { response: () => json(chatReply('[]')), retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(chatReply('')), retryable: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(chatReply('  \n ')), retryable: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => stream([chatDelta({ tool_calls: [{ index: 0, ...chatCall('') }] }), chatDelta({}, { finish_reason: 'tool_calls' }), '[DONE]']), retryable: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(chatReply(undefined)), retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(chatReply(null)), retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(bodyFor('responses', bad)), protocol: 'responses', retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => json(chatReply(bad)), provider: 'openai', retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+    { response: () => stream([chatDelta({ tool_calls: [{ index: 0, ...chatCall('{"path":') }] }), chatDelta({ tool_calls: [{ index: 0, function: { arguments: { other: 'value' } } }] })]), retryable: false, code: 'INVALID_TOOL_ARGUMENTS' },
+  ];
+  for (const fixture of cases) {
+    await assert.rejects(requestModel(options(fixture.protocol || 'chat-completions', {
+      ...(fixture.provider ? { provider: fixture.provider } : {}), fetchImpl: async () => fixture.response(),
+    })), error => {
+      assert.equal(error.code, fixture.code);
+      assert.equal(error.retryableMalformedToolJson === true, fixture.retryable);
+      assert.doesNotMatch(error.message, /private-marker|synthetic-tool-arguments-secret/u);
+      return true;
+    });
+  }
+});
+
 test('relay JSON object arguments round-trip as strings without changing code or opaque reasoning', async () => {
   for (const protocol of ['responses', 'chat-completions']) {
     let requests = 0;

@@ -83,11 +83,44 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
       record.inputTokens = Math.max(record.inputTokens, Number.isSafeInteger(event.inputTokens) ? event.inputTokens : 0);
       record.outputTokens = Math.max(record.outputTokens, Number.isSafeInteger(event.outputTokens) ? event.outputTokens : 0);
       publish(record);
+    } else if (event.type === 'text-delta' && typeof event.text === 'string') {
+      // Child deltas are replacement frames from the agent loop. Redact the
+      // accumulated text again before publishing, including across chunks.
+      record.messageBuffer = (event.replace ? event.text : (record.messageBuffer || '') + event.text).slice(-65536);
+      if (!record.liveMessage) {
+        record.liveMessage = { type: 'message', text: '', streaming: true };
+        record.activity.push(record.liveMessage);
+        if (record.activity.length > SUBAGENT_LIMITS.activity) record.activity.shift();
+      }
+      record.liveMessage.text = safe(record.messageBuffer, 65536).slice(-SUBAGENT_LIMITS.summaryChars);
+      record.summary = record.liveMessage.text;
+      publish(record);
+    } else if (event.type === 'reconnect' && event.resetText) {
+      if (record.liveMessage) {
+        const index = record.activity.indexOf(record.liveMessage);
+        if (index !== -1) record.activity.splice(index, 1);
+        record.liveMessage = null;
+        record.messageBuffer = '';
+        record.summary = record.confirmedSummary;
+        publish(record);
+      }
     } else if (event.type === 'assistant-message') {
       if (typeof event.text === 'string' && event.text.trim()) {
         record.summary = safe(event.text, SUBAGENT_LIMITS.summaryChars);
-        addActivity(record, { type: 'message', text: record.summary });
+        record.confirmedSummary = record.summary;
+        if (record.liveMessage && record.activity.includes(record.liveMessage)) {
+          record.liveMessage.text = record.summary;
+          record.liveMessage.streaming = false;
+          publish(record);
+        } else addActivity(record, { type: 'message', text: record.summary });
+      } else if (record.liveMessage) {
+        const index = record.activity.indexOf(record.liveMessage);
+        if (index !== -1) record.activity.splice(index, 1);
+        record.summary = record.confirmedSummary;
+        publish(record);
       }
+      record.liveMessage = null;
+      record.messageBuffer = '';
     } else if (event.type === 'tool-start' || event.type === 'tool-result') {
       if (event.type === 'tool-start' && event.name === 'run_command') {
         record.commandBuffers = {}; record.commandActivity = {};
@@ -138,7 +171,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
     const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), role, writePaths, scopes,
       status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', activity: [],
       inputTokens: 0, outputTokens: 0, controller: new AbortController(), queue: [], delivered: false, promise: null,
-      commandBuffers: {}, commandActivity: {} };
+      commandBuffers: {}, commandActivity: {}, messageBuffer: '', liveMessage: null, confirmedSummary: '' };
     records.set(record.id, record);
     publish(record);
     record.promise = (async () => {
@@ -173,6 +206,11 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
         record.endedAt = new Date().toISOString();
         record.queue.length = 0;
         record.commandBuffers = {}; record.commandActivity = {};
+        if (record.liveMessage) {
+          record.liveMessage.streaming = false;
+          record.summary = record.confirmedSummary;
+        }
+        record.messageBuffer = ''; record.liveMessage = null;
         publish(record);
       }
     })();

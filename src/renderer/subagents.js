@@ -31,6 +31,7 @@
       summary: text(agent.summary), error: text(agent.error),
       activity: (Array.isArray(agent.activity) ? agent.activity : []).filter(item => item && activityTypes.has(item.type)).slice(-100).map(item => ({
         type: item.type, name: text(item.name, 160), text: text(item.text), toolCallId: text(item.toolCallId, 200),
+        ...(item.streaming === true ? { streaming: true } : {}),
         ...(Object.prototype.hasOwnProperty.call(item, 'args') ? { args: publicValue(item.args) } : {}),
         ...(Object.prototype.hasOwnProperty.call(item, 'result') ? { result: publicValue(item.result) } : {}),
       })),
@@ -65,6 +66,27 @@
     const seconds = Math.floor(value / 1000), minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
     return '用时 ' + (hours ? hours + 'h ' + minutes % 60 + 'm ' : minutes ? minutes + 'm ' : '') + seconds % 60 + 's';
   }
+  function liveElapsed(state, now = performance.now()) {
+    return state.elapsedBase === null ? null : state.elapsedBase + Math.max(0, now - state.elapsedAt);
+  }
+  function updateElapsed(state, value) {
+    const duration = elapsed(value);
+    if (state.meta.textContent !== duration) state.meta.textContent = duration;
+    state.meta.hidden = !duration;
+    if (state.usage) {
+      const parts = [];
+      if (duration) parts.push(duration);
+      if (state.agent.inputTokens !== null) parts.push('输入 ' + Math.floor(state.agent.inputTokens).toLocaleString() + ' Token');
+      if (state.agent.outputTokens !== null) parts.push('输出 ' + Math.floor(state.agent.outputTokens).toLocaleString() + ' Token');
+      const text = parts.join(' · ');
+      if (state.usage.textContent !== text) state.usage.textContent = text;
+    }
+  }
+  function tick(element) {
+    const state = states.get(element);
+    if (!state || state.historical || state.agent?.status !== 'running') return;
+    updateElapsed(state, liveElapsed(state));
+  }
   function raw(parent, label, value, key) {
     if (value === undefined || value === null || value === '') return;
     const details = node('details', 'subagent-raw'); details.dataset.stateKey = key;
@@ -84,7 +106,11 @@
     const opened = new Set([...state.body.querySelectorAll('details[open][data-state-key]')].map(item => item.dataset.stateKey));
     const fragment = document.createDocumentFragment();
     section(fragment, '任务', agent.task);
-    section(fragment, '总结', agent.summary);
+    // The latest assistant message is already visible in the process log.
+    // Retain distinct summaries and earlier activity, but do not show the
+    // same current message twice while streaming or after confirmation.
+    const latestMessage = [...agent.activity].reverse().find(item => ['message', 'assistant-message', 'text'].includes(item.type) && item.text);
+    if (!latestMessage || latestMessage.text !== agent.summary) section(fragment, '总结', agent.summary);
     section(fragment, '错误', agent.error, 'subagent-error-section');
     if (agent.activity.length) {
       const log = node('section', 'subagent-section subagent-activities');
@@ -106,11 +132,11 @@
       });
       fragment.append(log);
     }
-    const details = [];
-    if (agent.elapsedMs !== null) details.push(elapsed(agent.elapsedMs));
-    if (agent.inputTokens !== null) details.push('输入 ' + Math.floor(agent.inputTokens).toLocaleString() + ' Token');
-    if (agent.outputTokens !== null) details.push('输出 ' + Math.floor(agent.outputTokens).toLocaleString() + ' Token');
-    if (details.length) fragment.append(node('div', 'subagent-usage', details.join(' · ')));
+    state.usage = null;
+    if (state.elapsedBase !== null || agent.inputTokens !== null || agent.outputTokens !== null) {
+      state.usage = node('div', 'subagent-usage');
+      fragment.append(state.usage);
+    }
     state.body.replaceChildren(fragment);
     for (const item of state.body.querySelectorAll('details[data-state-key]')) if (opened.has(item.dataset.stateKey)) item.open = true;
   }
@@ -120,17 +146,21 @@
     const agent = normalize(snapshot);
     if (state.agent && agent.id !== state.agent.id) return element;
     const status = state.historical && agent.status === 'running' ? 'stopped' : agent.status;
+    const now = performance.now();
+    const previous = state.agent?.status === 'running' && !state.historical ? liveElapsed(state, now) : null;
+    state.elapsedBase = status === 'running' ? Math.max(agent.elapsedMs ?? 0, previous ?? 0) : agent.elapsedMs ?? previous;
+    state.elapsedAt = now;
     state.agent = agent;
     element.dataset.agentId = agent.id; element.dataset.status = status; element.dataset.color = colorFor(agent.id);
     state.name.textContent = agent.name; state.name.title = agent.task || agent.name;
     state.status.textContent = state.historical && agent.status === 'running' ? '任务已结束' : statusText[status];
-    state.meta.textContent = elapsed(agent.elapsedMs); state.meta.hidden = !state.meta.textContent;
     state.stop.hidden = state.historical || status !== 'running';
     state.stop.disabled = state.stopPending;
     state.stop.textContent = state.stopPending ? '停止中…' : '停止';
     if (status !== 'running') { state.stopPending = false; state.error.textContent = ''; state.error.hidden = true; }
     const signature = JSON.stringify(agent);
     if (signature !== state.signature) { renderBody(state, agent); state.signature = signature; }
+    updateElapsed(state, state.elapsedBase);
     return element;
   }
   function render(agent, { historical = false } = {}) {
@@ -146,7 +176,7 @@
     const body = node('div', 'subagent-body'), error = node('div', 'subagent-stop-error');
     error.hidden = true; error.setAttribute('role', 'alert');
     element.append(summary, error, body);
-    const state = { agent: null, historical: Boolean(historical), body, name, status, meta, stop, error, stopPending: false, signature: '' };
+    const state = { agent: null, historical: Boolean(historical), body, name, status, meta, stop, error, usage: null, stopPending: false, signature: '', elapsedBase: null, elapsedAt: performance.now() };
     states.set(element, state);
     stop.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
     stop.addEventListener('click', async event => {
@@ -170,7 +200,7 @@
   function finish(element, status = 'stopped') {
     const state = states.get(element);
     if (!state || state.agent.status !== 'running') return element;
-    return update(element, { ...state.agent, status: statuses.has(status) && status !== 'running' ? status : 'stopped' });
+    return update(element, { ...state.agent, elapsedMs: liveElapsed(state), status: statuses.has(status) && status !== 'running' ? status : 'stopped' });
   }
-  window.ForgeSubagents = Object.freeze({ render, update, finish });
+  window.ForgeSubagents = Object.freeze({ render, update, finish, tick });
 })();

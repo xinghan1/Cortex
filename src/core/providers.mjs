@@ -220,14 +220,20 @@ function checkArguments(value, label = '工具调用参数') {
   return value;
 }
 
-function parseArguments(raw, label = '模型返回的工具参数') {
+function parseArguments(raw, label = '模型返回的工具参数', { retryableMalformedToolJson = false } = {}) {
   if (typeof raw !== 'string') return checkArguments(undefined, label);
-  if (!raw.trim()) fail(`${label}为空，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
+  if (!raw.trim()) {
+    const error = new ProviderError(`${label}为空，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
+    if (retryableMalformedToolJson) error.retryableMalformedToolJson = true;
+    throw error;
+  }
   let value;
   try {
     value = JSON.parse(raw);
   } catch {
-    fail(`${label}不是有效 JSON，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
+    const error = new ProviderError(`${label}不是有效 JSON，工具调用未执行。`, 'INVALID_TOOL_ARGUMENTS');
+    if (retryableMalformedToolJson) error.retryableMalformedToolJson = true;
+    throw error;
   }
   return checkArguments(value, label);
 }
@@ -818,6 +824,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
 
   function fullArguments(call, value, index, { complete = true, blankFallback = false } = {}) {
     if (value === undefined) return;
+    call.argumentsReceived = true;
     let raw = value;
     if (typeof raw !== 'string') {
       if (!relayObjects || !isObject(raw)) checkArguments(undefined, argumentsLabel(call));
@@ -850,6 +857,7 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       fullArguments(call, value, index);
       return;
     }
+    call.argumentsReceived = true;
     if (call.argumentsComplete && value) argumentConflict(call);
     call.rawArguments += value;
     estimateAppend(`tool:${index}`, value, 'tool-call');
@@ -1108,9 +1116,12 @@ function createAccumulator(provider, onTextDelta, { model, endpoint, apiKey, onP
       }
       if (ids.has(call.id)) fail('模型返回了重复的工具调用 ID，已停止执行。', 'INVALID_TOOL_CALL');
       ids.add(call.id);
-      const args = call.rawArguments ? parseArguments(call.rawArguments, argumentsLabel(call))
-        : provider === 'anthropic' ? checkArguments(call.initialArguments, argumentsLabel(call))
-          : parseArguments(call.rawArguments, argumentsLabel(call));
+      const args = !call.rawArguments && provider === 'anthropic' ? checkArguments(call.initialArguments, argumentsLabel(call))
+        : parseArguments(call.rawArguments, argumentsLabel(call), {
+        // Only complete relay Chat Completions have a safe, narrowly scoped
+        // recovery path. Conflicting/incomplete streams never get this marker.
+        retryableMalformedToolJson: sourceProvider === 'relay' && chatCompatible && call.argumentsReceived === true,
+      });
       estimateFull(`tool:${index}`, call.rawArguments || JSON.stringify(args), 'tool-call');
       return { id: call.id, name: call.name, arguments: args };
     });
