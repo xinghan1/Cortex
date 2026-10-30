@@ -24,3 +24,42 @@ test('model listing and selection require pairing, validate input, and delegate 
   assert.deepEqual(selected,['a']);
  } finally { await service.stop(); }
 });
+test('workspace selection requires pairing and a valid open workspace identifier',async()=>{
+ const selected=[];const service=createMobileRemote({snapshot:()=>({}),submit:()=>({}),stopTask:()=>{},approve:()=>false,
+  listWorkspaces:()=>({workspaces:[{id:'open',name:'Project',active:true}]}),
+  selectWorkspace:id=>{if(id!=='open')throw new Error('未打开的工作空间');selected.push(id);return {id,name:'Project'};}});
+ const pair=await service.start(),port=Number(new URL(pair.addresses[0]).port);
+ try {
+  assert.equal((await request(port,'wrong','GET','/v1/workspaces')).code,401);
+  assert.equal((await request(port,'wrong','POST','/v1/workspace',JSON.stringify({id:'open'}))).code,401);
+  assert.equal((await request(port,pair.token,'GET','/v1/workspaces')).body.workspaces[0].name,'Project');
+  assert.equal((await request(port,pair.token,'POST','/v1/workspace',JSON.stringify({id:''}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/workspace',JSON.stringify({id:'not-open'}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/workspace',JSON.stringify({id:'open'}))).body.id,'open');
+  assert.deepEqual(selected,['open']);
+ } finally {await service.stop();}
+});
+test('attachment submission requires authentication and enforces byte limits',async()=>{
+ const received=[];const service=createMobileRemote({snapshot:()=>({}),submit:(text,images)=>{received.push({text,images});return {ok:true}},stopTask:()=>{},approve:()=>false});
+ const pair=await service.start(),port=Number(new URL(pair.addresses[0]).port);
+ try {
+  const image={name:'a.jpg',mediaType:'image/jpeg',dataUrl:'data:image/jpeg;base64,YQ=='};
+  assert.equal((await request(port,'wrong','POST','/v1/messages',JSON.stringify({text:'look',attachments:[image]}))).code,401);
+  assert.deepEqual(received,[]);
+  assert.equal((await request(port,pair.token,'POST','/v1/messages',JSON.stringify({text:'look',attachments:[image]}))).code,200);
+  assert.deepEqual(received[0],{text:'look',images:[image]});
+  assert.equal((await request(port,pair.token,'POST','/v1/messages',JSON.stringify({text:'look',attachments:[image,image]}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/messages',JSON.stringify({text:'中'.repeat(540000)}))).code,413);
+ } finally { await service.stop(); }
+});
+test('remote reasoning requires authorization and a valid model and effort',async()=>{
+ const selected=[]; const service=createMobileRemote({snapshot:()=>({}),submit:()=>({}),stopTask:()=>{},approve:()=>false,setReasoning:(model,effort)=>{selected.push({model,effort});return {reasoningEffort:effort}}});
+ const pair=await service.start(),port=Number(new URL(pair.addresses[0]).port);
+ try {
+  assert.equal((await request(port,'wrong','POST','/v1/reasoning',JSON.stringify({model:'a',effort:'high'}))).code,401);
+  assert.equal((await request(port,pair.token,'POST','/v1/reasoning',JSON.stringify({model:'a',effort:'invalid'}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/reasoning',JSON.stringify({effort:'high'}))).code,400);
+  assert.equal((await request(port,pair.token,'POST','/v1/reasoning',JSON.stringify({model:'a',effort:'high'}))).body.reasoningEffort,'high');
+  assert.deepEqual(selected,[{model:'a',effort:'high'}]);
+ } finally {await service.stop();}
+});

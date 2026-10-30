@@ -21,7 +21,7 @@ function ephemeralCertificate() {
   const cert='-----BEGIN CERTIFICATE-----\n'+der.toString('base64').match(/.{1,64}/g).join('\n')+'\n-----END CERTIFICATE-----\n';
   return {cert,key:privateKey.export({type:'pkcs8',format:'pem'}),fingerprint:new crypto.X509Certificate(cert).fingerprint256};
 }
-function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, selectModel }) {
+function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, selectModel, setReasoning, listWorkspaces, selectWorkspace }) {
   let server=null, token=null, fingerprint=null, port=null, operation=Promise.resolve();
   const serialize = action => { const next=operation.then(action); operation=next.catch(()=>{}); return next; };
   const status=()=>({enabled:!!server,token,fingerprint,addresses:server ? Object.values(os.networkInterfaces()).flat().filter(x=>x && x.family==='IPv4' && !x.internal).map(x=>`https://${x.address}:${port}`) : []});
@@ -38,14 +38,20 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, s
       try {
         if(req.method==='GET' && req.url==='/v1/state') return reply(200,await snapshot());
         if(req.method==='GET' && req.url==='/v1/models') return reply(200,await listModels());
+        if(req.method==='GET' && req.url==='/v1/workspaces') return reply(200,await listWorkspaces());
         if(req.method==='POST' && req.url==='/v1/stop') { await stopTask(); return reply(200,{stopped:true}); }
-        if(req.method==='POST' && (req.url==='/v1/messages' || req.url==='/v1/approval' || req.url==='/v1/model')) {
-          let body=''; for await (const chunk of req) { body+=chunk; if(body.length>50000) return reply(413,{error:'消息过长'}); }
+        if(req.method==='POST' && (req.url==='/v1/messages' || req.url==='/v1/approval' || req.url==='/v1/model' || req.url==='/v1/reasoning' || req.url==='/v1/workspace')) {
+          const chunks=[]; let size=0; const limit=req.url==='/v1/messages'?1600000:50000;
+          for await (const chunk of req) { size+=chunk.length; if(size>limit) return reply(413,{error:'消息过长'}); chunks.push(chunk); }
+          const body=Buffer.concat(chunks).toString('utf8');
           const parsed=JSON.parse(body);
+          if(req.url==='/v1/workspace') { if(!parsed || typeof parsed.id!=='string' || !parsed.id || parsed.id.length>200) return reply(400,{error:'工作空间标识无效'}); return reply(200,await selectWorkspace(parsed.id)); }
+          if(req.url==='/v1/reasoning') { if(!parsed || typeof parsed.model!=='string' || !parsed.model || parsed.model.length>200 || typeof parsed.effort!=='string' || !/^(default|none|enabled|minimal|low|medium|high|xhigh|max|ultra)$/.test(parsed.effort)) return reply(400,{error:'思考强度无效'}); return reply(200,await setReasoning(parsed.model,parsed.effort)); }
           if(req.url==='/v1/model') { if(!parsed || typeof parsed.model!=='string' || !parsed.model || parsed.model.length>200) return reply(400,{error:'模型标识无效'}); return reply(200,await selectModel(parsed.model)); }
           if(req.url==='/v1/approval') { if(!parsed || typeof parsed.id!=='string' || typeof parsed.approved!=='boolean') return reply(400,{error:'审批参数无效'}); if(!await approve({id:parsed.id,approved:parsed.approved})) return reply(409,{error:'审批已失效或不允许手动处理'}); return reply(200,{accepted:true}); }
           if(!parsed || typeof parsed.text!=='string') return reply(400,{error:'消息无效'});
-          return reply(200,await submit(parsed.text));
+          if(parsed.attachments!==undefined && (!Array.isArray(parsed.attachments) || parsed.attachments.length>1)) return reply(400,{error:'附件无效'});
+          return reply(200,await submit(parsed.text,parsed.attachments));
         }
         return reply(404,{error:'不存在'});
       } catch(error) { return reply(400,{error:String(error.message||'请求失败').slice(0,300)}); }

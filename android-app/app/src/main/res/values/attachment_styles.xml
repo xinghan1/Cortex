@@ -1,0 +1,1 @@
+<resources><style name="CortexAttachmentAnimation"><item name="android:windowEnterAnimation">@anim/attachment_enter</item><item name="android:windowExitAnimation">@anim/attachment_exit</item></style></resources>

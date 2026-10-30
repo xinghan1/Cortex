@@ -2183,6 +2183,8 @@ function buildHandlers() {
     setReasoningEffort: async arg => {
       const current = publicSettings();
       const capabilities = capabilitiesFor(await catalogContext(), current.model);
+      if (arg?.requireIdle && activeRun) throw new Error('电脑任务进行中，请完成或停止任务后切换思考强度。');
+      if (arg?.expectedModel && (current.model !== arg.expectedModel || publicSettings().model !== arg.expectedModel)) throw new Error('电脑模型已切换，请刷新后重试。');
       if (arg?.reasoningEffort !== 'default') {
         if (Array.isArray(capabilities.reasoningEfforts) && !capabilities.reasoningEfforts.includes(arg?.reasoningEffort)) throw new Error('当前模型不支持此推理强度，请使用默认或支持的档位。');
       }
@@ -2588,22 +2590,31 @@ const context = {
     host.mobileRemote = require('./core/mobile-remote.cjs').createMobileRemote({
       snapshot: async () => {
         const context = host.active, session = context.currentSession;
+        const timeline = require('./core/mobile-history.cjs').mobileTimeline({ messages: session?.messages || [], events: [...(session?.events || []), ...(context.activeRun?.liveEvents || [])], subagents: session?.subagents || [], taskRuns: session?.taskRuns || [], redact });
         return { workspace: context.tools?.root || null, sessionId: session?.id || null,
           title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: (await context.state()).settings?.model || '',
           pendingApprovals: (await context.state()).pendingApprovals,
-          streamText: redact(String(context.activeRun?.streamText || '')).slice(-12000),
+          streamText: redact(String(context.activeRun?.streamText || '')).replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]').slice(-12000),
           operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
             .slice(-20).map(event => ({ type: event.type, name: redact(String(event.name || '')).slice(0, 200) })),
-          messages: (session?.messages || []).filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string' && m.content)
-            .map(m => ({ role: m.role, content: redact(m.content) })) };
+          timeline,
+          messages: timeline.filter(entry => entry.type === 'message').map(({role,content})=>({role,content})) };
       },
       stopTask: () => host.active.handlers.stopTask(),
       approve: arg => host.active.handlers.respondApproval(arg),
+      listWorkspaces: async () => ({ workspaces: host.summaries().map(item => ({ id: item.workspaceId, name: item.name, active: item.active })) }),
+      selectWorkspace: async id => {
+        const target = [...host.contexts].find(value => value.id === id && value.tools);
+        if (!target) throw new Error('该工作空间未在电脑上打开，请先在电脑上打开。');
+        await host.activateProject(target.tools.root);
+        return { id: host.active.id, name: path.basename(host.active.tools.root) };
+      },
       listModels: async () => {
         const context = host.active, catalog = await context.handlers.listModels({});
         if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
         const state = await context.state();
-        return { model: state.settings?.model || '', models: (catalog.models || []).map(item => ({ id: item.id, name: item.displayName || item.id, supportsTools: item.supportsTools !== false })) };
+        const current = (catalog.models || []).find(item => item.id === state.settings?.model);
+        return { model: state.settings?.model || '', reasoningEffort: state.settings?.reasoningEffort || 'default', reasoningEfforts: Array.isArray(current?.reasoningEfforts) ? current.reasoningEfforts : [], models: (catalog.models || []).map(item => ({ id: item.id, name: item.displayName || item.id, supportsTools: item.supportsTools !== false })) };
       },
       selectModel: async model => {
         const context = host.active;
@@ -2612,9 +2623,16 @@ const context = {
         if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
         return { model: state.settings?.model || '' };
       },
-      submit: async text => {
+      setReasoning: async (model, effort) => {
         const context = host.active;
-        return context.submitPrompt({ text }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });
+        if (context.activeRun) throw new Error('电脑任务进行中，请完成或停止任务后切换思考强度。');
+        const state = await context.handlers.setReasoningEffort({ reasoningEffort: effort, requireIdle: true, expectedModel: model });
+        if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
+        return { reasoningEffort: state.settings?.reasoningEffort || 'default' };
+      },
+      submit: async (text, attachments) => {
+        const context = host.active;
+        return context.submitPrompt({ text, attachments }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });
       },
     });
     initializeBrowser();

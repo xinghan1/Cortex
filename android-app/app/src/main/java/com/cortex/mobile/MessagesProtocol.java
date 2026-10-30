@@ -27,8 +27,20 @@ final class MessagesProtocol {
                 } while (true);
                 messages.put(new JSONObject().put("role", "user").put("content", results));
             } else if (role.equals("user") || role.equals("assistant")) {
+                JSONArray original = m.optJSONArray("messages_content");
+                if (role.equals("assistant") && original != null && original.length() > 0) {
+                    messages.put(new JSONObject().put("role", role).put("content", new JSONArray(original.toString())));
+                    continue;
+                }
                 JSONArray blocks = new JSONArray(); String text = m.isNull("content") ? "" : m.optString("content", "");
                 if (!text.isEmpty()) blocks.put(new JSONObject().put("type", "text").put("text", text));
+                JSONArray images = m.optJSONArray("attachments");
+                if (images != null) for (int j = 0; j < images.length(); j++) {
+                    JSONObject image = images.getJSONObject(j); String media = image.getString("mediaType"), url = image.getString("dataUrl");
+                    String prefix = "data:" + media + ";base64,";
+                    if (!"image/jpeg".equals(media) || !url.startsWith(prefix)) throw new IllegalArgumentException("图片格式无效");
+                    blocks.put(new JSONObject().put("type", "image").put("source", new JSONObject().put("type", "base64").put("media_type", media).put("data", url.substring(prefix.length()))));
+                }
                 JSONArray calls = m.optJSONArray("tool_calls");
                 if (calls != null) for (int j = 0; j < calls.length(); j++) {
                     JSONObject call = calls.getJSONObject(j), f = call.getJSONObject("function");
@@ -53,7 +65,7 @@ final class MessagesProtocol {
                             .put("arguments", block.getJSONObject("input").toString())));
         }
         JSONObject result = new JSONObject().put("role", "assistant").put("content", text.toString());
-        if (calls.length() > 0) result.put("tool_calls", calls);
+        if (calls.length() > 0) result.put("tool_calls", calls).put("messages_content", new JSONArray(content.toString()));
         return result;
     }
 }
