@@ -24,6 +24,28 @@ const managerOptions = extra => ({ createWorkspace: async () => ({ root: 'C:/fix
   runChild: async () => {}, parentSignal: new AbortController().signal, emit: () => {}, redact, ...extra });
 const spawn = async (manager, args = {}) => JSON.parse(await manager.execute('spawn_agent', { name: 'Fixture', task: 'Inspect the fixture.', ...args }));
 
+test('subagent reports live numeric thinking and tool-generation progress without publishing private provider data', async () => {
+  const entered = deferred(), finish = deferred(), events = [];
+  const manager = createSubagentManager(managerOptions({ emit: event => events.push(structuredClone(event)), runChild: async child => {
+    child.emit({ type: 'telemetry', phase: 'thinking', estimatedOutputTokens: 17, modelMs: 500, estimated: true, privateReasoning: 'fixture-secret' });
+    child.emit({ type: 'telemetry', phase: 'generating', estimatedOutputTokens: 452, modelMs: 900, estimated: true, toolArguments: 'fixture-secret' });
+    entered.resolve(); await finish.promise;
+    child.emit({ type: 'usage', inputTokens: 30, outputTokens: 400 });
+    child.emit({ type: 'telemetry', phase: 'idle', estimatedOutputTokens: 400, modelMs: 1100, estimated: false });
+  } }));
+  await spawn(manager); await entered.promise;
+  const live = manager.snapshots()[0];
+  assert.equal(live.telemetry.phase, 'generating');
+  assert.equal(live.telemetry.estimatedOutputTokens, 452);
+  assert.equal(live.telemetry.estimated, true);
+  assert.equal(live.outputTokens, 0, 'stream estimate is not recorded as exact billing');
+  assert.equal(JSON.stringify(events).includes('fixture-secret'), false);
+  finish.resolve(); await manager.execute('wait_agents', {});
+  assert.equal(manager.snapshots()[0].outputTokens, 400);
+  assert.equal(manager.snapshots()[0].telemetry.estimated, false);
+  await manager.abortAndWait();
+});
+
 test('two independent real agent loops run in parallel, return matching results, isolate streams and account each request once', async () => {
   const bothStarted = deferred(), childRounds = new Map(), events = [], records = [], contexts = [], factoryCalls = [];
   let rootRound = 0, modelStarts = 0;
@@ -52,6 +74,7 @@ test('two independent real agent loops run in parallel, return matching results,
           assert.equal(request.messages.length, 2, 'Each child starts without the coordinator tool history');
           if (++modelStarts === 2) bothStarted.resolve();
           await bothStarted.promise; // Deadlocks if spawn waits for the child.
+          request.onProgress({ phase: 'tool-call', estimatedOutputTokens: 20 });
           request.onTextDelta('Child stream fixture-secret');
           return reply(`Inspecting ${name}.`, [call(`read-${name}`, 'read_file', { path: `${name}.txt` })]);
         }
@@ -75,6 +98,7 @@ test('two independent real agent loops run in parallel, return matching results,
       return reply('Combined final.');
     } }));
   assert.equal(rootRound, 2);
+  assert.ok(events.some(event => event.type === 'subagent-update' && event.agent.telemetry?.phase === 'generating' && event.agent.telemetry.estimatedOutputTokens >= 20), 'child agent loop forwards live tool-generation progress');
   assert.equal(modelStarts, 2);
   assert.deepEqual(factoryCalls.map(meta => meta.writePaths), [[], []]);
   assert.equal(records.length, 6);

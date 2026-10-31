@@ -8,6 +8,7 @@
   const text = (value, limit = 16000) => typeof value === 'string' ? value.slice(0, limit) : '';
   const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
   const statusText = { running: '进行中', completed: '已完成', failed: '失败', stopped: '已停止' };
+  const phases = { waiting: '等待模型响应', thinking: '正在思考', generating: '正在生成', tool: '正在执行工具' };
 
   function publicValue(value, depth = 0, seen = new WeakSet()) {
     if (value === null || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return value;
@@ -29,6 +30,10 @@
       status: statuses.has(agent.status) ? agent.status : 'running',
       elapsedMs: number(agent.elapsedMs), inputTokens: number(agent.inputTokens), outputTokens: number(agent.outputTokens),
       summary: text(agent.summary), error: text(agent.error),
+      telemetry: agent.telemetry && typeof agent.telemetry === 'object' ? {
+        phase: Object.hasOwn(phases, agent.telemetry.phase) ? agent.telemetry.phase : '',
+        estimatedOutputTokens: number(agent.telemetry.estimatedOutputTokens), estimated: agent.telemetry.estimated === true,
+      } : null,
       activity: (Array.isArray(agent.activity) ? agent.activity : []).filter(item => item && activityTypes.has(item.type)).slice(-100).map(item => ({
         type: item.type, name: text(item.name, 160), text: text(item.text), toolCallId: text(item.toolCallId, 200),
         ...(item.streaming === true ? { streaming: true } : {}),
@@ -78,6 +83,8 @@
       if (duration) parts.push(duration);
       if (state.agent.inputTokens !== null) parts.push('输入 ' + Math.floor(state.agent.inputTokens).toLocaleString() + ' Token');
       if (state.agent.outputTokens !== null) parts.push('输出 ' + Math.floor(state.agent.outputTokens).toLocaleString() + ' Token');
+      if (state.agent.status === 'running' && state.agent.telemetry?.estimated && state.agent.telemetry.estimatedOutputTokens > 0)
+        parts.push('估算输出 ' + Math.floor(state.agent.telemetry.estimatedOutputTokens).toLocaleString() + ' Token');
       const text = parts.join(' · ');
       if (state.usage.textContent !== text) state.usage.textContent = text;
     }
@@ -159,12 +166,16 @@
     state.agent = agent;
     element.dataset.agentId = agent.id; element.dataset.status = status; element.dataset.color = colorFor(agent.id);
     state.name.textContent = agent.name; state.name.title = agent.task || agent.name;
-    state.status.textContent = state.historical && agent.status === 'running' ? '任务已结束' : statusText[status];
+    state.status.textContent = state.historical && agent.status === 'running' ? '任务已结束'
+      : status === 'running' && agent.telemetry?.phase ? phases[agent.telemetry.phase] : statusText[status];
     state.stop.hidden = state.historical || status !== 'running';
     state.stop.disabled = state.stopPending;
     state.stop.textContent = state.stopPending ? '停止中…' : '停止';
     if (status !== 'running') { state.stopPending = false; state.error.textContent = ''; state.error.hidden = true; }
-    const signature = JSON.stringify(agent);
+    // Telemetry arrives frequently; keep expanded tool details intact and
+    // update only the status/usage labels when activity itself is unchanged.
+    const signature = JSON.stringify({ ...agent, telemetry: null, elapsedMs: agent.elapsedMs !== null,
+      inputTokens: agent.inputTokens !== null, outputTokens: agent.outputTokens !== null });
     if (signature !== state.signature) { renderBody(state, agent); state.signature = signature; }
     updateElapsed(state, state.elapsedBase);
     return element;

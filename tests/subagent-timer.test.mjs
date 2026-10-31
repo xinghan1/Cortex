@@ -21,10 +21,27 @@ function fixture() {
 }
 const snapshot = { id: 'one', name: '测试', task: '任务', status: 'running', elapsedMs: 1000, inputTokens: 120, outputTokens: 34, activity: [] };
 const meta = card => card.children[0].children[3];
+const phase = card => card.children[0].children[2];
 function usage(card) {
   const find = element => element.className === 'subagent-usage' ? element : element.children.map(find).find(Boolean);
   return find(card);
 }
+
+test('child telemetry shows the model phase and clearly labels output estimates without rebuilding the process log', () => {
+  const f = fixture(), card = f.api.render({ ...snapshot, telemetry: { phase: 'waiting', estimated: true, estimatedOutputTokens: 0 } });
+  assert.equal(phase(card).textContent, '等待模型响应');
+  const usageNode = usage(card);
+  f.api.update(card, { ...snapshot, telemetry: { phase: 'thinking', estimated: true, estimatedOutputTokens: 211 } });
+  assert.equal(phase(card).textContent, '正在思考');
+  assert.equal(usage(card), usageNode);
+  assert.match(usageNode.textContent, /输出 34 Token · 估算输出 211 Token/);
+  f.api.update(card, { ...snapshot, telemetry: { phase: 'generating', estimated: true, estimatedOutputTokens: 500 } });
+  assert.equal(phase(card).textContent, '正在生成');
+  assert.match(usageNode.textContent, /估算输出 500 Token/);
+  f.api.update(card, { ...snapshot, status: 'completed', telemetry: { phase: 'generating', estimated: true, estimatedOutputTokens: 500 } });
+  assert.equal(phase(card).textContent, '已完成');
+  assert.doesNotMatch(usage(card).textContent, /估算输出/);
+});
 
 test('running child time advances without snapshots and remains monotonic when an older update arrives', () => {
   const f = fixture(), card = f.api.render(snapshot);

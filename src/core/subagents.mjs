@@ -61,7 +61,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
     status: record.status, startedAt: record.startedAt, endedAt: record.endedAt,
     elapsedMs: Math.max(0, Date.parse(record.endedAt || new Date().toISOString()) - Date.parse(record.startedAt)),
     summary: record.summary, error: record.error, activity: record.activity.map(item => structuredClone(item)),
-    inputTokens: record.inputTokens, outputTokens: record.outputTokens });
+    inputTokens: record.inputTokens, outputTokens: record.outputTokens, telemetry: record.telemetry ? { ...record.telemetry } : null });
   const publish = record => emit({ type: 'subagent-update', agent: snapshot(record) });
   const result = record => { const { activity, ...value } = snapshot(record); return value; };
   const get = id => {
@@ -79,7 +79,20 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
   parentSignal?.addEventListener('abort', abortChildren, { once: true });
   const eventFor = record => event => {
     if (!event || record.status !== 'running') return;
-    if (event.type === 'usage') {
+    if (event.type === 'telemetry') {
+      // Only numeric progress and an allowlisted phase are public. Never forward
+      // native reasoning, model text or partially assembled tool arguments.
+      const phases = ['idle', 'waiting', 'thinking', 'generating', 'tool', 'completed'];
+      const phase = phases.includes(event.phase) ? event.phase : 'waiting';
+      const finite = value => Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+      const priorPhase = record.telemetry?.phase;
+      record.telemetry = { phase,
+        estimatedOutputTokens: finite(event.estimatedOutputTokens) ? Math.max(record.outputTokens, Math.floor(event.estimatedOutputTokens)) : record.outputTokens,
+        tokensPerSecond: finite(event.tokensPerSecond) ? event.tokensPerSecond : null,
+        estimated: event.estimated !== false, modelMs: finite(event.modelMs) ? Math.floor(event.modelMs) : 0 };
+      const now = Date.now();
+      if (priorPhase !== phase || now - record.lastTelemetryAt >= 250) { record.lastTelemetryAt = now; publish(record); }
+    } else if (event.type === 'usage') {
       record.inputTokens = Math.max(record.inputTokens, Number.isSafeInteger(event.inputTokens) ? event.inputTokens : 0);
       record.outputTokens = Math.max(record.outputTokens, Number.isSafeInteger(event.outputTokens) ? event.outputTokens : 0);
       publish(record);
@@ -171,7 +184,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
     const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), role, writePaths, scopes,
       status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', activity: [],
       inputTokens: 0, outputTokens: 0, controller: new AbortController(), queue: [], delivered: false, promise: null,
-      commandBuffers: {}, commandActivity: {}, messageBuffer: '', liveMessage: null, confirmedSummary: '' };
+      commandBuffers: {}, commandActivity: {}, messageBuffer: '', liveMessage: null, confirmedSummary: '', telemetry: null, lastTelemetryAt: 0 };
     records.set(record.id, record);
     publish(record);
     record.promise = (async () => {
