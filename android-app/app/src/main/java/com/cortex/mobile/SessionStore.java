@@ -100,6 +100,16 @@ final class SessionStore {
         else if (id.equals(current)) current=sessions.optJSONObject(0).optString("id");
         persist();
     }
+    synchronized void setPinned(java.util.Collection<String> ids, boolean pinned) {
+        for (String id:ids) { JSONObject item=find(id); if(item!=null) try { item.put("pinned",pinned); } catch(org.json.JSONException e) { throw new IllegalStateException(e); } }
+        persist();
+    }
+    synchronized void deleteMany(java.util.Collection<String> ids) {
+        for(int i=sessions.length()-1;i>=0;i--){JSONObject s=sessions.optJSONObject(i);if(s!=null && ids.contains(s.optString("id")))sessions.remove(i);}
+        if(sessions.length()==0)current=newSession(new JSONArray());
+        else if(find(current)==null)current=sessions.optJSONObject(0).optString("id");
+        persist();
+    }
     synchronized JSONArray list(String query) {
         String needle = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
         ArrayList<JSONObject> found=new ArrayList<>();
@@ -113,9 +123,9 @@ final class SessionStore {
             }
             if(needle.isEmpty() || text.toString().toLowerCase(Locale.ROOT).contains(needle)) found.add(s);
         }
-        Collections.sort(found, Comparator.comparingLong((JSONObject s) -> s.optLong("updatedAt", 0)).reversed());
+        Collections.sort(found, Comparator.comparing((JSONObject s) -> s.optBoolean("pinned", false)).reversed().thenComparing(Comparator.comparingLong((JSONObject s) -> s.optLong("updatedAt", 0)).reversed()));
         JSONArray result=new JSONArray();
-        try { for(JSONObject s:found) result.put(new JSONObject().put("id",s.optString("id")).put("title",s.optString("title")).put("createdAt",s.optLong("createdAt")).put("updatedAt",s.optLong("updatedAt"))); }
+        try { for(JSONObject s:found) result.put(new JSONObject().put("id",s.optString("id")).put("title",s.optString("title")).put("createdAt",s.optLong("createdAt")).put("updatedAt",s.optLong("updatedAt")).put("pinned",s.optBoolean("pinned",false))); }
         catch(Exception e) { throw new IllegalStateException("无法读取会话列表", e); }
         return result;
     }
