@@ -1,10 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import https from 'node:https';
+import net from 'node:net';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url);
 const {createMobileRemote}=require('../src/core/mobile-remote.cjs');
 function request(port,token,method,path,body) { return new Promise((resolve,reject)=>{ const req=https.request({host:'127.0.0.1',port,method,path,rejectUnauthorized:false,headers:{authorization:`Bearer ${token}`}},res=>{const fingerprint=res.socket.getPeerCertificate().fingerprint256;let data='';res.on('data',chunk=>data+=chunk);res.on('end',()=>resolve({code:res.statusCode,body:JSON.parse(data),fingerprint}));});req.on('error',reject);req.end(body);}); }
+test('fixed port validates input, reports conflicts, and can be reused after stopping',async()=>{
+ const service=createMobileRemote({snapshot:()=>({ok:true})});
+ for(const port of [-1,65536,1.5,'123',null]) await assert.rejects(service.start({port}),/端口/);
+ const reserved=net.createServer();await new Promise((resolve,reject)=>{reserved.once('error',reject);reserved.listen(0,'0.0.0.0',resolve);});const port=reserved.address().port;
+ try {
+  await assert.rejects(service.start({port}),{code:'EADDRINUSE'});
+  assert.equal(service.status().enabled,false);assert.equal(service.status().token,null);assert.equal(service.status().fingerprint,null);
+ } finally {await service.stop();await new Promise(resolve=>reserved.close(resolve));}
+ try {
+  const pair=await service.start({port});assert.equal(pair.port,port);
+  assert.equal((await request(port,pair.token,'GET','/v1/state')).body.ok,true);
+  await assert.rejects(service.start({port:port===65535?port-1:port+1}),/先停止/);
+  await service.stop();assert.equal(service.status().port,null);
+  const restarted=await service.start({port});assert.equal(restarted.port,port);assert.notEqual(restarted.token,pair.token);
+ } finally {await service.stop();}
+});
+test('a TCP tunnel preserves the desktop certificate and pairing authorization',async()=>{
+ const service=createMobileRemote({snapshot:()=>({ok:true})});
+ const pair=await service.start();
+ const sockets=new Set();
+ const proxy=net.createServer(client=>{const upstream=net.connect(pair.port,'127.0.0.1');sockets.add(client);sockets.add(upstream);client.on('close',()=>{sockets.delete(client);upstream.destroy();});upstream.on('close',()=>{sockets.delete(upstream);client.destroy();});client.on('error',()=>{});upstream.on('error',()=>client.destroy());client.pipe(upstream).pipe(client);});
+ try {
+  await new Promise((resolve,reject)=>{proxy.once('error',reject);proxy.listen(0,'127.0.0.1',resolve);});
+  const port=proxy.address().port;
+  const valid=await request(port,pair.token,'GET','/v1/state');
+  assert.equal(valid.body.ok,true);assert.equal(valid.fingerprint,pair.fingerprint);
+  assert.equal((await request(port,'wrong','GET','/v1/state')).code,401);
+ } finally {for(const socket of sockets) socket.destroy();await service.stop();await new Promise(resolve=>proxy.close(resolve));}
+});
 test('remote access requires pairing and serves requests over TLS; stop revokes credentials',async()=>{
  let stopped=0, decisions=[]; const service=createMobileRemote({snapshot:()=>({sessionId:'s',messages:[]}),submit:text=>({text}),stopTask:()=>{stopped++},approve:arg=>{decisions.push(arg);return arg.id==='pending'}});
  const pair=await service.start(); const port=Number(new URL(pair.addresses[0]).port);

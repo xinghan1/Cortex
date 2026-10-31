@@ -1961,9 +1961,9 @@ function buildHandlers() {
     browserLayout: arg => browser.setLayout(arg),
     petNativeUpdate: arg => host.nativePet?.update(arg),
     mobileRemoteStatus: () => host.mobileRemote.status(),
-    mobileRemoteStart: () => host.mobileRemote.start(),
+    mobileRemoteStart: arg => host.mobileRemote.start({ port: arg?.port }),
     mobileRemoteStop: () => host.mobileRemote.stop(),
-    mobileRemoteQr: arg => require('./core/mobile-pairing-qr.cjs').mobilePairingQr(host.mobileRemote.status(), arg?.url),
+    mobileRemoteQr: arg => require('./core/mobile-pairing-qr.cjs').mobilePairingQr(host.mobileRemote.status(), arg?.url, { allowExternal: arg?.external === true }),
     browserCommand: async arg => {
       if (!['back', 'forward', 'reload', 'stop', 'close'].includes(arg?.action)) throw new Error('浏览器操作无效。');
       await browser[arg.action](); return browser.state();

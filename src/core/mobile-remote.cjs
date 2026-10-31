@@ -24,10 +24,16 @@ function ephemeralCertificate() {
 function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, selectModel, setReasoning, listWorkspaces, selectWorkspace }) {
   let server=null, token=null, fingerprint=null, port=null, operation=Promise.resolve();
   const serialize = action => { const next=operation.then(action); operation=next.catch(()=>{}); return next; };
-  const status=()=>({enabled:!!server,token,fingerprint,addresses:server ? Object.values(os.networkInterfaces()).flat().filter(x=>x && x.family==='IPv4' && !x.internal).map(x=>`https://${x.address}:${port}`) : []});
+  const status=()=>({enabled:!!server,token,fingerprint,port,addresses:server ? Object.values(os.networkInterfaces()).flat().filter(x=>x && x.family==='IPv4' && !x.internal).map(x=>`https://${x.address}:${port}`) : []});
   const stop=()=>serialize(async()=>{ const old=server; server=null; token=null; fingerprint=null; port=null; if(old) { old.closeAllConnections(); await new Promise(resolve=>old.close(resolve)); } return status(); });
-  const start=()=>serialize(async()=>{
-    if(server) return status();
+  const start=(options={})=>serialize(async()=>{
+    if(!options || typeof options!=='object' || Array.isArray(options)) throw new Error('远程连接端口无效');
+    const requestedPort=options.port===undefined ? 0 : options.port;
+    if(!Number.isInteger(requestedPort) || requestedPort<0 || requestedPort>65535) throw new Error('远程连接端口必须为 1 到 65535 的整数，或使用自动分配');
+    if(server) {
+      if(requestedPort && requestedPort!==port) throw new Error('远程连接已开启，请先停止后再更改端口');
+      return status();
+    }
     const certificate=ephemeralCertificate(); token=crypto.randomBytes(32).toString('base64url'); fingerprint=certificate.fingerprint;
     const instance=https.createServer({key:certificate.key,cert:certificate.cert},async(req,res)=>{
       const reply=(code,obj)=>{res.writeHead(code,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(JSON.stringify(obj));};
@@ -57,7 +63,7 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, s
       } catch(error) { return reply(400,{error:String(error.message||'请求失败').slice(0,300)}); }
     });
     instance.requestTimeout=15000; instance.headersTimeout=10000;
-    try { await new Promise((resolve,reject)=>{instance.once('error',reject);instance.listen(0,'0.0.0.0',resolve);}); server=instance; port=instance.address().port; return status(); }
+    try { await new Promise((resolve,reject)=>{instance.once('error',reject);instance.listen(requestedPort,'0.0.0.0',resolve);}); server=instance; port=instance.address().port; return status(); }
     catch(error) { token=null;fingerprint=null;throw error; }
   });
   return {start,stop,status};

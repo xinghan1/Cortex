@@ -15,8 +15,15 @@ public final class PairingPayloadTest {
         invalid(new JSONObject(valid.toString()).put("url","http://192.168.1.10:3456"));
         invalid(new JSONObject(valid.toString()).put("url","https://user@192.168.1.10:3456"));
         invalid(new JSONObject(valid.toString()).put("url","https://192.168.1.10:3456/other"));
-        invalid(new JSONObject(valid.toString()).put("url","https://example.com:3456"));
+        for(String address:new String[]{"https://example.com:3456","https://node-1.example.net:443","https://203.0.113.9:12345"}) {
+            if(!PairingPayload.parse(new JSONObject(valid.toString()).put("url",address).toString()).url.equals(address))throw new AssertionError("address changed");
+        }
         invalid(new JSONObject(valid.toString()).put("url","https://999.168.1.10:3456"));
+        invalid(new JSONObject(valid.toString()).put("url","https://01.168.1.10:3456"));
+        invalid(new JSONObject(valid.toString()).put("url","https://example.com:3456?token=test"));
+        invalid(new JSONObject(valid.toString()).put("url","https://example.com:3456#fragment"));
+        invalid(new JSONObject(valid.toString()).put("url","https://example.com:65536"));
+        invalid(new JSONObject(valid.toString()).put("url","https://[::1]:3456"));
         invalid(new JSONObject(valid.toString()).put("url","https://192.168.1.10:0"));
         invalid(new JSONObject(valid.toString()).put("fingerprint","AB"));
         invalid(new JSONObject(valid.toString()).put("token","A"));

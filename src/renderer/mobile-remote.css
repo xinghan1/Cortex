@@ -2,6 +2,8 @@ dialog.mobile-remote-dialog { width: 600px; max-width: calc(100vw - 40px); max-h
 .mobile-remote-dialog .dialog-header h2 { margin: 0; font-size: 22px; }
 .mobile-remote-status { margin: 16px 0; color: var(--muted); font-size: 13px; }
 .mobile-remote-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.mobile-remote-dialog #mobile-remote-port { display: block; width: 180px; margin: 0 0 14px; }
+.mobile-remote-dialog #mobile-remote-tunnel-address { width: min(100%, 360px); box-sizing: border-box; }
 .mobile-remote-info { display: grid; gap: 12px; margin: 0 0 18px; }
 .mobile-remote-label { margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .mobile-remote-value { padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-control, 8px); background: var(--panel2); color: var(--text); font: 12px/1.6 monospace; user-select: text; overflow-wrap: anywhere; }
@@ -9,7 +11,11 @@ dialog.mobile-remote-dialog { width: 600px; max-width: calc(100vw - 40px); max-h
 .mobile-remote-qr-address { max-width: 100%; padding: 8px; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
 .mobile-remote-qr-image { display: block; width: auto; max-width: 100%; height: auto; image-rendering: pixelated; background: white; border-radius: 4px; }
 .mobile-remote-qr-status { margin: 0; color: var(--muted); font-size: 12px; }
-.mobile-remote-guidance { color: var(--muted); font-size: 12px; line-height: 1.65; }
-.mobile-remote-guidance p { margin: 8px 0; }
+dialog.mobile-remote-help-dialog { width: 600px; max-width: calc(100vw - 40px); max-height: calc(100vh - 50px); margin: auto; overflow-y: auto; -webkit-app-region: no-drag; }
+.mobile-remote-help-dialog .dialog-header h2 { margin: 0; font-size: 22px; }
+.mobile-remote-help-content { color: var(--text); font-size: 13px; line-height: 1.7; }
+.mobile-remote-help-content h3 { margin: 20px 0 6px; font-size: 14px; }
+.mobile-remote-help-content p { margin: 8px 0; color: var(--muted); }
+.mobile-remote-help-dialog button:focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
 .mobile-remote-dialog [hidden] { display: none; }
 .mobile-remote-dialog button:focus-visible { outline: 2px solid var(--ui-accent, var(--accent)); outline-offset: 2px; }
