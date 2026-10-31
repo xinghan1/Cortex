@@ -1,7 +1,7 @@
 {
   "name": "cortex",
   "productName": "Cortex",
-  "version": "0.24.25",
+  "version": "0.24.26",
   "private": true,
   "description": "Multi-model local coding assistant for Windows",
   "type": "module",

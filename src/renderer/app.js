@@ -3903,12 +3903,6 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
     if (diff.dataset.exact === 'false') brief.title = '改动较大或文件过大，展开查看统计说明。';
     if (tool.editBrief) tool.editBrief.replaceWith(brief); else tool.title.after(brief);
     tool.editBrief = brief;
-    if (updateActivity && diff.dataset.exact === 'true') {
-      for (const [className, direction] of [['tool-edit-added', 'up'], ['tool-edit-removed', 'down']]) {
-        const count = brief.querySelector(`.${className}`);
-        window.CortexEditCount?.animate(count, direction);
-      }
-    }
     const raw = tool.technical;
     raw.classList.add('code-diff-raw');
     raw.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));

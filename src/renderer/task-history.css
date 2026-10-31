@@ -286,13 +286,6 @@
   color: #ff7e85;
 }
 .tool-edit-pending { color: var(--ui-muted, var(--muted)); font-size: 11px; }
-.tool-edit-number { display: inline-block; }
-.tool-edit-number.up { animation: edit-count-up 140ms ease-out both; }
-.tool-edit-number.down { animation: edit-count-down 140ms ease-out both; }
-
-@media (prefers-reduced-motion: reduce) {
-  .tool-edit-number { animation: none !important; }
-}
 
 .task-activity-events .tool-details {
   margin: 3px 0 9px 26px;
