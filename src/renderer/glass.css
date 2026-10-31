@@ -225,6 +225,10 @@ button:disabled:hover {
 }
 
 .brand-logo {
+  box-sizing: border-box;
+  padding: 3px;
+  border-radius: 7px;
+  background: #e7eaf0;
   filter: drop-shadow(0 0 7px rgb(167 205 255 / 20%));
 }
 
@@ -367,6 +371,10 @@ button:disabled:hover {
   width: 43px;
   height: 43px;
   object-fit: contain;
+  box-sizing: border-box;
+  padding: 4px;
+  border-radius: 9px;
+  background: #e7eaf0;
 }
 
 .welcome .welcome-eyebrow {
