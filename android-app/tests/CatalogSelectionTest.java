@@ -14,6 +14,8 @@ public final class CatalogSelectionTest {
         s.select("two");if(!"two".equals(s.selected()))throw new AssertionError("catalog selection not retained");
         s.load("previous-model",true);long refresh=s.begin();s.apply(refresh,Arrays.asList("new-model"));
         if(s.models().contains("previous-model")||!s.selected().isEmpty())throw new AssertionError("a successful refresh must not offer a model absent from its catalog");
+        s.load("previous-model",true,Arrays.asList("previous-model","second","second"));if(s.models().size()!=2||!s.models().contains("second")||!s.selected().equals("previous-model"))throw new AssertionError("saved catalog restoration");
+        s.load("previous-model",false,Arrays.asList("second"));if(!s.models().isEmpty())throw new AssertionError("stale catalog from another connection");
         System.out.println("Model catalog selection passed");
     }
 }

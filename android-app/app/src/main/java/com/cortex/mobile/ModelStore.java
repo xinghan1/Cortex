@@ -59,6 +59,15 @@ final class ModelStore {
     JSONObject selectedProfile() { return selected(); }
     String keyFor(String id) throws Exception { return readKey(id); }
     void selectProfile(String id) { prefs.edit().putString(SELECTED,id).apply(); }
+    void selectProfileModel(String id,String model) throws Exception {
+        JSONArray rows=profiles(); boolean found=false;
+        for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row==null||!id.equals(row.optString("id")))continue;
+            boolean allowed=model.equals(row.optString("model")); JSONArray catalog=row.optJSONArray("catalog");
+            if(catalog!=null)for(int j=0;j<catalog.length();j++)if(model.equals(catalog.optString(j)))allowed=true;
+            if(model.isEmpty()||!allowed)throw new Exception("模型不在已保存的目录中");row.put("model",model);found=true;break;}
+        if(!found)throw new Exception("模型配置不存在");
+        prefs.edit().putString(PROFILES,rows.toString()).putString(SELECTED,id).apply();
+    }
     void saveProfile(JSONObject profile, String secret) throws Exception {
         String id=profile.optString("id"); if(id.isEmpty()) throw new Exception("模型标识无效");
         JSONArray before=profiles(), after=new JSONArray(); boolean found=false;

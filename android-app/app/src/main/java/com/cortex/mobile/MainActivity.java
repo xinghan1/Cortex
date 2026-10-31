@@ -71,6 +71,8 @@ public class MainActivity extends Activity {
     LinearLayout attachmentPreview;
     private ScrollView scroll;
     private View mainPage, currentPage, pairingPage;
+    private FrameLayout pageHost;
+    private boolean pageChanging;
     private EditText pairingAddress,pairingFingerprint,pairingToken;
     private boolean secondaryPage, computerSettingsPage, reopenSettingsAfterRecreate;
     private EditText input;
@@ -180,6 +182,7 @@ public class MainActivity extends Activity {
     }
     private final GestureSession mainGestures=new GestureSession();
     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        if(pageChanging) return true;
         int direction=mainGestures.read(event,secondaryPage?currentPage:mainPage,false);
         if((!secondaryPage && (SwipeDirection.openHistory(direction) || SwipeDirection.openSettings(direction))) || (secondaryPage && SwipeDirection.closeSettings(direction,computerSettingsPage))) {
             android.view.MotionEvent cancel=android.view.MotionEvent.obtain(event);cancel.setAction(android.view.MotionEvent.ACTION_CANCEL);super.dispatchTouchEvent(cancel);cancel.recycle();
@@ -243,7 +246,14 @@ public class MainActivity extends Activity {
     private void renderLocal() { render(localMessages); }
     private void render(JSONArray rows) {
         boolean atBottom = isAtBottom(); int oldScroll=scroll.getScrollY(); messages.removeAllViews();
-        if (rows.length() == 0) { TextView empty=text("探索未至之境",16,MUTED); empty.setGravity(Gravity.CENTER); empty.setPadding(dp(20),dp(80),dp(20),0); messages.addView(empty); return; }
+        if (rows.length() == 0) {
+            messages.setLayoutParams(new LinearLayout.LayoutParams(-1,0,1));
+            LinearLayout welcome=new LinearLayout(this);welcome.setOrientation(LinearLayout.VERTICAL);welcome.setGravity(Gravity.CENTER);welcome.setPadding(dp(20),dp(20),dp(20),dp(20));messages.addView(welcome,new LinearLayout.LayoutParams(-1,-1));
+            ImageView logo=new ImageView(this);logo.setImageResource(R.drawable.cortex_logo);logo.setScaleType(ImageView.ScaleType.FIT_CENTER);logo.setPadding(dp(15),dp(15),dp(15),dp(15));logo.setContentDescription("Cortex 标志");GradientDrawable tile=rounded(light?0xffe9ebef:0xff1d1f23,20);tile.setStroke(dp(1),light?0xffd4d8df:0xff343940);logo.setBackground(tile);welcome.addView(logo,new LinearLayout.LayoutParams(dp(68),dp(68)));
+            TextView eyebrow=text("CORTEX WORKSPACE",11,light?0xff677c92:0xffa8bed0);eyebrow.setGravity(Gravity.CENTER);eyebrow.setLetterSpacing(.15f);eyebrow.setTypeface(null,Typeface.BOLD);LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);ep.topMargin=dp(24);welcome.addView(eyebrow,ep);
+            TextView heading=text("探索未至之境",25,TEXT);heading.setGravity(Gravity.CENTER);heading.setTypeface(null,Typeface.BOLD);LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.topMargin=dp(18);welcome.addView(heading,hp);return;
+        }
+        messages.setLayoutParams(new LinearLayout.LayoutParams(-1,-2));
         ToolEventView tools=new ToolEventView(this,messages,light,toolExpanded);
         for (int i=0;i<rows.length();i++) { JSONObject m=rows.optJSONObject(i); if(m==null) continue; String role=m.optString("role"),type=m.optString("type");
             if(type.equals("notice")){tools.breakGroup();TextView notice=text(m.optString("content"),13,MUTED);notice.setPadding(dp(4),dp(8),dp(4),dp(8));notice.setTextIsSelectable(true);messages.addView(notice);continue;}
@@ -379,16 +389,34 @@ public class MainActivity extends Activity {
         });
         page.requestApplyInsets();
     }
-    private void showPage(View page) { currentPage=page; secondaryPage=true; applySafeInsets(page,18,12,18,10); setContentView(page); page.requestApplyInsets(); }
-    private void leavePage() { if(!secondaryPage) return; secondaryPage=false; currentPage=null; setContentView(mainPage); mainPage.requestApplyInsets(); refreshTabs(); if(remote) { handler.removeCallbacks(pollTask); poll(); } }
-    @Override public void onBackPressed() { if(secondaryPage && computerSettingsPage) settings(); else if(secondaryPage) leavePage(); else super.onBackPressed(); }
+    private void showPage(View page) {
+        if(pageChanging) return;
+        applySafeInsets(page,18,12,18,10);
+        if(!secondaryPage) {
+            pageHost=new FrameLayout(this);pageHost.setBackgroundColor(BG);setContentView(pageHost);
+            pageHost.addView(mainPage,new FrameLayout.LayoutParams(-1,-1));
+            mainPage.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        } else if(currentPage!=null) { currentPage.animate().cancel();pageHost.removeView(currentPage); }
+        currentPage=page;secondaryPage=true;pageHost.addView(page,new FrameLayout.LayoutParams(-1,-1));page.requestApplyInsets();
+        pageChanging=true;page.setTranslationX(getResources().getDisplayMetrics().widthPixels);
+        page.animate().translationX(0).setDuration(240).setInterpolator(new android.view.animation.DecelerateInterpolator()).withEndAction(()->pageChanging=false).start();
+    }
+    private void leavePage() {
+        if(!secondaryPage || pageChanging) return;
+        View page=currentPage;pageChanging=true;
+        page.animate().translationX(getResources().getDisplayMetrics().widthPixels).setDuration(220).setInterpolator(new android.view.animation.DecelerateInterpolator()).withEndAction(()->{
+            pageHost.removeAllViews();pageHost=null;secondaryPage=false;currentPage=null;pageChanging=false;
+            mainPage.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);setContentView(mainPage);mainPage.requestApplyInsets();refreshTabs();if(remote){handler.removeCallbacks(pollTask);poll();}
+        }).start();
+    }
+    @Override public void onBackPressed() { if(pageChanging)return; if(secondaryPage && computerSettingsPage) settings(); else if(secondaryPage) leavePage(); else super.onBackPressed(); }
     @Override protected void onResume() { super.onResume(); if(modelButton!=null && modelStore!=null) refreshTabs(); }
     private TextView pageButton(String label) { TextView v=control(label,15); v.setPadding(dp(16),0,dp(16),0); v.setGravity(Gravity.CENTER); return v; }
     private void settings() {
         computerSettingsPage=false;
         LinearLayout page=new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setBackgroundColor(BG);
         LinearLayout head=new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL); page.addView(head,new LinearLayout.LayoutParams(-1,dp(52)));
-        TextView back=control("‹",28); back.setContentDescription("返回会话"); head.addView(back,new LinearLayout.LayoutParams(dp(40),dp(40))); back.setOnClickListener(v->leavePage());
+        ImageButton back=backButton("返回会话"); head.addView(back,new LinearLayout.LayoutParams(dp(40),dp(40))); back.setOnClickListener(v->leavePage());
         TextView heading=text("设置",20,TEXT); heading.setTypeface(null,Typeface.BOLD); heading.setPadding(dp(14),0,0,0); head.addView(heading);
         LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.topMargin=dp(24);page.addView(form,params);
         LinearLayout models=settingsRow(form,"◇","模型设置");models.setOnClickListener(v->modelStore.showManager(()->refreshTabs()));
@@ -407,11 +435,12 @@ public class MainActivity extends Activity {
         TextView icon=text(symbol,20,TEXT);icon.setGravity(Gravity.CENTER);row.addView(icon,new LinearLayout.LayoutParams(dp(36),dp(40)));
         TextView name=text(label,16,TEXT);name.setPadding(dp(12),0,0,0);row.addView(name,new LinearLayout.LayoutParams(0,-2,1));TextView arrow=text("›",22,MUTED);row.addView(arrow);return row;
     }
+    private ImageButton backButton(String description) { ImageButton back=new ImageButton(this);back.setImageResource(R.drawable.settings_back);back.setColorFilter(TEXT);back.setScaleType(ImageView.ScaleType.CENTER);back.setPadding(0,0,0,0);back.setBackground(rounded(PANEL,22));back.setContentDescription(description);return back; }
     private void computerSettings() {
         computerSettingsPage=true;
         LinearLayout page=new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setBackgroundColor(BG);
         LinearLayout head=new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL); page.addView(head,new LinearLayout.LayoutParams(-1,dp(52)));
-        TextView back=control("‹",28); back.setContentDescription("返回设置"); head.addView(back,new LinearLayout.LayoutParams(dp(44),dp(44))); back.setOnClickListener(v->settings());
+        ImageButton back=backButton("返回设置"); head.addView(back,new LinearLayout.LayoutParams(dp(44),dp(44))); back.setOnClickListener(v->settings());
         TextView heading=text("电脑连接设置",20,TEXT); heading.setTypeface(null,Typeface.BOLD); heading.setPadding(dp(16),0,0,0); head.addView(heading);
         ScrollView settingsScroll=new ScrollView(this); settingsScroll.setFillViewport(true); page.addView(settingsScroll,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(0,dp(20),0,dp(16)); settingsScroll.addView(form);

@@ -10,6 +10,7 @@ final class CatalogSelection {
     private String saved="", selected=""; private boolean keepSaved; private long generation;
     private final ArrayList<String> models=new ArrayList<>();
     void load(String previous,boolean mayKeep){ saved=previous==null?"":previous;invalidate(mayKeep); }
+    void load(String previous,boolean mayKeep,Collection<String> cached){ load(previous,mayKeep); if(!mayKeep || cached==null)return; LinkedHashSet<String> unique=new LinkedHashSet<>(models); for(String id:cached) if(id!=null&&!id.trim().isEmpty()&&id.length()<=200)unique.add(id); models.clear(); models.addAll(unique); }
     void invalidate(boolean mayKeep){ generation++;keepSaved=mayKeep&&!saved.isEmpty();models.clear();selected="";if(keepSaved){models.add(saved);selected=saved;} }
     long begin(){return ++generation;}
     boolean apply(long ticket,Collection<String> fetched){
