@@ -280,10 +280,16 @@
 
 .tool-edit-added {
   color: #5ce194;
+  animation: edit-count-up 260ms ease-out both;
 }
 
 .tool-edit-removed {
   color: #ff7e85;
+  animation: edit-count-down 260ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-edit-added, .tool-edit-removed { animation: none; }
 }
 
 .task-activity-events .tool-details {

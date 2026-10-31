@@ -1318,7 +1318,7 @@ function updateReasoningControl(range, fromInput = false) {
   const visual = range.closest?.('.reasoning-slider-visual');
   if (visual) {
     visual.dataset.fill = range.dataset.fill;
-    visual.classList.toggle('is-max', maximum);
+    visual.classList.toggle('is-max', available && options.length > 1 && index === options.length - 1);
     visual.classList.toggle('is-unavailable', !available);
     if (!available) visual.classList.remove('is-dragging');
   }
@@ -1409,7 +1409,6 @@ function refreshControlLocks() {
   setReasoningDisabled(modelControlBusy() || reasoningSaving || modelSaving);
   $('model-reasoning-trigger').disabled = modelControlBusy() || reasoningSaving || modelSaving;
   $('popup-model-button').disabled = modelControlBusy() || reasoningSaving || modelSaving;
-  $('reasoning-open-settings').disabled = busy || reasoningSaving || modelSaving || isChatGPTBusy();
   $('terminal-input').disabled = busy || isChatGPTBusy();
   $('terminal-run').disabled = busy || !appState?.workspace || isChatGPTBusy();
   $('terminal-stop').disabled = !terminalRunning;
@@ -2455,11 +2454,18 @@ function createUserMessageFooter(text, metadata = {}) {
 function finishStream(text) {
   let finished = streamedMessage;
   if (streamedMessage) {
-    if (text !== undefined) renderText(streamedMessage.body, text);
+    if (text !== undefined && text !== streamedText) {
+      const previous = window.CortexTextReveal?.visibleText(streamedMessage.body) || '';
+      renderText(streamedMessage.body, text);
+      window.CortexTextReveal?.animateNewText(streamedMessage.body, previous);
+    }
     streamedMessage.message.classList.remove('streaming');
     streamedMessage = null;
     streamedText = '';
-  } else if (text) finished = addMessage('assistant', text);
+  } else if (text) {
+    finished = addMessage('assistant', text);
+    window.CortexTextReveal?.animateNewText(finished.body, '');
+  }
   return finished;
 }
 
@@ -4261,7 +4267,9 @@ function handleEvent(event) {
       setTaskActivityPhase('generating', '正在生成');
       if (!streamedMessage) { streamedText = ''; streamedMessage = addMessage('assistant', '', true); }
       streamedText = event.replace ? (event.text || '') : streamedText + (event.text || '');
+      const previous = window.CortexTextReveal?.visibleText(streamedMessage.body) || '';
       renderText(streamedMessage.body, streamedText);
+      window.CortexTextReveal?.animateNewText(streamedMessage.body, previous);
       scrollBottom();
       break;
     case 'assistant-message': {
@@ -4589,7 +4597,6 @@ function bindUI() {
   $('model-list-refresh').addEventListener('click', () => fetchCurrentCatalog(true));
   $('model-list-retry').addEventListener('click', () => fetchCurrentCatalog(true));
   $('model-open-settings').addEventListener('click', () => openSettings());
-  $('reasoning-open-settings').addEventListener('click', () => openSettings());
   $('settings-model-refresh').addEventListener('click', () => fetchSettingsCatalog(true));
   $('settings-dialog').addEventListener('close', () => {
     if ($('settings-dialog').open) return;

@@ -9,6 +9,7 @@ class Element {
   set textContent(value) { this.content = String(value); for (const child of this.children) child.parentElement = null; this.children = []; }
   get textContent() { return this.content + this.children.map(child => child.textContent).join(''); }
   append(...children) { for (const child of children) { child.remove(); child.parentElement = this; this.children.push(child); } }
+  replaceChildren(...children) { this.textContent = ''; this.append(...children); }
   insertBefore(child, before) { child.remove(); const index = this.children.indexOf(before); assert.notEqual(index, -1); child.parentElement = this; this.children.splice(index, 0, child); }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; }
   setAttribute(key, value) { this.attributes[key] = String(value); }
@@ -33,6 +34,39 @@ const card = (text = 'original card', status = 'running') => {
 };
 const finish = (element, status = 'completed') => { element.classList.remove('running'); element.dataset.status = status; api.refresh(element); };
 const groups = target => target.querySelectorAll('.tool-operation-group');
+
+test('edit group counts only verified completed file snapshots', () => {
+  const target = new Element('div'), first = card('first', 'completed'), second = card('second');
+  const diff = new Element('article'); diff.className = 'code-diff-card'; diff.dataset.exact = 'true';
+  const added = new Element('span'); added.className = 'code-diff-added'; added.textContent = '+3';
+  const removed = new Element('span'); removed.className = 'code-diff-removed'; removed.textContent = '-1';
+  diff.append(added, removed); first.append(diff);
+  api.appendTool(target, first, event('write_file'));
+  const group = api.appendTool(target, second, event('replace_in_file'));
+  assert.equal(group.querySelector('.tool-operation-edit-counts').textContent, '+3-1');
+  const later = new Element('article'); later.className = 'code-diff-card'; later.dataset.exact = 'false';
+  second.append(later); finish(second);
+  assert.equal(group.querySelector('.tool-operation-edit-counts').hidden, true, 'unknown counts are never treated as zero');
+});
+
+test('edit group coalesces rapid completed changes at one-second intervals', async () => {
+  const timers = [];
+  const isolated = vm.createContext({ document: { createElement: tag => new Element(tag) },
+    setTimeout: (fn, ms) => { assert.equal(ms, 1000); timers.push(fn); return timers.length; } });
+  vm.runInContext(await fs.readFile(new URL('../src/renderer/tool-operation-groups.js', import.meta.url), 'utf8'), isolated);
+  const grouped = isolated.ForgeToolOperationGroups, target = new Element('div');
+  const first = card('first', 'completed'), second = card('second');
+  const diff = new Element('article'); diff.className = 'code-diff-card'; diff.dataset.exact = 'true';
+  const added = new Element('span'); added.className = 'code-diff-added'; added.textContent = '+1';
+  const removed = new Element('span'); removed.className = 'code-diff-removed'; removed.textContent = '-0';
+  diff.append(added, removed); first.append(diff);
+  grouped.appendTool(target, first, event('write_file'));
+  const group = grouped.appendTool(target, second, event('replace_in_file'));
+  added.textContent = '+4'; grouped.refresh(first); grouped.refresh(first);
+  assert.equal(timers.length, 1);
+  timers.shift()();
+  assert.equal(group.querySelector('.tool-operation-edit-counts').textContent, '+4-0');
+});
 
 test('mixed status counts retain separate semantic colors as operations change status', () => {
   const target = new Element('div');

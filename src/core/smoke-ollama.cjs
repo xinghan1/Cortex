@@ -237,7 +237,7 @@ module.exports = async function smokeOllama({ win, output, dataDir, store }) {
     await js(`openRecentProject({path:${JSON.stringify(project)}})`); await until('isolated project', async () => (await state()).workspace?.root === project && await js('!projectSwitching'));
 
     stage = 'native settings add Ollama without an API key';
-    await click('#model-reasoning-trigger'); await click('#reasoning-open-settings'); await until('settings dialog', () => js(`$('settings-dialog').open`));
+    await click('#model-reasoning-trigger'); await click('#popup-model-button'); await click('#model-open-settings'); await until('settings dialog', () => js(`$('settings-dialog').open`));
     await select('provider-select', 'ollama');
     assert.equal(await js(`$('base-url-input').value`), 'http://localhost:11434');
     assert.equal(await js(`$('api-key-input').value`), ''); assert.match(await js(`$('api-key-label').textContent`), /可选/);

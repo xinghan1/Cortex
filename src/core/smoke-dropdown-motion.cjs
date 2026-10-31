@@ -70,7 +70,7 @@ module.exports=async function smokeDropdownMotion({win,output,dataDir}){
     await js(`openRecentProject({path:${JSON.stringify(project)}})`);await until('project and latest session ready',async()=>(await call('getState')).sessionId===sessions[1].id&&await js('!projectSwitching'));
 
     stage='native provider/auth selects inside a modal dialog';
-    await click('#model-reasoning-trigger');await click('#reasoning-open-settings');await until('settings open',()=>js(`$('settings-dialog').open`));
+    await click('#model-reasoning-trigger');await click('#popup-model-button');await click('#model-open-settings');await until('settings open',()=>js(`$('settings-dialog').open`));
     await choose('provider-select','deepseek');await openSelect('provider-select');
     assert.equal(await js(`document.querySelector(${JSON.stringify(popup('provider-select'))}).closest('dialog').id`),'settings-dialog');
     assert.equal(await js(`!!document.querySelector(${JSON.stringify(popup('provider-select'))}).closest('[inert]')`),false);
@@ -151,7 +151,7 @@ module.exports=async function smokeDropdownMotion({win,output,dataDir}){
     await click('#project-switcher');await until('project menu visible reduced',()=>js(`!$('project-dropdown').hidden`));
     assert.equal(await js(`$('project-dropdown').getAnimations().length`),0);await outside();assert.equal(await js(`document.querySelectorAll('[data-dropdown-ghost="true"]').length`),0);
     await child.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'no-preference'}]});
-    await click('#model-reasoning-trigger');await click('#reasoning-open-settings');await openSelect('provider-select');
+    await click('#model-reasoning-trigger');await click('#popup-model-button');await click('#model-open-settings');await openSelect('provider-select');
     assert.ok(await js(`window.__dropdownSmoke.events.some((e,i,all)=>e.type==='input'&&all[i+1]?.type==='change'&&all[i+1].id===e.id&&all[i+1].value===e.value)`));
     assert.equal((await call('getState')).usageStats.day.requests,0);assert.ok(catalogRequests.length>0);assert.deepEqual(problems,[]);
     assert.ok(motionEvidence.some(item=>item.direction==='up')&&motionEvidence.some(item=>item.direction==='down'),'Native dropdown fixtures must cover upward and downward height reveals');

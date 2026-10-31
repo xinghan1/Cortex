@@ -1,0 +1,3 @@
+@keyframes cortex-stream-reveal { from { opacity: 0; } to { opacity: 1; } }
+.stream-reveal { animation: cortex-stream-reveal 220ms ease-out both; }
+@media (prefers-reduced-motion: reduce) { .stream-reveal { animation: none; } }

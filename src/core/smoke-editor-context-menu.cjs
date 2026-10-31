@@ -140,7 +140,7 @@ module.exports = async function smokeEditorContextMenu({ win, output, dataDir })
     assert.equal(trigger.text.includes('上下文'),false); assert.equal(trigger.chevron,false); assert.equal(trigger.ring,true); assert.match(trigger.label,/上下文/u);
     await click('#session-context-trigger'); await until('context popup still opens',()=>js(`!$('context-settings-popup').hidden`));
     await click('#context-settings-close');
-    await click('#model-reasoning-trigger'); await click('#reasoning-open-settings');
+    await click('#model-reasoning-trigger'); await click('#popup-model-button'); await click('#model-open-settings');
     await until('settings dialog still opens',()=>js(`$('settings-dialog').open`));
     for (const id of ['provider-select','base-url-input','api-key-input','settings-model-refresh','chatgpt-model-select','save-settings']) assert.equal(await js(`!!document.getElementById(${JSON.stringify(id)})`),true);
     await click('#close-settings');

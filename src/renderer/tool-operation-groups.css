@@ -1,6 +1,16 @@
 .tool-operation-group { min-width: 0; margin: 3px 0; border-radius: 6px; color: #b6c7e0; font-size: 12px; }
 .tool-operation-group-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 8px; min-height: 31px; padding: 5px 4px; border-radius: 6px; cursor: pointer; list-style: none; user-select: none; }
 .tool-operation-group-summary::-webkit-details-marker { display: none; }
+.tool-operation-edit-counts { display: inline-flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.tool-operation-edit-counts[hidden] { display: none; }
+.tool-operation-count-added, .tool-operation-count-removed { display: inline-block; overflow: hidden; }
+.tool-operation-count-added { color: #5ce194; }
+.tool-operation-count-removed { color: #ff7e85; }
+.tool-operation-count-value { display: inline-block; animation: edit-count-up 260ms ease-out both; }
+.tool-operation-count-value.removed { animation-name: edit-count-down; }
+@keyframes edit-count-up { from { opacity: 0; transform: translateY(100%); } to { opacity: 1; transform: translateY(0); } }
+@keyframes edit-count-down { from { opacity: 0; transform: translateY(-100%); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .tool-operation-count-value { animation: none; } }
 .tool-operation-group-summary:hover { background: rgb(211 230 255 / 5%); color: #e0ecff; }
 .tool-operation-group-summary:focus-visible { outline: 2px solid #accbff; outline-offset: 3px; }
 .tool-operation-group-icon { position: relative; width: 12px; height: 15px; flex: 0 0 12px; margin: 0 4px 0 2px; border: 1px solid currentColor; border-radius: 2px; opacity: .9; }

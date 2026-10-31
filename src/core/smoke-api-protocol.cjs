@@ -168,7 +168,7 @@ module.exports = async function smokeApiProtocol({ win, output, dataDir }) {
       await capture('reasoning-settings-card.png');
       reasoningCardChecked = true;
     }
-    await js("document.getElementById('reasoning-open-settings').click()");
+    await js("document.getElementById('popup-model-button').click();document.getElementById('model-open-settings').click()");
     await until('model settings opened from popup', () => js("document.getElementById('settings-dialog').open&&document.getElementById('reasoning-popup').hidden"));
   };
   const chooseProvider = value => js(`(()=>{const select=document.getElementById('provider-select');select.value=${JSON.stringify(value)};select.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`);

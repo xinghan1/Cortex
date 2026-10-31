@@ -668,6 +668,32 @@ html[data-selection-color='custom'] .reasoning-slider-visual:not(.is-unavailable
   box-shadow: none;
 }
 html[data-selection-color='custom'] .reasoning-slider-visual:focus-within { outline-color: var(--custom-selection-color); }
+
+/* The highest reasoning level has its own animated treatment in the popup. */
+html .popup-slider-visual.is-max .reasoning-visual-fill {
+  overflow: hidden;
+}
+html .popup-slider-visual.is-max .reasoning-visual-fill::after {
+  background: linear-gradient(90deg, #3456cf 0%, #aa78f6 52%, #7757d8 100%) !important;
+  opacity: 1;
+}
+html .popup-slider-visual.is-max .reasoning-visual-fill::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 12px 8px, #fff9 0 1px, transparent 2px), radial-gradient(circle at 55px 16px, #fffc 0 1px, transparent 2px), radial-gradient(circle at 95px 6px, #fff9 0 1px, transparent 2px), radial-gradient(circle at 125px 20px, #fffc 0 1px, transparent 2px);
+  background-size: 150px 26px;
+  animation: reasoning-particles-drift 4s linear infinite;
+}
+html .popup-slider-visual.is-max .reasoning-visual-thumb { background: #fff !important; }
+html .popup-slider-visual.is-max .reasoning-visual-thumb::after { opacity: 0; }
+@keyframes reasoning-particles-drift { to { background-position-x: -150px; } }
+@media (prefers-reduced-motion: reduce) {
+  html .popup-slider-visual.is-max .reasoning-visual-fill::before { animation: none; }
+}
 html[data-selection-color='custom'] #round-navigator .round-navigator-tick:is(:hover, :focus-visible, [aria-current='step']) {
   color: var(--custom-accent-text);
 }

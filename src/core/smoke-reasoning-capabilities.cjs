@@ -94,7 +94,7 @@ module.exports = async function smokeReasoningCapabilities({ win, output, dataDi
     assert.notEqual(actual.label, '不可用'); assert.notEqual(actual.pill, '不可用');
   };
   const settingsMatch = async (expected, support) => {
-    await js("document.getElementById('reasoning-open-settings').click()");
+    await js("document.getElementById('popup-model-button').click();document.getElementById('model-open-settings').click()");
     await until('settings opened', () => js("document.getElementById('settings-dialog').open"));
     const actual = await js("({manual:!!document.getElementById('model-input'),ranges:document.querySelectorAll('[id^=\"settings-reasoning-\"]').length,catalog:document.getElementById('chatgpt-model-select')?.tagName,saveDisabled:document.getElementById('save-settings').disabled})");
     assert.equal(actual.manual,false);assert.equal(actual.ranges,0);assert.equal(actual.catalog,'SELECT');assert.equal(actual.saveDisabled,true);

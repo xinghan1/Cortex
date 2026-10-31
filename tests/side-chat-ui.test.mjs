@@ -20,11 +20,13 @@ function fixture(bridge) {
       this.tag = tag; this.children = []; this.listeners = new Map(); this.dataset = {}; this.attributes = {};
       this.value = ''; this.textContent = ''; this.hidden = false; this.disabled = false;
       this.scrollHeight = 0; this.scrollTop = 0; this.clientHeight = 0;
+      this.style = { values: {}, setProperty: (key, value) => { this.style.values[key] = value; }, removeProperty: key => { delete this.style.values[key]; } };
       this.classList = { toggle() {} }; nodes.push(this);
     }
     set id(value) { this._id = value; elements.set(value, this); }
     get id() { return this._id; }
     setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; }
     append(...items) { this.children.push(...items); }
     prepend(...items) { this.children.unshift(...items); }
     replaceChildren(...items) { this.children = items; }
@@ -41,13 +43,28 @@ function fixture(bridge) {
   const controls = window.ForgeSideChat.create({ bridge, getWorkspaceId: () => workspaceId,
     notice: (...args) => notices.push(args) });
   controls.apply(snapshot(1));
-  return { controls, notices, node: id => elements.get(id), focus: () => focused,
+  return { controls, notices, node: id => elements.get(id), root: document.documentElement, focus: () => focused,
     quote: () => nodes.find(node => node.className === 'side-chat-quote-draft'),
     hint: () => nodes.find(node => node.className === 'side-chat-hint'),
     switchWorkspace(id, next) { workspaceId = id; controls.apply(next, id); },
     submit: () => elements.get('side-chat-form').listeners.get('submit')({ preventDefault() {} }),
   };
 }
+
+test('side chat width can be dragged, adjusted by keyboard, and reset', () => {
+  const f = fixture({}); const handle = f.node('side-chat-resizer');
+  const send = (type, event) => handle.listeners.get(type)({ preventDefault() {}, ...event });
+  send('pointerdown', { button: 0, pointerId: 1, clientX: 600 });
+  send('pointermove', { pointerId: 1, clientX: 500 });
+  assert.equal(f.root.style.values['--side-chat-width'], '460px');
+  send('pointermove', { pointerId: 1, clientX: 2000 });
+  assert.equal(f.root.style.values['--side-chat-width'], '260px');
+  send('pointerup', { pointerId: 1 });
+  send('keydown', { key: 'ArrowLeft' });
+  assert.equal(f.root.style.values['--side-chat-width'], '280px');
+  send('dblclick', {});
+  assert.equal(f.root.style.values['--side-chat-width'], undefined);
+});
 
 test('closing a project cannot suppress another project sidebar or steal focus when its reply arrives', async () => {
   const close = deferred(), f = fixture({ sideChatClose: () => close.promise });

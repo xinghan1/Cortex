@@ -30,6 +30,37 @@
     if (card.classList.contains('running')) return 'running';
     return ['completed', 'failed', 'denied', 'stopped', 'unknown'].includes(card.dataset.status) ? card.dataset.status : 'unknown';
   }
+  // Counts are based solely on completed file snapshots, never inferred from
+  // streamed tool arguments. Coalesce rapid tool results into one update/s.
+  function refreshEditCounts(state, members) {
+    let added = 0, removed = 0, found = false, unknown = false;
+    for (const card of members) {
+      const edit = card.querySelector('.code-diff-card');
+      if (!edit) continue;
+      const a = edit.querySelector('.code-diff-added')?.textContent;
+      const r = edit.querySelector('.code-diff-removed')?.textContent;
+      if (edit.dataset.exact !== 'true' || !/^\+\d+$/.test(a || '') || !/^-\d+$/.test(r || '')) { unknown = true; continue; }
+      added += Number(a.slice(1)); removed += Number(r.slice(1)); found = true;
+    }
+    state.pendingCounts = found && !unknown ? { added, removed } : null;
+    if (state.countTimer) return;
+    if (!state.pendingCounts && state.editCounts.hidden) return;
+    const update = () => {
+      state.countTimer = null;
+      const counts = state.pendingCounts;
+      state.editCounts.hidden = !counts;
+      if (!counts) return;
+      for (const [key, sign] of [['added', '+'], ['removed', '-']]) {
+        const target = state[key];
+        const value = `${sign}${counts[key]}`;
+        if (target.textContent === value) continue;
+        target.replaceChildren(node('span', `tool-operation-count-value ${key}`, value));
+        target.setAttribute('aria-label', `${key === 'added' ? '新增' : '删除'} ${counts[key]} 行`);
+      }
+    };
+    if (typeof setTimeout !== 'function') { update(); return; }
+    state.countTimer = setTimeout(update, 1000);
+  }
   function refresh(value) {
     const group = groups.has(value) ? value : cards.get(value)?.group;
     const state = groups.get(group);
@@ -42,6 +73,7 @@
     const status = counts.running ? 'running' : counts.failed ? 'failed' : counts.denied ? 'denied'
       : counts.unknown ? 'unknown' : counts.stopped ? 'stopped' : 'completed';
     const description = describe(members);
+    refreshEditCounts(state, members);
     state.label.textContent = status === 'running' ? description.running
       : counts.completed === members.length ? description.complete : description.neutral;
     state.count.textContent = `${members.length} ${description.readOnly ? '次' : '项操作'}`;
@@ -108,14 +140,18 @@
       const summary = node('summary', 'tool-operation-group-summary');
       const icon = node('span', 'tool-operation-group-icon'); icon.setAttribute('aria-hidden', 'true');
       const label = node('span', 'tool-operation-group-label'), count = node('span', 'tool-operation-group-count'), status = node('span', 'tool-operation-group-status');
+      const editCounts = node('span', 'tool-operation-edit-counts'); editCounts.hidden = true;
+      editCounts.title = '此组已完成文件操作的新增和删除行数之和';
+      const added = node('span', 'tool-operation-count-added'), removed = node('span', 'tool-operation-count-removed');
+      editCounts.append(added, removed);
       status.setAttribute('aria-live', 'polite'); status.setAttribute('aria-atomic', 'true');
       const chevron = node('span', 'tool-operation-group-chevron'); chevron.setAttribute('aria-hidden', 'true');
-      summary.append(icon, label, count, status, chevron);
+      summary.append(icon, label, count, editCounts, status, chevron);
       const body = node('div', 'tool-operation-group-body tool-operation-group-items');
       group.append(summary, body);
       target.insertBefore(group, last); body.append(last, card);
       single.group = identity.group = group;
-      const state = { family, runId: identity.runId, generation, target, cards: [last, card], body, label, count, status };
+      const state = { family, runId: identity.runId, generation, target, cards: [last, card], body, label, count, status, editCounts, added, removed, countTimer: null };
       groups.set(group, state);
       refresh(group); onGroup(group); return group;
     }

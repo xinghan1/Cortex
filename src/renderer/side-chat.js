@@ -11,6 +11,10 @@
     };
     const panel = el('aside', 'side-chat-panel'); panel.id = 'side-chat-panel'; panel.hidden = true;
     panel.setAttribute('aria-label', 'AI 临时问答');
+    const resizer = el('div', 'side-chat-resizer'); resizer.id = 'side-chat-resizer';
+    resizer.setAttribute('role', 'separator'); resizer.setAttribute('tabindex', '0');
+    resizer.setAttribute('aria-label', '调整侧边问答宽度'); resizer.setAttribute('aria-orientation', 'vertical');
+    resizer.title = '拖动调整宽度；左右键微调；双击恢复默认';
     const header = el('div', 'side-chat-header'), heading = el('div');
     const title = el('strong', '', '侧边问答'), model = el('button', 'text-button side-chat-model');
     model.type = 'button'; model.title = '配置侧边问答模型';
@@ -33,8 +37,49 @@
     const stop = el('button', 'button', '停止'); stop.id = 'side-chat-stop'; stop.type = 'button'; stop.hidden = true;
     const send = el('button', 'button solid', '发送'); send.id = 'side-chat-send'; send.type = 'submit';
     actions.append(keyboard, stop, send); form.append(quoteWrap, input, error, actions);
-    panel.append(header, hint, messages, form);
-    document.querySelector('.workspace-layout').append(panel);
+    panel.append(resizer, header, hint, messages, form);
+    const layout = document.querySelector('.workspace-layout'); layout.append(panel);
+    let preferredWidth = null, dragging = null;
+    const limits = () => {
+      const layoutWidth = layout.clientWidth || window.innerWidth || 1000;
+      const sidebarWidth = document.querySelector('.sidebar')?.getBoundingClientRect?.().width || 0;
+      return { min: 260, max: Math.max(260, Math.min(900, layoutWidth - sidebarWidth - 328)) };
+    };
+    const syncWidthAria = value => {
+      const { min, max } = limits();
+      resizer.setAttribute('aria-valuemin', String(min)); resizer.setAttribute('aria-valuemax', String(Math.round(max)));
+      resizer.setAttribute('aria-valuenow', String(Math.round(value))); resizer.setAttribute('aria-valuetext', `${Math.round(value)} 像素`);
+    };
+    const setWidth = width => {
+      const { min, max } = limits(); const value = Math.max(min, Math.min(max, width));
+      const cssWidth = `${Math.round(value)}px`;
+      if (document.documentElement.style?.getPropertyValue?.('--side-chat-width') !== cssWidth) document.documentElement.style?.setProperty('--side-chat-width', cssWidth);
+      syncWidthAria(value);
+      return value;
+    };
+    const currentWidth = () => panel.getBoundingClientRect?.().width || preferredWidth || 360;
+    resizer.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      dragging = { id: event.pointerId, x: event.clientX, width: currentWidth() };
+      resizer.setPointerCapture?.(event.pointerId); event.preventDefault();
+    });
+    resizer.addEventListener('pointermove', event => {
+      if (!dragging || dragging.id !== event.pointerId) return;
+      preferredWidth = setWidth(dragging.width + dragging.x - event.clientX);
+    });
+    const endDrag = event => { if (dragging?.id === event.pointerId) dragging = null; };
+    resizer.addEventListener('pointerup', endDrag); resizer.addEventListener('pointercancel', endDrag);
+    resizer.addEventListener('lostpointercapture', endDrag);
+    resizer.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault(); preferredWidth = setWidth(currentWidth() + (event.key === 'ArrowLeft' ? 20 : -20));
+    });
+    resizer.addEventListener('dblclick', () => { preferredWidth = null; document.documentElement.style?.removeProperty('--side-chat-width'); syncWidthAria(currentWidth()); });
+    window.addEventListener?.('resize', () => { if (preferredWidth !== null) setWidth(preferredWidth); });
+    if (window.ResizeObserver) {
+      const observer = new window.ResizeObserver(() => { if (preferredWidth !== null) setWidth(preferredWidth); else if (!panel.hidden) syncWidthAria(currentWidth()); });
+      observer.observe(layout); const sidebar = document.querySelector('.sidebar'); if (sidebar) observer.observe(sidebar);
+    }
     const trigger = el('button', 'icon-button side-chat-toggle'); trigger.type = 'button'; trigger.id = 'toggle-side-chat';
     trigger.title = '打开侧边临时问答'; trigger.setAttribute('aria-label', trigger.title); trigger.setAttribute('aria-expanded', 'false');
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true');
@@ -42,15 +87,18 @@
     document.querySelector('.conversation-controls').prepend(trigger);
     let state = { open: false, running: false, revision: -1, messages: [] }, workspaceId = null;
     let quote = '', pending = false, pendingRequest = null, generation = 0, collapsed = false;
+    let previousRendered = new Map();
     const clearQuote = () => { quote = ''; quoteText.textContent = ''; quoteWrap.hidden = true; };
     const show = open => {
       panel.hidden = !open; document.documentElement.classList.toggle('side-chat-open', open);
       trigger.setAttribute('aria-expanded', String(open));
+      if (open) syncWidthAria(currentWidth());
     };
     function render() {
       show(state.open);
       const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
       const fragment = document.createDocumentFragment();
+      const nextRendered = new Map();
       for (const message of state.messages || []) {
         const item = el('article', `side-chat-message ${message.role}`); item.dataset.messageId = message.id;
         item.append(el('div', 'side-chat-message-label', message.role === 'user' ? '你' : 'Cortex'));
@@ -60,11 +108,18 @@
           onLink, onCopy: text => bridge.copyText({ text }), onCopyError: cause => notice?.(cause.message, true),
         });
         else content.textContent = message.content || (state.running ? '正在思考…' : '');
+        if (message.role === 'assistant' && window.CortexTextReveal) {
+          const current = message.content ? window.CortexTextReveal.visibleText(content) : '';
+          const previous = previousRendered.get(message.id);
+          if (previous !== undefined && previous !== current) window.CortexTextReveal.animateNewText(content, previous);
+          nextRendered.set(message.id, current);
+        }
         item.append(content);
         if (message.status === 'stopped') item.append(el('small', 'side-chat-message-status', '已停止'));
         fragment.append(item);
       }
       messages.replaceChildren(fragment);
+      previousRendered = nextRendered;
       if (follow) messages.scrollTop = messages.scrollHeight;
       error.textContent = state.error || ''; error.hidden = !state.error;
       stop.hidden = !state.running; send.hidden = state.running;
@@ -74,7 +129,7 @@
       if (id !== getWorkspaceId()) return;
       if (workspaceId !== id) {
         workspaceId = id; state = { open: false, running: false, revision: -1, messages: [] };
-        clearQuote(); input.value = ''; pending = false; pendingRequest = null; collapsed = false; generation++;
+        clearQuote(); input.value = ''; pending = false; pendingRequest = null; collapsed = false; previousRendered.clear(); generation++;
       }
       if (!next || Number(next.revision) < Number(state.revision)) return;
       state = collapsed ? { ...next, open: false } : next; render();
