@@ -409,13 +409,14 @@ public class MainActivity extends Activity {
         } finally { c.disconnect(); }
     }
     private void validateUrl(String value,boolean computer) throws Exception {
-        URL u=new URL(value); if(u.getUserInfo()!=null || u.getQuery()!=null || u.getRef()!=null) throw new Exception("地址格式不正确");
-        if(!"https".equalsIgnoreCase(u.getProtocol())) throw new Exception("连接地址须使用 HTTPS");
-        if(u.getHost()==null || u.getHost().isEmpty()) throw new Exception("连接地址缺少主机名");
+        EndpointValidation.validate(value,computer);
     }
     private EditText field(LinearLayout layout,String hint,String value,boolean secret) { EditText e=new EditText(this); e.setHint(hint); e.setText(value); if(secret) e.setInputType(129); layout.addView(e); return e; }
     // Keep controls outside system bars, cutouts and the on-screen keyboard.
     private void applySafeInsets(View page,int left,int top,int right,int bottom) {
+        // Apply the content gutter immediately: inset dispatch may occur only
+        // after the view is attached, especially for a Dialog's content view.
+        page.setPadding(dp(left),dp(top),dp(right),dp(bottom));
         page.setOnApplyWindowInsetsListener((v,insets)->{
             int l=0,t=0,r=0,b=0;
             if(android.os.Build.VERSION.SDK_INT>=30) {
@@ -425,7 +426,11 @@ public class MainActivity extends Activity {
             } else { l=insets.getSystemWindowInsetLeft(); t=insets.getSystemWindowInsetTop(); r=insets.getSystemWindowInsetRight(); b=insets.getSystemWindowInsetBottom(); }
             v.setPadding(dp(left)+l,dp(top)+t,dp(right)+r,dp(bottom)+b); return insets;
         });
-        page.requestApplyInsets();
+        page.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){
+            @Override public void onViewAttachedToWindow(View v){v.requestApplyInsets();}
+            @Override public void onViewDetachedFromWindow(View v){}
+        });
+        if(page.isAttachedToWindow())page.requestApplyInsets();
     }
     private void showPage(View page) { showPage(page,true); }
     private void showPage(View page,boolean animate) {
