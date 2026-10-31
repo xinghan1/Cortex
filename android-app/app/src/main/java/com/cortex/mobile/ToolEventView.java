@@ -18,11 +18,14 @@ import java.util.Map;
 final class ToolEventView {
     private final Context context; private final LinearLayout parent; private final boolean light;
     private final Map<String,Card> cards=new HashMap<>(); private final Map<String,Boolean> expanded;
+    private Group currentGroup;
     private int serial;
     ToolEventView(Context context,LinearLayout parent,boolean light,Map<String,Boolean> expanded) { this.context=context;this.parent=parent;this.light=light;this.expanded=expanded; }
     private int dp(int value){return (int)(value*context.getResources().getDisplayMetrics().density+.5f);}
     private TextView text(String value,int size,int color){TextView v=new TextView(context);v.setText(value);v.setTextSize(size);v.setTextColor(color);return v;}
     private String key(String id){return id==null||id.isEmpty()?"unknown-"+(++serial):id;}
+    void breakGroup(){currentGroup=null;}
+    private Group group(String id,String name){String category=ToolGrouping.category(name);if(currentGroup==null||!currentGroup.category.equals(category))currentGroup=new Group(id,category,name);return currentGroup;}
     private String pretty(Object value){
         if(value==null||value==JSONObject.NULL)return "";
         String original=String.valueOf(value);if(!JsonValidity.isContainer(original))return original;
@@ -43,18 +46,19 @@ final class ToolEventView {
     }
     void start(String id,String name,Object input) {
         String k=key(id); Card card=cards.get(k);
-        if(card==null){card=new Card(k);cards.put(k,card);}
+        if(card==null){card=new Card(k,group(k,name));cards.put(k,card);}
         if(name!=null&&!name.isEmpty())card.name=name;
         if(input!=null && input!=JSONObject.NULL)card.input=pretty(input);
         card.update();
     }
     void finish(String id,String name,Object output,boolean error) {
         String k=key(id); Card card=cards.get(k);
-        if(card==null){card=new Card(k);cards.put(k,card);}
+        if(card==null){card=new Card(k,group(k,name));cards.put(k,card);}
         if(name!=null&&!name.isEmpty())card.name=name;
         card.output=pretty(output);card.done=true;card.error=error||failed(output);card.update();
     }
     void subagent(JSONObject agent) {
+        breakGroup();
         String id="subagent:"+key(agent.optString("id")); int fg=light?0xff20242c:0xffedf0f5, muted=light?0xff69717d:0xffa1a8b4;
         LinearLayout box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(5),dp(12),dp(7));
         GradientDrawable background=new GradientDrawable();background.setColor(light?0xfff0f1f3:0xff1b1e24);background.setCornerRadius(dp(12));box.setBackground(background);
@@ -67,13 +71,26 @@ final class ToolEventView {
         Runnable title=()->header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+(status.isEmpty()?"":"  ·  "+status));title.run();
         header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);title.run();});
     }
+    private final class Group {
+        final String id,category,fallback; final LinearLayout box,detail; final TextView header; final java.util.List<Card> members=new java.util.ArrayList<>();
+        Group(String firstId,String category,String name){
+            this.id="group:"+firstId;this.category=category;this.fallback=ToolNames.caption(name,false,false,"").replaceFirst("^正在", "");
+            int fg=light?0xff20242c:0xffedf0f5;
+            box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(3),dp(12),dp(5));
+            LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(6);parent.addView(box,params);
+            header=text("",14,fg);header.setPadding(0,dp(10),0,dp(10));box.addView(header);
+            detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);box.addView(detail);
+            header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);update();});
+        }
+        void update(){int waiting=0,failed=0;for(Card c:members){if(!c.done)waiting++;if(c.error)failed++;}header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolGrouping.label(category,members.size(),waiting,failed,fallback));header.setTextColor(failed>0?(light?0xffb42318:0xffff8e83):(light?0xff69717d:0xffa1a8b4));}
+    }
     private final class Card {
-        final String id; final LinearLayout box,detail; final TextView header,inputText,resultText; String name="工具",input="",output=""; boolean done,error;
-        Card(String id){
-            this.id=id; int fg=light?0xff20242c:0xffedf0f5, muted=light?0xff69717d:0xffa1a8b4;
+        final String id; final Group group; final LinearLayout box,detail; final TextView header,inputText,resultText; String name="工具",input="",output=""; boolean done,error;
+        Card(String id,Group group){
+            this.id=id;this.group=group;group.members.add(this); int fg=light?0xff20242c:0xffedf0f5, muted=light?0xff69717d:0xffa1a8b4;
             box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(5),dp(12),dp(7));
             GradientDrawable background=new GradientDrawable();background.setColor(light?0xfff0f1f3:0xff1b1e24);background.setCornerRadius(dp(12));box.setBackground(background);
-            LinearLayout.LayoutParams boxParams=new LinearLayout.LayoutParams(-1,-2);boxParams.bottomMargin=dp(8);parent.addView(box,boxParams);
+            LinearLayout.LayoutParams boxParams=new LinearLayout.LayoutParams(-1,-2);boxParams.bottomMargin=dp(8);group.detail.addView(box,boxParams);
             header=text("",14,fg);header.setTypeface(null,Typeface.BOLD);header.setGravity(Gravity.CENTER_VERTICAL);header.setPadding(0,dp(8),0,dp(8));box.addView(header);
             detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);box.addView(detail);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);
             TextView inputLabel=text("输入参数",12,muted);inputLabel.setPadding(0,dp(5),0,dp(4));detail.addView(inputLabel);
@@ -82,6 +99,6 @@ final class ToolEventView {
             resultText=text("",13,fg);resultText.setTypeface(Typeface.MONOSPACE);resultText.setTextIsSelectable(true);detail.addView(resultText);
             header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);update();});
         }
-        void update(){header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolNames.caption(name,done,error,location(input)));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));}
+        void update(){header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolNames.caption(name,done,error,location(input)));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));group.update();}
     }
 }
