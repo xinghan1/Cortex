@@ -2584,7 +2584,7 @@ const context = {
     initialized = true;
     if (host.win) { win = host.win; initializeBrowser(); return context; }
     const palette = nativeAppearance(appearance.snapshot());
-    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Cortex', backgroundColor: palette.background, autoHideMenuBar: true,
+    win = new BrowserWindow({ width: 1340, height: 900, minWidth: 980, minHeight: 680, show: false, title: 'Cortex', icon: path.join(__dirname, 'renderer', 'cortex-app-icon.png'), backgroundColor: palette.background, autoHideMenuBar: true,
       ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: palette.caption, symbolColor: palette.symbol, height: 44 } } : {}),
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false, backgroundThrottling: false, offscreen: smoke && process.env.FORGEDESK_SMOKE_VISIBLE !== '1' } });
     host.win = win; host.nativePet = createNativePetWindow({ owner: win, screen, BrowserWindow, ipcMain });
@@ -2830,7 +2830,7 @@ async function boot() {
   win = primaryContext.win;
   ({ setWorkspace, createSession, broadcastState } = primaryContext);
   if (!smoke || process.env.FORGEDESK_SMOKE_ONLY === 'background-tray') {
-    const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'cortex-logo.png')).resize({ width: 20, height: 20 });
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'cortex-app-icon.png')).resize({ width: 20, height: 20 });
     backgroundTray = createBackgroundTray({ Tray, Menu, icon,
       getWindows: () => [activeWindowHost?.win, ...[...windows.values()].map(host => host.win)],
       createWindow: createAppWindow,

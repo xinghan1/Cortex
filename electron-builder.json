@@ -33,7 +33,7 @@
         "arch": ["x64"]
       }
     ],
-    "icon": "src/renderer/cortex-logo.png",
+    "icon": "src/renderer/cortex-app-icon.png",
     "artifactName": "Cortex-Setup-${version}-${arch}.${ext}"
   },
   "nsis": {
