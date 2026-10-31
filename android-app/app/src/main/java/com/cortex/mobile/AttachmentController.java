@@ -41,6 +41,7 @@ final class AttachmentController {
     String name(){return item==null?"":item.optString("name");}
     void clear(){item=null;changed.run();}
     JSONObject snapshot() throws Exception {return item==null?null:new JSONObject(item.toString());}
+    void restore(JSONObject saved) throws Exception {item=saved==null?null:new JSONObject(saved.toString());}
     void show() {
         boolean light=activity.getSharedPreferences("cortex",0).getBoolean("light_theme",false); int fg=light?0xff181a1f:0xfff2f2f3, bg=light?0xfff7f7f8:0xff202124, card=light?0xffe9eaed:0xff393a3d;float density=activity.getResources().getDisplayMetrics().density;
         Dialog dialog=new Dialog(activity); LinearLayout sheet=new LinearLayout(activity);sheet.setOrientation(LinearLayout.VERTICAL);sheet.setPadding((int)(16*density),(int)(20*density),(int)(16*density),(int)(28*density));GradientDrawable surface=new GradientDrawable();surface.setColor(bg);surface.setCornerRadii(new float[]{24*density,24*density,24*density,24*density,0,0,0,0});sheet.setBackground(surface);LinearLayout row=new LinearLayout(activity);row.setOrientation(LinearLayout.HORIZONTAL);sheet.addView(row);

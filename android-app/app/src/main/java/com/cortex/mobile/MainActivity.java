@@ -97,10 +97,13 @@ public class MainActivity extends Activity {
         activeActivity = new java.lang.ref.WeakReference<>(this);
         localMessages = sessionStore.load(sessionStore.currentId());
         attachmentController=new AttachmentController(this,this::renderAttachmentPreview);
+        Object retained=getLastNonConfigurationInstance();if(retained instanceof JSONObject)try{attachmentController.restore((JSONObject)retained);}catch(Exception ignored){}
         remote=prefs.getBoolean("remote_mode",false); build(); input.setText(prefs.getString(remote?"draft_remote":"draft_local", "")); refreshMode();
-        if(state!=null && state.getBoolean("reopen_settings_after_theme")) settings();
+        renderAttachmentPreview();
+        if(state!=null && state.getBoolean("reopen_settings_after_theme")) settings(false);
     }
     @Override protected void onSaveInstanceState(Bundle state) { state.putBoolean("reopen_settings_after_theme",reopenSettingsAfterRecreate); super.onSaveInstanceState(state); }
+    @Override public Object onRetainNonConfigurationInstance() { try{return attachmentController==null?null:attachmentController.snapshot();}catch(Exception ignored){return null;} }
     private int dp(int n) { return (int)(n * getResources().getDisplayMetrics().density + 0.5f); }
     private GradientDrawable rounded(int color, int radius) { GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); return d; }
     private TextView text(String value, int size, int color) { TextView t = new TextView(this); t.setText(value); t.setTextSize(size); t.setTextColor(color); return t; }
@@ -203,31 +206,48 @@ public class MainActivity extends Activity {
         drawer.setContentView(panel); Window window=drawer.getWindow(); if(window!=null){ window.setBackgroundDrawableResource(android.R.color.transparent); window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND); window.setWindowAnimations(R.style.CortexDrawerAnimation); window.setLayout(width,WindowManager.LayoutParams.MATCH_PARENT); window.setGravity(Gravity.START); window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); } drawer.show(); if(window!=null) window.setLayout(width,WindowManager.LayoutParams.MATCH_PARENT);
     }
     private final class HistoryController {
-        final Dialog drawer; final LinearLayout list,normalFooter,selectionFooter; final EditText search; final TextView pin,delete,selectMode;
-        final java.util.Set<String> selected=new java.util.LinkedHashSet<>(); boolean selecting=false, allPinned=false;
+        final Dialog drawer; final LinearLayout list,normalFooter,selectionFooter,toolbar; final EditText search; final TextView pin,delete,selectMode,brand; final FrameLayout searchWrap; final ImageButton searchButton,closeSelection;
+        final java.util.Set<String> selected=new java.util.LinkedHashSet<>(); boolean selecting=false, allPinned=false,searchOpen=false;
+        boolean footerInitialized=false,footerTarget=false;int footerGeneration=0;
         HistoryController(Dialog drawer, LinearLayout panel) {
             this.drawer=drawer;
             LinearLayout head=new LinearLayout(MainActivity.this);head.setGravity(Gravity.CENTER_VERTICAL);panel.addView(head);
-            TextView brand=text("Cortex",23,TEXT);brand.setTypeface(null,Typeface.BOLD);head.addView(brand,new LinearLayout.LayoutParams(0,dp(44),1));
-            search=new EditText(MainActivity.this);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索对话内容…");search.setTextSize(14);search.setPadding(dp(12),0,dp(12),0);search.setBackground(rounded(PANEL,22));search.setVisibility(View.GONE);head.addView(search,new LinearLayout.LayoutParams(dp(158),dp(42)));
-            ImageButton searchButton=new ImageButton(MainActivity.this);searchButton.setImageResource(android.R.drawable.ic_menu_search);searchButton.setColorFilter(TEXT);searchButton.setScaleType(ImageView.ScaleType.CENTER);searchButton.setBackground(rounded(PANEL,22));searchButton.setContentDescription("搜索会话");head.addView(searchButton,new LinearLayout.LayoutParams(dp(40),dp(40)));
-            searchButton.setOnClickListener(v->{if(search.getVisibility()==View.VISIBLE){search.animate().cancel();search.setText("");search.setVisibility(View.GONE);search.clearFocus();((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);}else{search.setVisibility(View.VISIBLE);search.setPivotX(dp(158));search.setScaleX(0);search.animate().scaleX(1).setDuration(220).start();search.requestFocus();search.post(()->((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(search,InputMethodManager.SHOW_IMPLICIT));}});
-            LinearLayout toolbar=new LinearLayout(MainActivity.this);toolbar.setGravity(Gravity.CENTER_VERTICAL);LinearLayout.LayoutParams tb=new LinearLayout.LayoutParams(-1,dp(46));tb.topMargin=dp(12);panel.addView(toolbar,tb);
+            brand=text("Cortex",23,TEXT);brand.setTypeface(null,Typeface.BOLD);head.addView(brand,new LinearLayout.LayoutParams(0,dp(44),1));
+            searchWrap=new FrameLayout(MainActivity.this);searchWrap.setVisibility(View.GONE);searchWrap.setBackground(rounded(PANEL,22));head.addView(searchWrap,new LinearLayout.LayoutParams(dp(195),dp(42)));
+            search=new EditText(MainActivity.this);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索对话内容…");search.setTextSize(14);search.setPadding(dp(12),0,dp(36),0);search.setBackgroundColor(Color.TRANSPARENT);searchWrap.addView(search,new FrameLayout.LayoutParams(-1,-1));
+            ImageButton clearSearch=new ImageButton(MainActivity.this);clearSearch.setImageResource(R.drawable.history_close);clearSearch.setColorFilter(MUTED);clearSearch.setScaleType(ImageView.ScaleType.CENTER);clearSearch.setBackgroundColor(Color.TRANSPARENT);clearSearch.setContentDescription("关闭搜索");searchWrap.addView(clearSearch,new FrameLayout.LayoutParams(dp(36),-1,Gravity.END));clearSearch.setOnClickListener(v->closeSearch());
+            searchButton=new ImageButton(MainActivity.this);searchButton.setImageResource(R.drawable.history_search);searchButton.setColorFilter(TEXT);searchButton.setScaleType(ImageView.ScaleType.CENTER);searchButton.setBackground(rounded(PANEL,22));searchButton.setContentDescription("搜索会话");head.addView(searchButton,new LinearLayout.LayoutParams(dp(40),dp(40)));
+            closeSelection=new ImageButton(MainActivity.this);closeSelection.setImageResource(R.drawable.history_close);closeSelection.setColorFilter(TEXT);closeSelection.setScaleType(ImageView.ScaleType.CENTER);closeSelection.setBackground(rounded(PANEL,22));closeSelection.setContentDescription("关闭多选");closeSelection.setVisibility(View.GONE);head.addView(closeSelection,new LinearLayout.LayoutParams(dp(40),dp(40)));closeSelection.setOnClickListener(v->{selecting=false;selected.clear();update();});
+            searchButton.setOnClickListener(v->{searchOpen=true;searchButton.setVisibility(View.GONE);searchWrap.setVisibility(View.VISIBLE);searchWrap.setPivotX(dp(195));searchWrap.setScaleX(0);searchWrap.animate().scaleX(1).setDuration(220).start();search.requestFocus();search.post(()->{if(searchOpen&&!selecting)((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(search,InputMethodManager.SHOW_IMPLICIT);});});
+            toolbar=new LinearLayout(MainActivity.this);toolbar.setGravity(Gravity.CENTER_VERTICAL);LinearLayout.LayoutParams tb=new LinearLayout.LayoutParams(-1,dp(46));tb.topMargin=dp(12);panel.addView(toolbar,tb);
             TextView newChat=text("＋  新建对话",15,TEXT);newChat.setGravity(Gravity.CENTER_VERTICAL);toolbar.addView(newChat,new LinearLayout.LayoutParams(0,-1,1));newChat.setOnClickListener(v->{if(busy){toast("请等待当前任务结束");return;}String id=sessionStore.create();sessionStore.select(id);localMessages=sessionStore.load(id);changeMode(false);renderLocal();drawer.dismiss();});
             selectMode=control("☷",20);selectMode.setContentDescription("选择会话");toolbar.addView(selectMode,new LinearLayout.LayoutParams(dp(40),dp(40)));selectMode.setOnClickListener(v->{if(busy){toast("请等待当前任务结束");return;}selecting=!selecting;selected.clear();update();});
             ScrollView scroll=new ScrollView(MainActivity.this);panel.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));list=new LinearLayout(MainActivity.this);list.setOrientation(LinearLayout.VERTICAL);scroll.addView(list);
             search.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int d){} public void onTextChanged(CharSequence s,int a,int b,int c){update();}public void afterTextChanged(Editable e){}});
-            normalFooter=new LinearLayout(MainActivity.this);normalFooter.setGravity(Gravity.CENTER_VERTICAL);panel.addView(normalFooter,new LinearLayout.LayoutParams(-1,dp(48)));
-            String selectedModel=remote?remoteModel:modelStore.selectedModel();TextView models=text(selectedModel==null||selectedModel.isEmpty()?"选择模型":selectedModel,14,TEXT);models.setSingleLine(true);models.setEllipsize(android.text.TextUtils.TruncateAt.END);models.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);models.setPadding(dp(12),0,dp(8),0);normalFooter.addView(models,new LinearLayout.LayoutParams(0,dp(44),1));models.setOnClickListener(v->{drawer.dismiss();handler.postDelayed(()->{if(!destroyed)showModelSelector();},220);});
-            selectionFooter=new LinearLayout(MainActivity.this);selectionFooter.setGravity(Gravity.CENTER_VERTICAL);panel.addView(selectionFooter,new LinearLayout.LayoutParams(-1,dp(52)));
-            pin=text("置顶",15,MUTED);pin.setGravity(Gravity.CENTER);pin.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.history_pin,0,0,0);pin.setCompoundDrawablePadding(dp(7));selectionFooter.addView(pin,new LinearLayout.LayoutParams(0,-1,1));View line=new View(MainActivity.this);line.setBackgroundColor(MUTED);selectionFooter.addView(line,new LinearLayout.LayoutParams(dp(1),dp(28)));
-            delete=text("删除",15,MUTED);delete.setGravity(Gravity.CENTER);delete.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.history_delete,0,0,0);delete.setCompoundDrawablePadding(dp(7));selectionFooter.addView(delete,new LinearLayout.LayoutParams(0,-1,1));
+            FrameLayout footerHost=new FrameLayout(MainActivity.this);panel.addView(footerHost,new LinearLayout.LayoutParams(-1,dp(52)));
+            normalFooter=new LinearLayout(MainActivity.this);normalFooter.setGravity(Gravity.CENTER_VERTICAL);footerHost.addView(normalFooter,new FrameLayout.LayoutParams(-1,-1));
+            String selectedModel=remote?remoteModel:modelStore.selectedModel();TextView models=text(selectedModel==null||selectedModel.isEmpty()?"选择模型":selectedModel,14,TEXT);models.setSingleLine(true);models.setEllipsize(android.text.TextUtils.TruncateAt.END);models.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);models.setPadding(dp(12),0,dp(8),0);normalFooter.addView(models,new LinearLayout.LayoutParams(0,dp(44),1));models.setOnClickListener(v->{if(selecting)return;drawer.dismiss();handler.postDelayed(()->{if(!destroyed)showModelSelector();},220);});
+            selectionFooter=new LinearLayout(MainActivity.this);selectionFooter.setGravity(Gravity.CENTER_VERTICAL);footerHost.addView(selectionFooter,new FrameLayout.LayoutParams(-1,-1));
+            FrameLayout pinArea=new FrameLayout(MainActivity.this);selectionFooter.addView(pinArea,new LinearLayout.LayoutParams(0,-1,1));pin=text("置顶",15,MUTED);pin.setGravity(Gravity.CENTER);pin.setPadding(dp(8),0,dp(8),0);pin.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.history_pin,0,0,0);pin.setCompoundDrawablePadding(dp(6));pinArea.addView(pin,new FrameLayout.LayoutParams(-2,-1,Gravity.CENTER));pinArea.setOnClickListener(v->{if(pin.isEnabled())pin.performClick();});View line=new View(MainActivity.this);line.setBackgroundColor(MUTED);selectionFooter.addView(line,new LinearLayout.LayoutParams(dp(1),dp(28)));
+            FrameLayout deleteArea=new FrameLayout(MainActivity.this);selectionFooter.addView(deleteArea,new LinearLayout.LayoutParams(0,-1,1));delete=text("删除",15,MUTED);delete.setGravity(Gravity.CENTER);delete.setPadding(dp(8),0,dp(8),0);delete.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.history_delete,0,0,0);delete.setCompoundDrawablePadding(dp(6));deleteArea.addView(delete,new FrameLayout.LayoutParams(-2,-1,Gravity.CENTER));deleteArea.setOnClickListener(v->{if(delete.isEnabled())delete.performClick();});
             pin.setOnClickListener(v->{if(selected.isEmpty())return;if(busy){toast("请等待当前任务结束");return;}sessionStore.setPinned(selected,!allPinned);selected.clear();selecting=false;update();});
             delete.setOnClickListener(v->{if(selected.isEmpty())return;if(busy){toast("请等待当前任务结束");return;}new AlertDialog.Builder(MainActivity.this).setTitle("删除会话？").setMessage("确定删除选中的 "+selected.size()+" 个会话吗？").setNegativeButton("取消",null).setPositiveButton("删除",(d,w)->{if(busy){toast("请等待当前任务结束");return;}sessionStore.deleteMany(selected);selected.clear();selecting=false;localMessages=sessionStore.load(sessionStore.currentId());if(!remote)renderLocal();update();}).show();});
             update();
         }
+        void closeSearch(){searchOpen=false;searchWrap.animate().cancel();searchWrap.setVisibility(View.GONE);searchWrap.setScaleX(1);search.clearFocus();((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);searchButton.setVisibility(selecting?View.GONE:View.VISIBLE);if(search.length()>0)search.setText("");}
+        void syncHeader(){if(selecting&&searchOpen)closeSearch();brand.setText(selecting?"选择对话":"Cortex");toolbar.setVisibility(selecting?View.GONE:View.VISIBLE);closeSelection.setVisibility(selecting?View.VISIBLE:View.GONE);searchButton.setVisibility(selecting||searchOpen?View.GONE:View.VISIBLE);}
+        void showFooter(boolean select) {
+            if(footerInitialized&&footerTarget==select)return;
+            footerTarget=select;int generation=++footerGeneration;normalFooter.animate().cancel();selectionFooter.animate().cancel();
+            View incoming=select?selectionFooter:normalFooter,outgoing=select?normalFooter:selectionFooter;
+            if(!footerInitialized){footerInitialized=true;outgoing.setVisibility(View.GONE);incoming.setVisibility(View.VISIBLE);incoming.setAlpha(1);return;}
+            if(incoming.getVisibility()==View.VISIBLE){outgoing.setVisibility(View.GONE);incoming.animate().alpha(1).setDuration(120).start();return;}
+            incoming.setVisibility(View.GONE);
+            if(outgoing.getVisibility()!=View.VISIBLE){incoming.setAlpha(0);incoming.setVisibility(View.VISIBLE);incoming.animate().alpha(1).setDuration(140).start();return;}
+            outgoing.animate().alpha(0).setDuration(120).withEndAction(()->{if(generation!=footerGeneration||!drawer.isShowing())return;outgoing.setVisibility(View.GONE);incoming.setAlpha(0);incoming.setVisibility(View.VISIBLE);incoming.animate().alpha(1).setDuration(140).start();}).start();
+        }
         void update(){
-            selectMode.setText(selecting?"完成":"☷");selectMode.setContentDescription(selecting?"完成选择":"选择会话");normalFooter.setVisibility(selecting?View.GONE:View.VISIBLE);selectionFooter.setVisibility(selecting?View.VISIBLE:View.GONE);
+            syncHeader();showFooter(selecting);
             allPinned=!selected.isEmpty();JSONArray all=sessionStore.list("");for(int i=0;i<all.length();i++){JSONObject row=all.optJSONObject(i);if(row!=null&&selected.contains(row.optString("id"))&&!row.optBoolean("pinned"))allPinned=false;}pin.setText(allPinned?"取消置顶":"置顶");
             int pinColor=selected.isEmpty()?MUTED:TEXT,deleteColor=selected.isEmpty()?MUTED:(light?0xffbd3028:0xffff6b67);pin.setEnabled(!selected.isEmpty());delete.setEnabled(!selected.isEmpty());pin.setTextColor(pinColor);delete.setTextColor(deleteColor);pin.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(pinColor));delete.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(deleteColor));
             list.removeAllViews();JSONArray rows=sessionStore.list(search.getText().toString());if(rows.length()==0){TextView empty=text("暂无会话",14,MUTED);empty.setPadding(dp(8),dp(20),0,0);list.addView(empty);return;}
@@ -389,7 +409,8 @@ public class MainActivity extends Activity {
         });
         page.requestApplyInsets();
     }
-    private void showPage(View page) {
+    private void showPage(View page) { showPage(page,true); }
+    private void showPage(View page,boolean animate) {
         if(pageChanging) return;
         applySafeInsets(page,18,12,18,10);
         if(!secondaryPage) {
@@ -398,8 +419,9 @@ public class MainActivity extends Activity {
             mainPage.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         } else if(currentPage!=null) { currentPage.animate().cancel();pageHost.removeView(currentPage); }
         currentPage=page;secondaryPage=true;pageHost.addView(page,new FrameLayout.LayoutParams(-1,-1));page.requestApplyInsets();
-        pageChanging=true;page.setTranslationX(getResources().getDisplayMetrics().widthPixels);
-        page.animate().translationX(0).setDuration(240).setInterpolator(new android.view.animation.DecelerateInterpolator()).withEndAction(()->pageChanging=false).start();
+        if(animate){pageChanging=true;page.setTranslationX(getResources().getDisplayMetrics().widthPixels);
+            page.animate().translationX(0).setDuration(240).setInterpolator(new android.view.animation.DecelerateInterpolator()).withEndAction(()->pageChanging=false).start();}
+        else {page.setTranslationX(0);pageChanging=false;}
     }
     private void leavePage() {
         if(!secondaryPage || pageChanging) return;
@@ -412,7 +434,8 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed() { if(pageChanging)return; if(secondaryPage && computerSettingsPage) settings(); else if(secondaryPage) leavePage(); else super.onBackPressed(); }
     @Override protected void onResume() { super.onResume(); if(modelButton!=null && modelStore!=null) refreshTabs(); }
     private TextView pageButton(String label) { TextView v=control(label,15); v.setPadding(dp(16),0,dp(16),0); v.setGravity(Gravity.CENTER); return v; }
-    private void settings() {
+    private void settings() { settings(true); }
+    private void settings(boolean animate) {
         computerSettingsPage=false;
         LinearLayout page=new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setBackgroundColor(BG);
         LinearLayout head=new LinearLayout(this); head.setGravity(Gravity.CENTER_VERTICAL); page.addView(head,new LinearLayout.LayoutParams(-1,dp(52)));
@@ -421,13 +444,13 @@ public class MainActivity extends Activity {
         LinearLayout form=new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.topMargin=dp(24);page.addView(form,params);
         LinearLayout models=settingsRow(form,"◇","模型设置");models.setOnClickListener(v->modelStore.showManager(()->refreshTabs()));
         LinearLayout computer=settingsRow(form,"▣","电脑连接设置");computer.setOnClickListener(v->computerSettings());
-        LinearLayout appearance=settingsRow(form,light?"☾":"☀",light?"切换深色模式":"切换浅色模式");appearance.setOnClickListener(v->{if(busy||controlBusy){toast("请等待当前操作结束");return;}prefs.edit().putBoolean("light_theme",!light).apply();reopenSettingsAfterRecreate=true;recreate();});
+        LinearLayout appearance=settingsRow(form,light?"☾":"☀",light?"切换深色模式":"切换浅色模式");appearance.setOnClickListener(v->{if(busy||controlBusy){toast("请等待当前操作结束");return;}prefs.edit().putBoolean("light_theme",!light).apply();reopenSettingsAfterRecreate=true;recreate();overridePendingTransition(0,0);});
         LinearLayout update=settingsRow(form,"↻","检查更新");TextView info=text("",13,MUTED);info.setPadding(dp(12),dp(6),dp(12),dp(8));info.setVisibility(View.GONE);form.addView(info);
         update.setOnClickListener(v->{update.setEnabled(false);info.setOnClickListener(null);info.setTextColor(MUTED);info.setVisibility(View.VISIBLE);info.setText("正在检查 Android 更新…");
             new Thread(()->{try{String current=getPackageManager().getPackageInfo(getPackageName(),0).versionName;UpdateChecker.Result result=UpdateChecker.check(current);
                 runOnUiThread(()->{if(destroyed||currentPage!=page)return;update.setEnabled(true);info.setText(result.message);if(result.url!=null){info.setText(result.message+"\n打开下载页面 ›");info.setTextColor(ACCENT);info.setOnClickListener(view->{try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(result.url)));}catch(Exception e){toast("无法打开下载页面");}});}else{info.setTextColor(MUTED);info.setOnClickListener(null);}});
             }catch(Exception e){runOnUiThread(()->{if(destroyed||currentPage!=page)return;update.setEnabled(true);info.setTextColor(MUTED);info.setOnClickListener(null);info.setText("检查更新失败，请检查网络后重试。");});}},"cortex-update-check").start();});
-        showPage(page);
+        showPage(page,animate);
     }
     private LinearLayout settingsRow(LinearLayout parent,String symbol,String label) {
         LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(14),0,dp(14),0);row.setBackground(rounded(PANEL,14));
