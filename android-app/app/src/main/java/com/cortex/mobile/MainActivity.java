@@ -195,9 +195,10 @@ public class MainActivity extends Activity {
     }
     private void showHistory() {
         final GestureSession gestures=new GestureSession();
-        Dialog drawer=new Dialog(this) { @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {int direction=gestures.read(event,getWindow().getDecorView(),true);if(SwipeDirection.closeHistory(direction)){android.view.MotionEvent cancel=android.view.MotionEvent.obtain(event);cancel.setAction(android.view.MotionEvent.ACTION_CANCEL);super.dispatchTouchEvent(cancel);cancel.recycle();dismiss();return true;}return super.dispatchTouchEvent(event);} };
+        final HistoryController[] historyRef=new HistoryController[1];
+        Dialog drawer=new Dialog(this) { @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {int direction=gestures.read(event,getWindow().getDecorView(),true);if(SwipeDirection.closeHistory(direction)){android.view.MotionEvent cancel=android.view.MotionEvent.obtain(event);cancel.setAction(android.view.MotionEvent.ACTION_CANCEL);super.dispatchTouchEvent(cancel);cancel.recycle();dismiss();return true;}return super.dispatchTouchEvent(event);} @Override public void onBackPressed(){HistoryController h=historyRef[0];if(h!=null&&h.searchOpen){h.closeSearch();return;}if(h!=null&&h.selecting){h.selecting=false;h.selected.clear();h.update();return;}super.onBackPressed();} };
         LinearLayout panel=new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); applySafeInsets(panel,18,20,18,18); panel.setBackgroundColor(light?0xfff0f1f3:0xff101113);
-        HistoryController history=new HistoryController(drawer,panel);
+        historyRef[0]=new HistoryController(drawer,panel);
         final int width=Math.min(dp(320),getResources().getDisplayMetrics().widthPixels-dp(48)); final android.view.ViewGroup content=(android.view.ViewGroup)mainPage;
         final View shade=new View(this); shade.setBackgroundColor(light?0x66000000:0x4dffffff); shade.setAlpha(0); shade.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         final View.OnLayoutChangeListener resizeShade=(v,l,t,r,b,ol,ot,oright,ob)->shade.layout(0,0,r-l,b-t);
@@ -206,19 +207,19 @@ public class MainActivity extends Activity {
         drawer.setContentView(panel); Window window=drawer.getWindow(); if(window!=null){ window.setBackgroundDrawableResource(android.R.color.transparent); window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND); window.setWindowAnimations(R.style.CortexDrawerAnimation); window.setLayout(width,WindowManager.LayoutParams.MATCH_PARENT); window.setGravity(Gravity.START); window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); } drawer.show(); if(window!=null) window.setLayout(width,WindowManager.LayoutParams.MATCH_PARENT);
     }
     private final class HistoryController {
-        final Dialog drawer; final LinearLayout list,normalFooter,selectionFooter,toolbar; final EditText search; final TextView pin,delete,selectMode,brand; final FrameLayout searchWrap; final ImageButton searchButton,closeSelection;
+        final Dialog drawer; final LinearLayout list,normalFooter,selectionFooter,toolbar,head; final EditText search; final TextView pin,delete,selectMode,brand; final FrameLayout searchWrap; final ImageButton searchButton,closeSelection;
         final java.util.Set<String> selected=new java.util.LinkedHashSet<>(); boolean selecting=false, allPinned=false,searchOpen=false;
-        boolean footerInitialized=false,footerTarget=false;int footerGeneration=0;
+        boolean footerInitialized=false,footerTarget=false,headerInitialized=false,headerTarget=false;int footerGeneration=0,headerGeneration=0;
+        boolean listSelectionInitialized=false,listSelectionTarget=false;
         HistoryController(Dialog drawer, LinearLayout panel) {
             this.drawer=drawer;
-            LinearLayout head=new LinearLayout(MainActivity.this);head.setGravity(Gravity.CENTER_VERTICAL);panel.addView(head);
-            brand=text("Cortex",23,TEXT);brand.setTypeface(null,Typeface.BOLD);head.addView(brand,new LinearLayout.LayoutParams(0,dp(44),1));
+            head=new LinearLayout(MainActivity.this);head.setGravity(Gravity.CENTER_VERTICAL);panel.addView(head);
+            brand=text("Cortex",23,TEXT);brand.setTypeface(null,Typeface.BOLD);head.addView(brand,new LinearLayout.LayoutParams(0,dp(44),1));brand.setOnClickListener(v->{if(searchOpen&&!selecting)closeSearch();});
             searchWrap=new FrameLayout(MainActivity.this);searchWrap.setVisibility(View.GONE);searchWrap.setBackground(rounded(PANEL,22));head.addView(searchWrap,new LinearLayout.LayoutParams(dp(195),dp(42)));
-            search=new EditText(MainActivity.this);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索对话内容…");search.setTextSize(14);search.setPadding(dp(12),0,dp(36),0);search.setBackgroundColor(Color.TRANSPARENT);searchWrap.addView(search,new FrameLayout.LayoutParams(-1,-1));
-            ImageButton clearSearch=new ImageButton(MainActivity.this);clearSearch.setImageResource(R.drawable.history_close);clearSearch.setColorFilter(MUTED);clearSearch.setScaleType(ImageView.ScaleType.CENTER);clearSearch.setBackgroundColor(Color.TRANSPARENT);clearSearch.setContentDescription("关闭搜索");searchWrap.addView(clearSearch,new FrameLayout.LayoutParams(dp(36),-1,Gravity.END));clearSearch.setOnClickListener(v->closeSearch());
+            search=new EditText(MainActivity.this);search.setSingleLine(true);search.setTextColor(TEXT);search.setHintTextColor(MUTED);search.setHint("搜索对话内容…");search.setTextSize(14);search.setPadding(dp(12),0,dp(12),0);search.setBackgroundColor(Color.TRANSPARENT);searchWrap.addView(search,new FrameLayout.LayoutParams(-1,-1));
             searchButton=new ImageButton(MainActivity.this);searchButton.setImageResource(R.drawable.history_search);searchButton.setColorFilter(TEXT);searchButton.setScaleType(ImageView.ScaleType.CENTER);searchButton.setBackground(rounded(PANEL,22));searchButton.setContentDescription("搜索会话");head.addView(searchButton,new LinearLayout.LayoutParams(dp(40),dp(40)));
             closeSelection=new ImageButton(MainActivity.this);closeSelection.setImageResource(R.drawable.history_close);closeSelection.setColorFilter(TEXT);closeSelection.setScaleType(ImageView.ScaleType.CENTER);closeSelection.setBackground(rounded(PANEL,22));closeSelection.setContentDescription("关闭多选");closeSelection.setVisibility(View.GONE);head.addView(closeSelection,new LinearLayout.LayoutParams(dp(40),dp(40)));closeSelection.setOnClickListener(v->{selecting=false;selected.clear();update();});
-            searchButton.setOnClickListener(v->{searchOpen=true;searchButton.setVisibility(View.GONE);searchWrap.setVisibility(View.VISIBLE);searchWrap.setPivotX(dp(195));searchWrap.setScaleX(0);searchWrap.animate().scaleX(1).setDuration(220).start();search.requestFocus();search.post(()->{if(searchOpen&&!selecting)((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(search,InputMethodManager.SHOW_IMPLICIT);});});
+            searchButton.setOnClickListener(v->{searchOpen=true;brand.setContentDescription("关闭搜索");searchButton.setVisibility(View.GONE);searchWrap.setVisibility(View.VISIBLE);searchWrap.setPivotX(dp(195));searchWrap.setScaleX(0);searchWrap.animate().scaleX(1).setDuration(220).start();search.requestFocus();search.post(()->{if(searchOpen&&!selecting)((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(search,InputMethodManager.SHOW_IMPLICIT);});});
             toolbar=new LinearLayout(MainActivity.this);toolbar.setGravity(Gravity.CENTER_VERTICAL);LinearLayout.LayoutParams tb=new LinearLayout.LayoutParams(-1,dp(46));tb.topMargin=dp(12);panel.addView(toolbar,tb);
             TextView newChat=text("＋  新建对话",15,TEXT);newChat.setGravity(Gravity.CENTER_VERTICAL);toolbar.addView(newChat,new LinearLayout.LayoutParams(0,-1,1));newChat.setOnClickListener(v->{if(busy){toast("请等待当前任务结束");return;}String id=sessionStore.create();sessionStore.select(id);localMessages=sessionStore.load(id);changeMode(false);renderLocal();drawer.dismiss();});
             selectMode=control("☷",20);selectMode.setContentDescription("选择会话");toolbar.addView(selectMode,new LinearLayout.LayoutParams(dp(40),dp(40)));selectMode.setOnClickListener(v->{if(busy){toast("请等待当前任务结束");return;}selecting=!selecting;selected.clear();update();});
@@ -234,8 +235,17 @@ public class MainActivity extends Activity {
             delete.setOnClickListener(v->{if(selected.isEmpty())return;if(busy){toast("请等待当前任务结束");return;}new AlertDialog.Builder(MainActivity.this).setTitle("删除会话？").setMessage("确定删除选中的 "+selected.size()+" 个会话吗？").setNegativeButton("取消",null).setPositiveButton("删除",(d,w)->{if(busy){toast("请等待当前任务结束");return;}sessionStore.deleteMany(selected);selected.clear();selecting=false;localMessages=sessionStore.load(sessionStore.currentId());if(!remote)renderLocal();update();}).show();});
             update();
         }
-        void closeSearch(){searchOpen=false;searchWrap.animate().cancel();searchWrap.setVisibility(View.GONE);searchWrap.setScaleX(1);search.clearFocus();((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);searchButton.setVisibility(selecting?View.GONE:View.VISIBLE);if(search.length()>0)search.setText("");}
-        void syncHeader(){if(selecting&&searchOpen)closeSearch();brand.setText(selecting?"选择对话":"Cortex");toolbar.setVisibility(selecting?View.GONE:View.VISIBLE);closeSelection.setVisibility(selecting?View.VISIBLE:View.GONE);searchButton.setVisibility(selecting||searchOpen?View.GONE:View.VISIBLE);}
+        void closeSearch(){searchOpen=false;brand.setContentDescription(null);searchWrap.animate().cancel();searchWrap.setVisibility(View.GONE);searchWrap.setScaleX(1);search.clearFocus();((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(),0);searchButton.setVisibility(selecting?View.GONE:View.VISIBLE);if(search.length()>0)search.setText("");}
+        void syncHeader(){
+            if(selecting&&searchOpen)closeSearch();
+            toolbar.setVisibility(selecting?View.GONE:View.VISIBLE);
+            if(headerInitialized&&headerTarget==selecting)return;
+            headerTarget=selecting;int generation=++headerGeneration;head.animate().cancel();
+            Runnable apply=()->{brand.setText(headerTarget?"选择对话":"Cortex");closeSelection.setVisibility(headerTarget?View.VISIBLE:View.GONE);searchButton.setVisibility(headerTarget||searchOpen?View.GONE:View.VISIBLE);};
+            if(!headerInitialized){headerInitialized=true;apply.run();head.setAlpha(1);return;}
+            searchButton.setEnabled(false);closeSelection.setEnabled(false);search.setEnabled(false);
+            head.animate().alpha(0).setDuration(120).withEndAction(()->{if(generation!=headerGeneration||!drawer.isShowing())return;apply.run();head.animate().alpha(1).setDuration(140).withEndAction(()->{if(generation!=headerGeneration)return;searchButton.setEnabled(true);closeSelection.setEnabled(true);search.setEnabled(true);}).start();}).start();
+        }
         void showFooter(boolean select) {
             if(footerInitialized&&footerTarget==select)return;
             footerTarget=select;int generation=++footerGeneration;normalFooter.animate().cancel();selectionFooter.animate().cancel();
@@ -247,6 +257,8 @@ public class MainActivity extends Activity {
             outgoing.animate().alpha(0).setDuration(120).withEndAction(()->{if(generation!=footerGeneration||!drawer.isShowing())return;outgoing.setVisibility(View.GONE);incoming.setAlpha(0);incoming.setVisibility(View.VISIBLE);incoming.animate().alpha(1).setDuration(140).start();}).start();
         }
         void update(){
+            boolean animateRows=listSelectionInitialized && listSelectionTarget!=selecting;
+            listSelectionInitialized=true;listSelectionTarget=selecting;
             syncHeader();showFooter(selecting);
             allPinned=!selected.isEmpty();JSONArray all=sessionStore.list("");for(int i=0;i<all.length();i++){JSONObject row=all.optJSONObject(i);if(row!=null&&selected.contains(row.optString("id"))&&!row.optBoolean("pinned"))allPinned=false;}pin.setText(allPinned?"取消置顶":"置顶");
             int pinColor=selected.isEmpty()?MUTED:TEXT,deleteColor=selected.isEmpty()?MUTED:(light?0xffbd3028:0xffff6b67);pin.setEnabled(!selected.isEmpty());delete.setEnabled(!selected.isEmpty());pin.setTextColor(pinColor);delete.setTextColor(deleteColor);pin.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(pinColor));delete.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(deleteColor));
@@ -255,8 +267,14 @@ public class MainActivity extends Activity {
             for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row==null)continue;String id=row.optString("id"),name=row.optString("title","新会话");long when=row.optLong("updatedAt");long day=(today.getTimeInMillis()-when)/86400000L;String section=row.optBoolean("pinned")?"置顶":when>=today.getTimeInMillis()?"今天":day<1?"昨天":day<7?"7 天内":day<30?"30 天内":"更早";
                 if(!section.equals(previous)){TextView heading=text(section,13,MUTED);heading.setPadding(dp(4),dp(18),0,dp(6));list.addView(heading);previous=section;}
                 LinearLayout item=new LinearLayout(MainActivity.this);item.setGravity(Gravity.CENTER_VERTICAL);item.setPadding(dp(10),0,dp(10),0);if(!selecting&&id.equals(sessionStore.currentId()))item.setBackground(rounded(PANEL,12));list.addView(item,new LinearLayout.LayoutParams(-1,dp(52)));
-                if(selecting){TextView mark=text(selected.contains(id)?"●":"○",19,selected.contains(id)?TEXT:MUTED);mark.setGravity(Gravity.CENTER);item.addView(mark,new LinearLayout.LayoutParams(dp(32),-1));}
+                TextView mark=null;
+                if(selecting||animateRows){mark=text(selected.contains(id)?"●":"○",19,selected.contains(id)?TEXT:MUTED);mark.setGravity(Gravity.CENTER);item.addView(mark,new LinearLayout.LayoutParams(dp(32),-1));}
                 TextView title=text(name,16,TEXT);title.setSingleLine(true);title.setEllipsize(android.text.TextUtils.TruncateAt.END);title.setGravity(Gravity.CENTER_VERTICAL);item.addView(title,new LinearLayout.LayoutParams(0,-1,1));
+                if(animateRows&&mark!=null){
+                    TextView marker=mark;
+                    if(selecting){marker.setAlpha(0);title.setTranslationX(-dp(32));title.animate().translationX(0).setDuration(180).start();marker.animate().alpha(1).setStartDelay(180).setDuration(120).start();}
+                    else {marker.animate().alpha(0).setDuration(100).start();title.animate().translationX(-dp(32)).setStartDelay(100).setDuration(180).withEndAction(()->{if(item.getParent()==list&&!selecting){item.removeView(marker);title.setTranslationX(0);}}).start();}
+                }
                 item.setOnClickListener(v->{if(busy){toast("请等待当前任务结束");return;}if(selecting){if(!selected.add(id))selected.remove(id);update();return;}sessionStore.select(id);localMessages=sessionStore.load(id);changeMode(false);renderLocal();drawer.dismiss();});
                 item.setOnLongClickListener(v->{if(busy){toast("请等待当前任务结束");return true;}selecting=true;selected.add(id);update();return true;});
             }
