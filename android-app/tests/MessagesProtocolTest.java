@@ -17,6 +17,7 @@ public final class MessagesProtocolTest {
         if (!"null".equals(messages.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))) throw new AssertionError("text changed");
         JSONObject image=messages.getJSONObject(0).getJSONArray("content").getJSONObject(1);
         if (!"image".equals(image.getString("type")) || !"YWJj".equals(image.getJSONObject("source").getString("data"))) throw new AssertionError("image lost");
+        for(String media:new String[]{"image/png","image/webp"}) { JSONArray photoHistory=new JSONArray().put(new JSONObject().put("role","user").put("content","test").put("attachments",new JSONArray().put(new JSONObject().put("mediaType",media).put("dataUrl","data:"+media+";base64,YWJj")))); JSONObject source=MessagesProtocol.request("model",photoHistory,defs).getJSONArray("messages").getJSONObject(0).getJSONArray("content").getJSONObject(1).getJSONObject("source"); if(!media.equals(source.getString("media_type"))||!"YWJj".equals(source.getString("data")))throw new AssertionError("original media changed"); }
         JSONArray assistant = messages.getJSONObject(1).getJSONArray("content");
         if (assistant.length() != 3 || !"a.txt".equals(assistant.getJSONObject(1).getJSONObject("input").getString("path"))) throw new AssertionError("tool use lost");
         JSONArray results = messages.getJSONObject(2).getJSONArray("content");

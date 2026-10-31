@@ -228,7 +228,7 @@ button:disabled:hover {
   box-sizing: border-box;
   padding: 3px;
   border-radius: 7px;
-  background: #e7eaf0;
+  background: transparent;
   filter: drop-shadow(0 0 7px rgb(167 205 255 / 20%));
 }
 
@@ -374,7 +374,7 @@ button:disabled:hover {
   box-sizing: border-box;
   padding: 4px;
   border-radius: 9px;
-  background: #e7eaf0;
+  background: transparent;
 }
 
 .welcome .welcome-eyebrow {

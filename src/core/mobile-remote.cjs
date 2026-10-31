@@ -47,7 +47,7 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, s
         if(req.method==='GET' && req.url==='/v1/workspaces') return reply(200,await listWorkspaces());
         if(req.method==='POST' && req.url==='/v1/stop') { await stopTask(); return reply(200,{stopped:true}); }
         if(req.method==='POST' && (req.url==='/v1/messages' || req.url==='/v1/approval' || req.url==='/v1/model' || req.url==='/v1/reasoning' || req.url==='/v1/workspace')) {
-          const chunks=[]; let size=0; const limit=req.url==='/v1/messages'?1600000:50000;
+          const chunks=[]; let size=0; const limit=req.url==='/v1/messages'?23000000:50000;
           for await (const chunk of req) { size+=chunk.length; if(size>limit) return reply(413,{error:'消息过长'}); chunks.push(chunk); }
           const body=Buffer.concat(chunks).toString('utf8');
           const parsed=JSON.parse(body);
@@ -56,6 +56,7 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, listModels, s
           if(req.url==='/v1/model') { if(!parsed || typeof parsed.model!=='string' || !parsed.model || parsed.model.length>200) return reply(400,{error:'模型标识无效'}); return reply(200,await selectModel(parsed.model)); }
           if(req.url==='/v1/approval') { if(!parsed || typeof parsed.id!=='string' || typeof parsed.approved!=='boolean') return reply(400,{error:'审批参数无效'}); if(!await approve({id:parsed.id,approved:parsed.approved})) return reply(409,{error:'审批已失效或不允许手动处理'}); return reply(200,{accepted:true}); }
           if(!parsed || typeof parsed.text!=='string') return reply(400,{error:'消息无效'});
+          if(parsed.text.length>40000) return reply(413,{error:'消息过长'});
           if(parsed.attachments!==undefined && (!Array.isArray(parsed.attachments) || parsed.attachments.length>1)) return reply(400,{error:'附件无效'});
           return reply(200,await submit(parsed.text,parsed.attachments));
         }

@@ -93,3 +93,16 @@ test('remote reasoning requires authorization and a valid model and effort',asyn
   assert.deepEqual(selected,[{model:'a',effort:'high'}]);
  } finally {await service.stop();}
 });
+import { deflateSync, crc32 } from 'node:zlib';
+import { createHash, randomBytes } from 'node:crypto';
+import { normalizeImageAttachments } from '../src/core/message-images.mjs';
+
+test('a full-size PNG crosses the remote TLS service without changing bytes',async()=>{
+ const chunk=(type,data)=>{const name=Buffer.from(type),length=Buffer.alloc(4),sum=Buffer.alloc(4);length.writeUInt32BE(data.length);sum.writeUInt32BE(crc32(Buffer.concat([name,data])));return Buffer.concat([length,name,data,sum]);};
+ const head=Buffer.alloc(13);head.writeUInt32BE(1024,0);head.writeUInt32BE(1024,4);head[8]=8;head[9]=2;
+ const rows=[];for(let y=0;y<1024;y++)rows.push(Buffer.concat([Buffer.from([0]),randomBytes(3072)]));
+ const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',deflateSync(Buffer.concat(rows))),chunk('IEND',Buffer.alloc(0))]);
+ assert.ok(png.length>2*1024*1024);let received;
+ const service=createMobileRemote({submit:(_text,items)=>{received=normalizeImageAttachments(items)[0];return {ok:true};}}),pair=await service.start();
+ try{const image={name:'full.png',mediaType:'image/png',dataUrl:'data:image/png;base64,'+png.toString('base64')};const response=await request(pair.port,pair.token,'POST','/v1/messages',JSON.stringify({text:'test',attachments:[image]}));assert.equal(response.code,200);assert.equal(received.mediaType,'image/png');assert.equal(createHash('sha256').update(Buffer.from(received.dataUrl.split(',')[1],'base64')).digest('hex'),createHash('sha256').update(png).digest('hex'));}finally{await service.stop();}
+});

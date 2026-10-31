@@ -91,16 +91,16 @@ test('normalization creates new arrays and objects without mutating frozen input
   assert.equal(attachment.name, '../photo.png');
 });
 
-test('four images at exactly 2 MiB each satisfy both per-image and 8 MiB message boundaries', () => {
+test('four images at exactly 16 MiB each satisfy both per-image and 64 MiB message boundaries', () => {
   assert.ok(Object.isFrozen(IMAGE_ATTACHMENT_LIMITS));
-  assert.deepEqual(IMAGE_ATTACHMENT_LIMITS, { maxImages: 4, maxImageBytes: 2 * 1024 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxDimension: 8192, maxPixels: 20_000_000 });
+  assert.deepEqual(IMAGE_ATTACHMENT_LIMITS, { maxImages: 4, maxImageBytes: 16 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024, maxDimension: 16384, maxPixels: 100_000_000 });
   const bytes = Buffer.alloc(IMAGE_ATTACHMENT_LIMITS.maxImageBytes);
   Buffer.from(PNG, 'base64').copy(bytes);
   const attachment = image(bytes);
   const output = normalizeImageAttachments(Array.from({ length: 4 }, () => attachment));
   assert.equal(output.length, 4);
   assert.deepEqual(output.map(item => item.name), ['image-1.png', 'image-2.png', 'image-3.png', 'image-4.png']);
-  assert.equal(output.reduce((total, item) => total + Buffer.from(item.dataUrl.split(',')[1], 'base64').length, 0), 8 * 1024 * 1024);
+  assert.equal(output.reduce((total, item) => total + Buffer.from(item.dataUrl.split(',')[1], 'base64').length, 0), 64 * 1024 * 1024);
 });
 
 test('decoded-byte overflow and image-count overflow fail before accepting an attachment', () => {
@@ -164,16 +164,15 @@ test('truncated PNG/JPEG headers and inconsistent WebP RIFF or chunk lengths fai
 });
 
 test('image dimensions accept the inclusive side/pixel limits and reject zero, oversized sides or pixels', () => {
-  for (const [width, height] of [[8192, 1], [1, 8192], [5000, 4000]]) assert.equal(normalizeImageAttachments([image(sizedPng(width, height))]).length, 1);
-  for (const [width, height] of [[8193, 1], [1, 8193], [5001, 4000], [8192, 2442]]) rejects([image(sizedPng(width, height))], 'IMAGE_ATTACHMENT_LIMIT');
+  for (const [width, height] of [[16384, 1], [1, 16384], [10000, 10000]]) assert.equal(normalizeImageAttachments([image(sizedPng(width, height))]).length, 1);
+  for (const [width, height] of [[16385, 1], [1, 16385], [10001, 10000]]) rejects([image(sizedPng(width, height))], 'IMAGE_ATTACHMENT_LIMIT');
   for (const [width, height] of [[0, 1], [1, 0]]) rejects([image(sizedPng(width, height))]);
-  rejects([image(sizedJpeg(8193, 1), 'image/jpeg')], 'IMAGE_ATTACHMENT_LIMIT');
-  rejects([image(sizedJpeg(5001, 4000), 'image/jpeg')], 'IMAGE_ATTACHMENT_LIMIT');
+  rejects([image(sizedJpeg(16385, 1), 'image/jpeg')], 'IMAGE_ATTACHMENT_LIMIT');
+  rejects([image(sizedJpeg(10001, 10000), 'image/jpeg')], 'IMAGE_ATTACHMENT_LIMIT');
   rejects([image(sizedJpeg(1, 0), 'image/jpeg')]);
   for (const source of [WEBP_VP8, WEBP_VP8L, WEBP_VP8X]) {
     assert.equal(normalizeImageAttachments([image(sizedWebp(source, 8192, 1), 'image/webp')]).length, 1);
-    rejects([image(sizedWebp(source, 8193, 1), 'image/webp')], 'IMAGE_ATTACHMENT_LIMIT');
-    rejects([image(sizedWebp(source, 5001, 4000), 'image/webp')], 'IMAGE_ATTACHMENT_LIMIT');
+    rejects([image(sizedWebp(source, 10001, 10000), 'image/webp')], 'IMAGE_ATTACHMENT_LIMIT');
   }
 });
 

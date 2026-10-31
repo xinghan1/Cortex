@@ -126,7 +126,7 @@ test('tool image history shares the same decoded byte and image-count budgets as
       ...allCalls.map(call => ({ role: 'tool', toolCallId: call.id, content: 'Image.', attachments: [image] }))];
     await assert.rejects(requestModel(options({ provider, messages, fetchImpl: async () => { requests++; return response('responses', false); } })),
       { code: 'MODEL_IMAGE_HISTORY_LIMIT' });
-    const bytes=Buffer.alloc(2*1024*1024);Buffer.from(png,'base64').copy(bytes);
+    const bytes=Buffer.alloc(8*1024*1024);Buffer.from(png,'base64').copy(bytes);
     const large={...image,dataUrl:'data:image/png;base64,'+bytes.toString('base64')};
     const byteCalls=allCalls.slice(0,9),overBytes=[messages[0],{role:'assistant',content:'',toolCalls:byteCalls},
       ...byteCalls.map(call=>({role:'tool',toolCallId:call.id,content:'Image.',attachments:[large]}))];

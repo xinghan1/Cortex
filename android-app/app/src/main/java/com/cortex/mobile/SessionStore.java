@@ -79,7 +79,7 @@ final class SessionStore {
         if (item == null) throw new IllegalArgumentException("会话不存在");
         try {
             item.put("messages", new JSONArray(messages.toString()));
-            item.put("title", title(messages));
+            if (!item.optBoolean("customTitle", false)) item.put("title", title(messages));
             item.put("updatedAt", System.currentTimeMillis());
             persist();
         } catch (org.json.JSONException e) { throw new IllegalStateException("无法保存会话", e); }
@@ -90,6 +90,20 @@ final class SessionStore {
     synchronized void select(String id) {
         if (find(id) == null) throw new IllegalArgumentException("会话不存在");
         current=id; persist();
+    }
+    synchronized void rename(String id, String name) {
+        JSONObject item=find(id);
+        if(item==null) throw new IllegalArgumentException("会话不存在");
+        if(name==null) throw new IllegalArgumentException("请输入会话名称");
+        int start=0,end=name.length();
+        while(start<end){int cp=name.codePointAt(start);if(!Character.isWhitespace(cp)&&!Character.isSpaceChar(cp))break;start+=Character.charCount(cp);}
+        while(end>start){int cp=name.codePointBefore(end);if(!Character.isWhitespace(cp)&&!Character.isSpaceChar(cp))break;end-=Character.charCount(cp);}
+        String clean=name.substring(start,end);
+        if(clean.isEmpty()) throw new IllegalArgumentException("请输入会话名称");
+        if(clean.codePointCount(0,clean.length())>100) throw new IllegalArgumentException("会话名称不能超过 100 个字符");
+        for(int i=0;i<clean.length();){int cp=clean.codePointAt(i);if(Character.isISOControl(cp))throw new IllegalArgumentException("会话名称不能包含换行或控制字符");i+=Character.charCount(cp);}
+        try { item.put("title",clean);item.put("customTitle",true);persist(); }
+        catch(org.json.JSONException e){throw new IllegalStateException("无法重命名会话",e);}
     }
     synchronized void delete(String id) {
         int index=-1;

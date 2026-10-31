@@ -2283,9 +2283,11 @@ function appendGeneratedImages(message, attachments) {
   images.forEach(image => gallery.append(createMessageImage(image))); message.append(gallery);
 }
 
+let imagePreviewZoom;
 function openImagePreview(attachment) {
   const image = messageImageAttachments([attachment])[0];
   if (!image) return;
+  imagePreviewZoom?.reset();
   $('image-preview-content').src = image.src;
   $('image-preview-content').alt = image.name;
   $('image-preview-title').textContent = image.name;
@@ -2370,6 +2372,7 @@ function modelExplicitlyTextOnly() {
 }
 
 function bindImageAttachments() {
+  imagePreviewZoom = window.CortexImagePreviewZoom.create($('image-preview-dialog'), $('image-preview-content').parentElement, $('image-preview-content'));
   $('attach-images').addEventListener('click', () => { if (!$('attach-images').disabled) $('attachment-input').click(); });
   $('attachment-input').addEventListener('change', (event) => { const files = Array.from(event.target.files || []); event.target.value = ''; addDraftImageFiles(files); });
   $('task-input').addEventListener('paste', (event) => {
@@ -2388,7 +2391,7 @@ function bindImageAttachments() {
     if (!dataUrl || typeof bridge.imagePreviewContext !== 'function') return;
     void bridge.imagePreviewContext({ dataUrl }).catch(error => notice(`图片操作失败：${errorText(error)}`, true));
   });
-  $('image-preview-dialog').addEventListener('close', () => { $('image-preview-content').removeAttribute('src'); $('image-preview-title').textContent = '图片预览'; });
+  $('image-preview-dialog').addEventListener('close', () => { imagePreviewZoom.reset(); $('image-preview-content').removeAttribute('src'); $('image-preview-title').textContent = '图片预览'; });
 }
 
 function createUserMessageFooter(text, metadata = {}) {

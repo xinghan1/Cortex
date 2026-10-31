@@ -38,7 +38,7 @@ final class MessagesProtocol {
                 if (images != null) for (int j = 0; j < images.length(); j++) {
                     JSONObject image = images.getJSONObject(j); String media = image.getString("mediaType"), url = image.getString("dataUrl");
                     String prefix = "data:" + media + ";base64,";
-                    if (!"image/jpeg".equals(media) || !url.startsWith(prefix)) throw new IllegalArgumentException("图片格式无效");
+                    if (!("image/jpeg".equals(media)||"image/png".equals(media)||"image/webp".equals(media)) || !url.startsWith(prefix)) throw new IllegalArgumentException("图片格式无效");
                     blocks.put(new JSONObject().put("type", "image").put("source", new JSONObject().put("type", "base64").put("media_type", media).put("data", url.substring(prefix.length()))));
                 }
                 JSONArray calls = m.optJSONArray("tool_calls");

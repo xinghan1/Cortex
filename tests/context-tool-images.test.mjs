@@ -11,17 +11,17 @@ const tool = (id, content, attachments) => ({ role: 'tool', id: `message-${id}`,
   content, ...(attachments ? { attachments } : {}) });
 
 function largeImage() {
-  // A complete, uncompressed PNG close to the 2 MiB attachment limit. This
+  // A complete, uncompressed PNG of approximately 3 MiB. This
   // exercises real normalized image transport rather than a giant text stub.
   const chunk = (type, bytes) => {
     const name = Buffer.from(type), size = Buffer.alloc(4), checksum = Buffer.alloc(4);
     size.writeUInt32BE(bytes.length); checksum.writeUInt32BE(crc32(Buffer.concat([name, bytes])));
     return Buffer.concat([size, name, bytes, checksum]);
   };
-  const header = Buffer.alloc(13); header.writeUInt32BE(512, 0); header.writeUInt32BE(1023, 4); header[8] = 8; header[9] = 6;
+  const header = Buffer.alloc(13); header.writeUInt32BE(512, 0); header.writeUInt32BE(1535, 4); header[8] = 8; header[9] = 6;
   const bytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.alloc(1023 * 2049), { level: 0 })), chunk('IEND', Buffer.alloc(0))]);
-  assert.ok(bytes.length > IMAGE_ATTACHMENT_LIMITS.maxImageBytes - 2048 && bytes.length <= IMAGE_ATTACHMENT_LIMITS.maxImageBytes);
+    chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.alloc(1535 * 2049), { level: 0 })), chunk('IEND', Buffer.alloc(0))]);
+  assert.ok(bytes.length > 3 * 1024 * 1024 - 4096 && bytes.length <= 3 * 1024 * 1024 + 4096);
   return normalizeImageAttachments([{ id: 'local-screen', name: 'layout.png', mediaType: 'image/png', dataUrl: `data:image/png;base64,${bytes.toString('base64')}` }])[0];
 }
 const image = largeImage();
@@ -131,11 +131,11 @@ test('the 33rd screenshot compacts previously viewed image groups while retainin
 });
 
 test('decoded image bytes can require compaction before textual or image-count capacity is full', async () => {
-  const messages = screenshots(9, image), protectedFromIndex = messages.length - 2, original = structuredClone(messages);
-  assert.ok(imageBytes(messages) > 16 * 1024 * 1024); assert.ok(imageCount(messages) < 32);
+  const messages = screenshots(22, image), protectedFromIndex = messages.length - 2, original = structuredClone(messages);
+  assert.ok(imageBytes(messages) > 64 * 1024 * 1024); assert.ok(imageCount(messages) < 32);
   const result = await prepareContext({ messages, protectedFromIndex, modelCapabilities: { contextWindow: 1048576 },
     summarize: async () => 'Earlier large screenshots were checked. Keep the pending screenshot for the next request.' });
-  assert.equal(result.compacted, true); assert.ok(imageBytes(result.messages) <= 16 * 1024 * 1024);
+  assert.equal(result.compacted, true); assert.ok(imageBytes(result.messages) <= 64 * 1024 * 1024);
   assert.equal(result.messages.at(-2), messages.at(-2)); assert.equal(result.messages.at(-1), messages.at(-1));
   assert.deepEqual(messages, original);
 });
@@ -156,7 +156,7 @@ test('mandatory user photos above transport image capacity fail before billing i
 });
 
 test('an oversized mandatory photo byte budget or unread image batch fails before requesting a summary', async () => {
-  const photos = Array.from({ length: 9 }, (_, index) => user(`User photo ${index}.`, { attachments: [image] }));
+  const photos = Array.from({ length: 22 }, (_, index) => user(`User photo ${index}.`, { attachments: [image] }));
   const batch = [user('Inspect these UI screenshots.'), { role: 'assistant', content: 'Read the screenshots.',
     toolCalls: Array.from({ length: 33 }, (_, index) => ({ id: `pending-${index}`, name: 'view_image', arguments: { path: `pending-${index}.png` } })),
   }, ...Array.from({ length: 33 }, (_, index) => tool(`pending-${index}`, 'Screenshot loaded.', [smallImage]))];

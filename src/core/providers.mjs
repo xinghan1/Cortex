@@ -297,8 +297,8 @@ function normalizeMessageImages(messages) {
       bytes += base64.length / 4 * 3 - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
       count++;
     }
-    if (count > 32 || bytes > 16 * 1024 * 1024) {
-      fail('本次请求的历史图片超过 32 张或合计 16 MiB，请新建会话继续；没有丢弃或转换图片。', 'MODEL_IMAGE_HISTORY_LIMIT');
+    if (count > 32 || bytes > 64 * 1024 * 1024) {
+      fail('本次请求的历史图片超过 32 张或合计 64 MiB，请新建会话继续；没有丢弃或转换图片。', 'MODEL_IMAGE_HISTORY_LIMIT');
     }
     // Preserve the caller's message/attachment objects, including queued and
     // persisted history. Only this request gets normalized attachment copies.

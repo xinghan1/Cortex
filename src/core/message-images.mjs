@@ -5,10 +5,10 @@
 // VP8: https://www.rfc-editor.org/rfc/rfc6386#section-9.1
 export const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
   maxImages: 4,
-  maxImageBytes: 2 * 1024 * 1024,
-  maxTotalBytes: 8 * 1024 * 1024,
-  maxDimension: 8192,
-  maxPixels: 20_000_000,
+  maxImageBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 64 * 1024 * 1024,
+  maxDimension: 16384,
+  maxPixels: 100_000_000,
 });
 
 const PREFIXES = new Map([
@@ -102,13 +102,13 @@ function webpDimensions(bytes, index) {
   invalid(index, '缺少受支持的 WebP 尺寸头');
 }
 
-function checkDimensions(bytes, mediaType, index) {
+function checkDimensions(bytes, mediaType, index, limits = IMAGE_ATTACHMENT_LIMITS) {
   const [width, height] = mediaType === 'image/png' ? pngDimensions(bytes, index)
     : mediaType === 'image/jpeg' ? jpegDimensions(bytes, index) : webpDimensions(bytes, index);
   if (!width || !height) invalid(index, '的图片尺寸必须大于零');
-  if (width > IMAGE_ATTACHMENT_LIMITS.maxDimension || height > IMAGE_ATTACHMENT_LIMITS.maxDimension
-      || width * height > IMAGE_ATTACHMENT_LIMITS.maxPixels) {
-    limit(index, '超过单边 8192 像素或总计 2000 万像素的尺寸上限');
+  if (width > limits.maxDimension || height > limits.maxDimension
+      || width * height > limits.maxPixels) {
+    limit(index, limits === IMAGE_ATTACHMENT_LIMITS ? '超过单边 16384 像素或总计 1 亿像素的尺寸上限' : '超过图片工具的尺寸上限');
   }
 }
 
@@ -120,7 +120,7 @@ function displayName(value, extension, index) {
 }
 
 /** Normalize untrusted message attachments without mutating or forwarding extra fields. */
-export function normalizeImageAttachments(input) {
+export function normalizeImageAttachments(input, dimensionLimits = IMAGE_ATTACHMENT_LIMITS) {
   if (input === undefined) return [];
   if (!Array.isArray(input)) throw new ImageAttachmentError('图片附件必须为数组。');
   if (input.length > IMAGE_ATTACHMENT_LIMITS.maxImages) {
@@ -134,15 +134,15 @@ export function normalizeImageAttachments(input) {
     const format = PREFIXES.get(attachment.dataUrl.slice(0, comma + 1));
     if (!format) invalid(index, '仅支持 PNG、JPEG 或 WebP 的 Base64 data URL');
     const encoded = attachment.dataUrl.slice(comma + 1);
-    if (encoded.length > 4 * Math.ceil(IMAGE_ATTACHMENT_LIMITS.maxImageBytes / 3)) limit(index, '超过 2 MiB 上限');
+    if (encoded.length > 4 * Math.ceil(IMAGE_ATTACHMENT_LIMITS.maxImageBytes / 3)) limit(index, '超过 16 MiB 上限');
     if (!encoded || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) {
       invalid(index, '的 Base64 编码不规范');
     }
     const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
     const decodedBytes = encoded.length / 4 * 3 - padding;
-    if (decodedBytes > IMAGE_ATTACHMENT_LIMITS.maxImageBytes) limit(index, '超过 2 MiB 上限');
+    if (decodedBytes > IMAGE_ATTACHMENT_LIMITS.maxImageBytes) limit(index, '超过 16 MiB 上限');
     totalBytes += decodedBytes;
-    if (totalBytes > IMAGE_ATTACHMENT_LIMITS.maxTotalBytes) limit(index, '使附件总大小超过 8 MiB 上限');
+    if (totalBytes > IMAGE_ATTACHMENT_LIMITS.maxTotalBytes) limit(index, '使附件总大小超过 64 MiB 上限');
     const bytes = Buffer.from(encoded, 'base64');
     if (bytes.toString('base64') !== encoded) invalid(index, '的 Base64 尾部位或填充不规范');
     if (attachment.mediaType !== undefined && attachment.mediaType !== format.mediaType) {
@@ -152,7 +152,7 @@ export function normalizeImageAttachments(input) {
         || Array.from(attachment.id).length > 100 || ID_CONTROLS.test(attachment.id))) {
       invalid(index, '的 id 必须为不含控制字符的 1 至 100 字符字符串');
     }
-    checkDimensions(bytes, format.mediaType, index);
+    checkDimensions(bytes, format.mediaType, index, dimensionLimits);
     return {
       ...(attachment.id === undefined ? {} : { id: attachment.id }),
       name: displayName(attachment.name, format.extension, index),

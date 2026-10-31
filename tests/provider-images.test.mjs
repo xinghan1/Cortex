@@ -99,7 +99,7 @@ test('explicit text-only capability rejects historical images before fetch while
 test('invalid, remote, oversized and non-user image attachments fail before a transport request', async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; return json(response('openai')); };
-  const oversized = Buffer.alloc(2 * 1024 * 1024 + 1); Buffer.from(png, 'base64').copy(oversized);
+  const oversized = Buffer.alloc(16 * 1024 * 1024 + 1); Buffer.from(png, 'base64').copy(oversized);
   for (const attachments of [null, [image, image, image, image, image], [{ ...image, dataUrl: 'https://example.invalid/image.png' }],
     [{ ...image, dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+' }], [{ ...image, dataUrl: 'data:image/png;base64,!!!!' }],
     [{ ...image, dataUrl: 'data:image/png;base64,' + oversized.toString('base64') }]]) {
@@ -113,11 +113,11 @@ test('invalid, remote, oversized and non-user image attachments fail before a tr
 test('per-request historical image limits count decoded bytes and never discard earlier images', async () => {
   let calls = 0, bodyLength = 0;
   const fetchImpl = async (_url, init) => { calls++; bodyLength = init.body.length; return json(response('openai')); };
-  const full = Buffer.alloc(2 * 1024 * 1024); Buffer.from(png, 'base64').copy(full);
+  const full = Buffer.alloc(8 * 1024 * 1024); Buffer.from(png, 'base64').copy(full);
   const large = { ...image, dataUrl: 'data:image/png;base64,' + full.toString('base64') };
   const sixteenMiB = [0, 1].map(() => ({ role: 'user', content: '', attachments: [large, large, large, large] }));
   await requestModel(options({ messages: sixteenMiB, fetchImpl }));
-  assert.ok(bodyLength > 16 * 1024 * 1024, 'decoded-byte budget must not mistakenly count base64 transport bytes');
+  assert.ok(bodyLength > 64 * 1024 * 1024, 'decoded-byte budget must not mistakenly count base64 transport bytes');
   await assert.rejects(requestModel(options({ messages: [...sixteenMiB, { role: 'user', content: '', attachments: [image] }], fetchImpl })),
     error => error.code === 'MODEL_IMAGE_HISTORY_LIMIT' && error.message.includes('新建会话'));
   const thirtyTwo = Array.from({ length: 8 }, () => ({ role: 'user', content: '', attachments: [image, image, image, image] }));

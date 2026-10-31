@@ -5132,7 +5132,7 @@ dialog {
   justify-content: center;
   max-width: calc(90vw - 34px);
   max-height: calc(90vh - 80px);
-  overflow: auto;
+  overflow: hidden;
 }
 
 #image-preview-content {
@@ -5142,7 +5142,12 @@ dialog {
   max-width: calc(90vw - 34px);
   max-height: calc(90vh - 80px);
   object-fit: contain;
+  transform-origin: center center;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
 }
+#image-preview-content.is-dragging { cursor: grabbing; }
 
 /* Keep long approvals inside the chat viewport, with actions outside their scrollable body. */
 

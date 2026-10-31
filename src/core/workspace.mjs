@@ -304,7 +304,7 @@ export class WorkspaceTools {
     return read(() => withFileCommit(async () => {
       abortIfNeeded(signal);
       const target = await this.#resolve(input, { signal });
-      const limit = IMAGE_ATTACHMENT_LIMITS.maxImageBytes;
+      const limit = Math.min(2 * 1024 * 1024, IMAGE_ATTACHMENT_LIMITS.maxImageBytes);
       if (!target.stat.isFile()) throw new Error('图片目标不是常规文件。');
       if (target.stat.size > limit) throw new Error('图片大小超过 2 MiB 上限。');
       let handle;
@@ -339,7 +339,7 @@ export class WorkspaceTools {
           : bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP' ? 'image/webp' : null;
         if (!mediaType) throw new Error('仅支持 PNG、JPEG 或 WebP 图片，不支持该文件类型。');
         const [attachment] = normalizeImageAttachments([{ id: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
-          name: path.basename(after.relative), mediaType, dataUrl: `data:${mediaType};base64,${bytes.toString('base64')}` }]);
+          name: path.basename(after.relative), mediaType, dataUrl: `data:${mediaType};base64,${bytes.toString('base64')}` }], { maxDimension: 8192, maxPixels: 20_000_000 });
         abortIfNeeded(signal);
         return { path: after.relative, bytes: total, attachment };
       } finally {
