@@ -3769,7 +3769,12 @@ function addTool(event) {
   commandOutput = null;
   if (activeTaskActivity?.status === 'running') { activeTaskActivity.lastAssistant = null; activeTaskActivity.lastAssistantConfirmed = false; }
   const tool = createToolCard(event);
-  appendGroupedToolCard(taskProcessTarget(), tool, event);
+  const target = taskProcessTarget();
+  // Keep active edits visible even when adjacent tool operations are folded.
+  // Historical events still use normal operation grouping.
+  if (tool.editBrief) window.ForgeToolOperationGroups?.breakGroup(target);
+  appendGroupedToolCard(target, tool, event);
+  if (tool.editBrief) window.ForgeToolOperationGroups?.breakGroup(target);
   pendingTools.push(tool);
   moveTaskActivityToEnd();
   scrollBottom();
@@ -3793,6 +3798,7 @@ function createToolCard(event) {
   const title = element('span', 'tool-title', toolActivity(event.name, event.args));
   title.title = event.name || '工具调用';
   const id = xmlFileTool(event.name, event.args) ? 'read_file' : String(event.name || '').replace(/（模拟）/g, '');
+  const isFileEdit = /^(write_file|replace_in_file)$/.test(id) && typeof event.args?.path === 'string' && !!event.args.path;
   const mark = element('span', 'tool-mark');
   mark.setAttribute('aria-hidden', 'true');
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -3806,6 +3812,17 @@ function createToolCard(event) {
     : 'M14 3H5v18h14V8l-5-5Z M14 3v5h5 M8 12h8 M8 16h6');
   svg.append(path); mark.append(svg);
   summary.append(mark, title, badge);
+  let editBrief = null;
+  if (isFileEdit) {
+    card.classList.add('file-edit-card');
+    // tool-start can precede permission approval; do not claim the write has
+    // already happened until its actual result is received.
+    title.textContent = '编辑文件';
+    editBrief = element('span', 'tool-edit-summary');
+    const filename = element('span', 'tool-edit-filename', baseName(event.args.path)); filename.title = event.args.path;
+    const pending = element('span', 'tool-edit-pending', '统计中');
+    editBrief.append(filename, pending); title.after(editBrief);
+  }
   const details = element('div', 'tool-details');
   const technical = element('div', 'tool-technical-details');
   const commandView = id === 'run_command' && window.ForgeCommandResult ? window.ForgeCommandResult.create(event.args) : null;
@@ -3814,7 +3831,7 @@ function createToolCard(event) {
   details.append(technical);
   card.append(summary, details);
   bindFileDisclosureVisibility(card, summary);
-  return { name: event.name, args: event.args, toolCallId: event.toolCallId, runId: event.runId, card, details, technical, commandView, badge, title };
+  return { name: event.name, args: event.args, toolCallId: event.toolCallId, runId: event.runId, card, details, technical, commandView, badge, title, editBrief };
 }
 
 function completeTool(event, { tools = pendingTools, updateActivity = true } = {}) {
@@ -3884,13 +3901,26 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
       brief.append(count);
     }
     if (diff.dataset.exact === 'false') brief.title = '改动较大或文件过大，展开查看统计说明。';
-    tool.title.after(brief);
+    if (tool.editBrief) tool.editBrief.replaceWith(brief); else tool.title.after(brief);
+    tool.editBrief = brief;
+    if (updateActivity && diff.dataset.exact === 'true') {
+      for (const [className, direction] of [['tool-edit-added', 'up'], ['tool-edit-removed', 'down']]) {
+        const count = brief.querySelector(`.${className}`);
+        window.CortexEditCount?.animate(count, direction);
+      }
+    }
     const raw = tool.technical;
     raw.classList.add('code-diff-raw');
     raw.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));
     tool.details.replaceChildren(diff, raw);
     tool.card.open = false;
-  } else tool.technical.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));
+  } else {
+    if (tool.editBrief) {
+      tool.editBrief.querySelector('.tool-edit-pending')?.remove();
+      if (!denied && !failed) tool.title.textContent = '文件操作已返回';
+    }
+    tool.technical.append(element('div', 'tool-label', '执行结果'), toolPayload(event.result, tool.args?.path));
+  }
   const status = commandResult ? commandResult.label : denied ? command ? '命令未执行' : '操作未执行'
     : failed ? '工具未完成，继续处理'
     : command && result?.terminated ? '命令已停止'
@@ -3901,6 +3931,7 @@ function completeTool(event, { tools = pendingTools, updateActivity = true } = {
 }
 
 function finishToolWithoutResult(tool) {
+  if (tool.editBrief) { tool.editBrief.querySelector('.tool-edit-pending')?.remove(); tool.title.textContent = '文件编辑结果未返回'; }
   tool.card.classList.remove('running');
   tool.card.dataset.status = 'unknown';
   tool.badge.textContent = '未返回结果';

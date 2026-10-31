@@ -35,6 +35,19 @@ const card = (text = 'original card', status = 'running') => {
 const finish = (element, status = 'completed') => { element.classList.remove('running'); element.dataset.status = status; api.refresh(element); };
 const groups = target => target.querySelectorAll('.tool-operation-group');
 
+test('live edit boundaries keep the editing row visible without changing historical grouping', () => {
+  const target = new Element('div'), read = card('read', 'completed'), edit = card('editing'), command = card('command');
+  api.appendTool(target, read, event('read_file'));
+  api.breakGroup(target); api.appendTool(target, edit, event('write_file')); api.breakGroup(target);
+  api.appendTool(target, command, event('run_command'));
+  assert.deepEqual(target.children, [read, edit, command]);
+  finish(edit); assert.equal(edit.parentElement, target);
+  const historical = new Element('div');
+  api.appendTool(historical, card('read', 'completed'), event('read_file'));
+  api.appendTool(historical, card('edit', 'completed'), event('write_file'));
+  assert.equal(groups(historical).length, 1); assert.equal(groups(historical)[0].open, false);
+});
+
 test('edit group counts only verified completed file snapshots', () => {
   const target = new Element('div'), first = card('first', 'completed'), second = card('second');
   const diff = new Element('article'); diff.className = 'code-diff-card'; diff.dataset.exact = 'true';

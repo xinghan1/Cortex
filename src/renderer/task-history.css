@@ -280,16 +280,18 @@
 
 .tool-edit-added {
   color: #5ce194;
-  animation: edit-count-up 260ms ease-out both;
 }
 
 .tool-edit-removed {
   color: #ff7e85;
-  animation: edit-count-down 260ms ease-out both;
 }
+.tool-edit-pending { color: var(--ui-muted, var(--muted)); font-size: 11px; }
+.tool-edit-number { display: inline-block; }
+.tool-edit-number.up { animation: edit-count-up 140ms ease-out both; }
+.tool-edit-number.down { animation: edit-count-down 140ms ease-out both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tool-edit-added, .tool-edit-removed { animation: none; }
+  .tool-edit-number { animation: none !important; }
 }
 
 .task-activity-events .tool-details {
