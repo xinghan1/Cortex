@@ -65,8 +65,24 @@ final class ToolEventView {
         LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(8);parent.addView(box,params);
         TextView header=text("",14,fg);header.setTypeface(null,Typeface.BOLD);header.setPadding(0,dp(8),0,dp(8));box.addView(header);
         LinearLayout detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);box.addView(detail);
-        String[] fields={"task","summary","activity"}, labels={"任务","总结","操作过程"};
+        String[] fields={"task","summary"}, labels={"任务","总结"};
         for(int i=0;i<fields.length;i++){Object value=agent.opt(fields[i]);if(value==null||value==JSONObject.NULL||String.valueOf(value).isEmpty())continue;TextView label=text(labels[i],12,muted);label.setPadding(0,dp(7),0,dp(4));detail.addView(label);TextView body=text(pretty(value),13,fg);body.setTextIsSelectable(true);detail.addView(body);}
+        Object activity=agent.opt("activity");java.util.ArrayList<SubagentActivity.Entry> entries=SubagentActivity.parse(activity);
+        if(entries==null){if(activity!=null&&activity!=JSONObject.NULL&&!String.valueOf(activity).isEmpty()){TextView label=text("操作过程",12,muted);detail.addView(label);TextView fallback=text(pretty(activity),13,fg);fallback.setTextIsSelectable(true);detail.addView(fallback);}}
+        else if(!entries.isEmpty()){
+            TextView label=text("操作过程",12,muted);label.setPadding(0,dp(7),0,dp(4));detail.addView(label);int index=0;
+            for(SubagentActivity.Entry entry:entries){
+                if(!"tool".equals(entry.type)){TextView body=text(entry.text,13,fg);body.setTextIsSelectable(true);body.setPadding(0,dp(5),0,dp(5));detail.addView(body);continue;}
+                String itemKey=id+":tool:"+(entry.id.isEmpty()?String.valueOf(index):entry.id);index++;
+                LinearLayout row=new LinearLayout(context);row.setOrientation(LinearLayout.VERTICAL);detail.addView(row);
+                TextView summary=text("",13,fg);summary.setPadding(0,dp(8),0,dp(8));row.addView(summary);
+                LinearLayout data=new LinearLayout(context);data.setOrientation(LinearLayout.VERTICAL);data.setVisibility(Boolean.TRUE.equals(expanded.get(itemKey))?View.VISIBLE:View.GONE);row.addView(data);
+                if(entry.args!=null&&entry.args!=JSONObject.NULL){data.addView(text("输入参数",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.args));data.addView(value);}
+                if(entry.result!=null&&entry.result!=JSONObject.NULL){data.addView(text("执行结果",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.result));data.addView(value);}
+                String caption=SubagentActivity.caption(entry,"running".equals(agent.optString("status")));Runnable update=()->summary.setText((data.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+caption);update.run();
+                summary.setOnClickListener(v->{boolean open=data.getVisibility()!=View.VISIBLE;data.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(itemKey,open);update.run();});
+            }
+        }
         String name=agent.optString("name","子任务"), status=ToolNames.status(agent.optString("status",""));
         Runnable title=()->header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+(status.isEmpty()?"":"  ·  "+status));title.run();
         header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);title.run();});

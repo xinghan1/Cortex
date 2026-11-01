@@ -20,6 +20,28 @@ function fixture() {
   return { api: window.ForgeSubagents, advance: value => { time += value; } };
 }
 const snapshot = { id: 'one', name: '测试', task: '任务', status: 'running', elapsedMs: 1000, inputTokens: 120, outputTokens: 34, activity: [] };
+const collect = element => [element.textContent, ...element.children.flatMap(collect)];
+test('tool calls and results appear as one named operation with actual status', () => {
+  const f = fixture(), card = f.api.render({ ...snapshot, activity: [
+    { type: 'tool-start', name: 'write_file', toolCallId: 'id-1', args: { path: 'index.html' } },
+    { type: 'tool-result', name: 'write_file', toolCallId: 'id-1', status: 'completed', result: '{"ok":true}' },
+    { type: 'tool-start', name: 'run_command', toolCallId: 'id-2', args: { command: 'npm test' } },
+    { type: 'tool-result', name: 'run_command', toolCallId: 'id-2', status: 'failed', result: '{"exitCode":1}' },
+  ] });
+  const texts = collect(card);
+  assert.equal(texts.filter(value => value === '编辑文件 · index.html · 已完成').length, 1);
+  assert.equal(texts.filter(value => value === '运行命令 · 未完成').length, 1);
+  assert.ok(!texts.some(value => value.startsWith('工具返回 ·')));
+  assert.ok(texts.includes('输入参数')); assert.ok(texts.includes('执行结果'));
+});
+test('legacy and unfinished operations are not falsely reported as completed', () => {
+  const f = fixture(), card = f.api.render({ ...snapshot, status: 'stopped', activity: [
+    { type: 'tool-start', name: 'search_files', toolCallId: 'pending', args: { query: 'example' } },
+    { type: 'tool-result', name: 'list_files', result: '已返回' },
+  ] });
+  const texts = collect(card);
+  assert.ok(texts.includes('搜索文件 · 未返回')); assert.ok(texts.includes('读取文件列表 · 已返回'));
+});
 const meta = card => card.children[0].children[3];
 const phase = card => card.children[0].children[2];
 function usage(card) {

@@ -9,6 +9,19 @@
   const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
   const statusText = { running: '进行中', completed: '已完成', failed: '失败', stopped: '已停止' };
   const phases = { waiting: '等待模型响应', thinking: '正在思考', generating: '正在生成', tool: '正在执行工具' };
+  const toolNames = Object.freeze({ list_files: '读取文件列表', read_file: '读取文件', search_files: '搜索文件',
+    write_file: '编辑文件', replace_in_file: '编辑文件', run_command: '运行命令', view_image: '查看图片',
+    browser_navigate: '打开网页', browser_snapshot: '查看网页', browser_click: '点击网页元素',
+    browser_screenshot: '网页截图', browser_type: '输入网页内容', browser_scroll: '滚动网页' });
+  function resultStatus(result) {
+    let value = result;
+    if (typeof value === 'string') { try { value = JSON.parse(value); } catch { return /^(错误|工具执行失败|Error)/i.test(value) ? '未完成' : '已返回'; } }
+    if (value && typeof value === 'object') {
+      if (value.denied || value.canceled) return '未执行';
+      if (value.error || Number.isFinite(value.exitCode) && value.exitCode !== 0) return '未完成';
+    }
+    return '已返回';
+  }
 
   function publicValue(value, depth = 0, seen = new WeakSet()) {
     if (value === null || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return value;
@@ -36,6 +49,8 @@
       } : null,
       activity: (Array.isArray(agent.activity) ? agent.activity : []).filter(item => item && activityTypes.has(item.type)).slice(-100).map(item => ({
         type: item.type, name: text(item.name, 160), text: text(item.text), toolCallId: text(item.toolCallId, 200),
+        ...(typeof item.status === 'string' ? { status: text(item.status, 40) } : {}),
+        ...(typeof item.changedPath === 'string' ? { changedPath: text(item.changedPath, 500) } : {}),
         ...(item.streaming === true ? { streaming: true } : {}),
         ...(Object.prototype.hasOwnProperty.call(item, 'args') ? { args: publicValue(item.args) } : {}),
         ...(Object.prototype.hasOwnProperty.call(item, 'result') ? { result: publicValue(item.result) } : {}),
@@ -128,19 +143,28 @@
     if (agent.activity.length) {
       const log = node('section', 'subagent-section subagent-activities');
       log.append(node('h4', 'subagent-section-title', '操作过程'));
+      const results = new Map();
+      for (const item of agent.activity) if (item.type === 'tool-result' && item.toolCallId) results.set(item.toolCallId, item);
+      const paired = new Set(agent.activity.filter(item => item.type === 'tool-start' && item.toolCallId && results.has(item.toolCallId)).map(item => item.toolCallId));
       agent.activity.forEach((item, index) => {
         if (['message', 'assistant-message', 'text', 'status', 'progress'].includes(item.type)) {
           if (item.text) log.append(node('div', 'subagent-activity-text', item.text));
           return;
         }
         if (item.type === 'command-output') { raw(log, '命令输出', item.text || item.result, 'activity-' + index + '-output'); return; }
-        const key = 'activity-' + (item.toolCallId || index) + '-' + item.type;
+        if (item.type === 'tool-result' && item.toolCallId && paired.has(item.toolCallId)) return;
+        const result = item.type === 'tool-start' && item.toolCallId ? results.get(item.toolCallId) : item.type === 'tool-result' ? item : null;
+        const key = 'activity-' + (item.toolCallId || index) + '-operation';
         const operation = node('details', 'subagent-activity-item'); operation.dataset.stateKey = key;
-        operation.append(node('summary', '', (item.type === 'tool-start' ? '调用工具 · ' : '工具返回 · ') + (item.name || '工具')));
+        const label = Object.hasOwn(toolNames, item.name) ? toolNames[item.name] : (item.name ? '工具操作 · ' + item.name : '工具操作');
+        const path = typeof item.args?.path === 'string' ? ' · ' + item.args.path : result?.changedPath ? ' · ' + result.changedPath : '';
+        const labels = { completed: '已完成', failed: '未完成', denied: '未执行', stopped: '已停止' };
+        const status = result ? Object.hasOwn(labels, result.status) ? labels[result.status] : resultStatus(result.result) : agent.status === 'running' ? '进行中' : '未返回';
+        operation.append(node('summary', '', `${label}${path} · ${status}`));
         const body = node('div', 'subagent-operation-body');
         if (item.text) body.append(node('div', 'subagent-activity-text', item.text));
         raw(body, '输入参数', item.args, key + '-args');
-        raw(body, '执行结果', item.result, key + '-result', item.args?.path);
+        raw(body, '执行结果', result?.result, key + '-result', item.args?.path);
         operation.append(body); log.append(operation);
       });
       fragment.append(log);

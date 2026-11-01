@@ -50,6 +50,25 @@ const overlap = (a, b) => covers(a, b) || covers(b, a)
   || a.endsWith('/') && b === a.slice(0, -1)
   || b.endsWith('/') && a === b.slice(0, -1);
 
+function publicToolResult(value) {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value) ?? ''; } catch { return ''; }
+}
+function toolResultStatus(result, name) {
+  if (!result) return 'unknown';
+  let parsed; try { parsed = JSON.parse(result); } catch {}
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.denied === true || parsed.status === 'denied') return 'denied';
+    if (parsed.canceled === true || parsed.cancelled === true || parsed.terminated === true || ['cancelled', 'stopped'].includes(parsed.status)) return 'stopped';
+    if (parsed.error || parsed.success === false || ['error', 'failed', 'timeout', 'output-limit'].includes(parsed.status) || (Number.isFinite(parsed.exitCode) && parsed.exitCode !== 0)) return 'failed';
+    if (name === 'run_command' && parsed.exitCode !== 0) return 'unknown';
+    return 'completed';
+  }
+  if (/^操作已停止/u.test(result)) return 'stopped';
+  if (/^(?:错误|工具执行失败|Error)/iu.test(result)) return 'failed';
+  return 'unknown';
+}
+
 // The manager owns lifecycle and public snapshots only. Provider messages and
 // native reasoning stay in each independent runAgent invocation.
 export function createSubagentManager({ root = process.cwd(), createWorkspace, runChild, parentSignal, emit, redact = value => value }) {
@@ -147,7 +166,14 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
           if (typeof event.args[key] === 'string') item.args[key] = safe(event.args[key], 6000);
           else if (Number.isFinite(event.args[key])) item.args[key] = event.args[key];
         }
-      } else item.result = safe(event.result, 6000);
+      } else {
+        const result = publicToolResult(event.result);
+        item.result = safe(result, 6000);
+        item.status = toolResultStatus(result, event.name);
+        // A file change is published only after the write has committed. Never
+        // include before/after snapshots in the public subagent activity.
+        if (item.status === 'completed' && event.fileChange && typeof event.fileChange.path === 'string') item.changedPath = safe(event.fileChange.path, 500);
+      }
       addActivity(record, item);
     } else if (event.type === 'command-output' && ['stdout', 'stderr'].includes(event.stream) && typeof event.text === 'string') {
       // Replace the whole accumulated frame before publishing, so credentials

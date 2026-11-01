@@ -425,6 +425,26 @@ test('public activity is bounded and snapshots cannot mutate private task state'
   await manager.abortAndWait();
 });
 
+test('child tool results keep redacted data and status without exposing edit snapshots', async () => {
+  const manager = createSubagentManager(managerOptions({ runChild: async child => {
+    child.emit({ type: 'tool-start', name: 'write_file', toolCallId: 'edit', args: { path: 'owned.js', content: 'PRIVATE_CONTENT' } });
+    child.emit({ type: 'tool-result', name: 'write_file', toolCallId: 'edit', result: { message: 'fixture-secret' }, fileChange: { path: 'owned.js', before: 'PRIVATE_BEFORE', after: 'PRIVATE_AFTER' } });
+    child.emit({ type: 'tool-result', name: 'run_command', toolCallId: 'command', result: JSON.stringify({ exitCode: 1 }) });
+    child.emit({ type: 'tool-result', name: 'write_file', toolCallId: 'deny', result: JSON.stringify({ denied: true }) });
+    child.emit({ type: 'tool-result', name: 'read_file', toolCallId: 'stop', result: '操作已停止，未执行此工具。' });
+    child.emit({ type: 'tool-result', name: 'run_command', toolCallId: 'unknown', result: JSON.stringify({ exitCode: null }) });
+    child.emit({ type: 'tool-result', name: 'read_file', toolCallId: 'plain', result: 'unclassified result' });
+  } }));
+  await spawn(manager, { write_paths: ['owned.js'] }); await manager.execute('wait_agents', {});
+  const activity = manager.snapshots()[0].activity;
+  assert.equal(activity[1].changedPath, 'owned.js'); assert.equal(activity[1].status, 'completed');
+  assert.match(activity[1].result, /\[redacted\]/); assert.equal(activity[2].status, 'failed');
+  assert.equal(activity[3].status, 'denied'); assert.equal(activity[4].status, 'stopped');
+  assert.equal(activity[5].status, 'unknown'); assert.equal(activity[6].status, 'unknown');
+  for (const value of ['PRIVATE_CONTENT', 'PRIVATE_BEFORE', 'PRIVATE_AFTER', 'fixture-secret']) assert.equal(JSON.stringify(activity).includes(value), false);
+  await manager.abortAndWait();
+});
+
 test('child text streams into isolated replacement snapshots, clears on retry and becomes one final activity', async () => {
   const entered = deferred(), continueChild = deferred(), events = [];
   const manager = createSubagentManager(managerOptions({ emit: event => events.push(structuredClone(event)), runChild: async child => {
