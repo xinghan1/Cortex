@@ -7,7 +7,6 @@
   <title>Cortex · 本地 AI 编程助手</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./markdown.css">
-  <link rel="stylesheet" href="./text-reveal.css">
   <link rel="stylesheet" href="./workbench.css">
   <link rel="stylesheet" href="./sessions.css">
   <link rel="stylesheet" href="./glass.css">
@@ -55,7 +54,6 @@
   <script src="./conversation-colors.js" defer></script>
   <script src="./background-presets.js" defer></script>
   <script src="./markdown.js" defer></script>
-  <script src="./text-reveal.js" defer></script>
   <script src="./permissions.js" defer></script>
   <script src="./browser.js" defer></script>
   <script src="./sessions.js" defer></script>
@@ -70,6 +68,7 @@
   <script src="./task-change-summary.js" defer></script>
   <script src="./image-view-card.js" defer></script>
   <script src="./image-preview-zoom.js" defer></script>
+  <script src="./image-preview-editor.js" defer></script>
   <script src="./command-result.js" defer></script>
   <script src="./explorer-selection.js" defer></script>
   <script src="./chat-selection-menu.js" defer></script>
@@ -362,7 +361,7 @@
   </div>
   <dialog id="file-name-dialog" class="file-name-dialog"><form id="file-name-form"><div class="dialog-header"><h2 id="file-name-title">新建文件</h2><button id="file-name-close" class="icon-button" type="button" aria-label="关闭">×</button></div><label class="form-field"><span>名称</span><input id="file-name-input" type="text" autocomplete="off" required maxlength="255"></label><p id="file-name-parent" class="file-name-parent"></p><p id="file-name-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="file-name-cancel" class="button" type="button">取消</button><button id="file-name-confirm" class="button solid" type="submit">确定</button></div></form></dialog>
   <dialog id="editor-unsaved-dialog" class="editor-unsaved-dialog"><div class="dialog-header"><h2>保存文件更改？</h2></div><p id="editor-unsaved-message"></p><p class="unsaved-hint">放弃后，尚未保存的编辑将丢失。</p><div class="unsaved-actions"><button id="editor-unsaved-cancel" class="button" type="button">取消</button><button id="editor-unsaved-discard" class="button" type="button">放弃更改</button><button id="editor-unsaved-save" class="button solid" type="button">保存</button></div></dialog>
-  <dialog id="image-preview-dialog" class="image-preview-dialog"><div class="dialog-header"><h2 id="image-preview-title">图片预览</h2><button id="image-preview-close" class="icon-button" type="button" aria-label="关闭图片预览">×</button></div><div class="image-preview-body"><img id="image-preview-content" alt="图片预览"></div></dialog>
+  <dialog id="image-preview-dialog" class="image-preview-dialog"><div class="dialog-header"><h2 id="image-preview-title">图片预览</h2><div class="image-preview-actions"><button id="image-preview-zoom-out" type="button" title="缩小">−</button><span id="image-preview-zoom-value">100%</span><button id="image-preview-zoom-in" type="button" title="放大">＋</button><button id="image-preview-open" type="button">打开</button><button id="image-preview-save" type="button">下载</button><button id="image-preview-side" type="button">在侧面板中打开</button><button id="image-preview-close" class="icon-button" type="button" aria-label="关闭图片预览">×</button></div></div><div class="image-preview-body"><img id="image-preview-content" alt="图片预览"><canvas id="image-preview-canvas" hidden aria-label="图片编辑画布"></canvas></div><div class="image-preview-tools" aria-label="图片编辑"><button type="button" data-image-tool="draw">标注</button><button type="button" data-image-tool="comment">添加评论</button><button type="button" data-image-tool="background">移除背景</button><button type="button" data-image-tool="erase">擦除</button><button type="button" data-image-tool="resize">调整大小</button><button type="button" data-image-tool="undo">撤销</button><span id="image-preview-status" role="status"></span></div><form id="image-preview-comment" class="image-preview-inline" hidden><label>评论文字 <input id="image-preview-comment-text" maxlength="200" required></label><button type="submit">确认后点击图片放置</button><button type="button" data-image-cancel>取消</button></form><form id="image-preview-resize" class="image-preview-inline" hidden><label>宽 <input id="image-preview-width" type="number" min="1" max="8192" required></label><label>高 <input id="image-preview-height" type="number" min="1" max="8192" required></label><button type="submit">应用</button><button type="button" data-image-cancel>取消</button></form></dialog>
   <dialog id="pending-edit-dialog" class="pending-edit-dialog" aria-labelledby="pending-edit-title"><form id="pending-edit-form"><div class="dialog-header"><h2 id="pending-edit-title">编辑提示词</h2><button id="pending-edit-close" class="icon-button" type="button" aria-label="关闭编辑">×</button></div><label for="pending-edit-input" class="sr-only">提示词内容</label><textarea id="pending-edit-input" rows="8" maxlength="40000"></textarea><p id="pending-edit-error" class="form-error" role="alert"></p><div class="dialog-footer"><button id="pending-edit-cancel" class="button" type="button">取消</button><button id="pending-edit-save" class="button solid" type="submit">保存</button></div></form></dialog>
 </body>
 </html>

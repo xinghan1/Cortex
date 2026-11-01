@@ -2,7 +2,8 @@ dialog.mobile-remote-dialog { width: 600px; max-width: calc(100vw - 40px); max-h
 .mobile-remote-dialog .dialog-header h2 { margin: 0; font-size: 22px; }
 .mobile-remote-status { margin: 16px 0; color: var(--muted); font-size: 13px; }
 .mobile-remote-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
-.mobile-remote-dialog #mobile-remote-port { display: block; width: 180px; margin: 0 0 14px; }
+.mobile-remote-dialog > label.mobile-remote-label { display: block; }
+.mobile-remote-dialog #mobile-remote-port { display: block; width: 180px; margin: 10px 0 14px; }
 .mobile-remote-dialog #mobile-remote-tunnel-address { width: min(100%, 360px); box-sizing: border-box; }
 .mobile-remote-info { display: grid; gap: 12px; margin: 0 0 18px; }
 .mobile-remote-label { margin-bottom: 5px; color: var(--muted); font-size: 12px; }

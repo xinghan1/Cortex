@@ -25,7 +25,8 @@ final class ToolEventView {
     private TextView text(String value,int size,int color){TextView v=new TextView(context);v.setText(value);v.setTextSize(size);v.setTextColor(color);return v;}
     private String key(String id){return id==null||id.isEmpty()?"unknown-"+(++serial):id;}
     void breakGroup(){currentGroup=null;}
-    private Group group(String id,String name){String category=ToolGrouping.category(name);if(currentGroup==null||!currentGroup.category.equals(category))currentGroup=new Group(id,category,name);return currentGroup;}
+    private Group group(String id,String name){String category=ToolGrouping.category(name);if(currentGroup==null||!currentGroup.category.equals(category)||category.startsWith("tool:"))currentGroup=new Group(id,category,name);return currentGroup;}
+    private String icon(String name){String category=ToolGrouping.category(name);if(category.equals("search"))return "⌕";if(name!=null&&(name.contains("command")||name.equals("bash")))return "▹";return "▤";}
     private String pretty(Object value){
         if(value==null||value==JSONObject.NULL)return "";
         String original=String.valueOf(value);if(!JsonValidity.isContainer(original))return original;
@@ -65,7 +66,7 @@ final class ToolEventView {
         LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(8);parent.addView(box,params);
         TextView header=text("",14,fg);header.setTypeface(null,Typeface.BOLD);header.setPadding(0,dp(8),0,dp(8));box.addView(header);
         LinearLayout detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);box.addView(detail);
-        String[] fields={"task","summary"}, labels={"任务","总结"};
+        String[] fields={"task"}, labels={"任务"};
         for(int i=0;i<fields.length;i++){Object value=agent.opt(fields[i]);if(value==null||value==JSONObject.NULL||String.valueOf(value).isEmpty())continue;TextView label=text(labels[i],12,muted);label.setPadding(0,dp(7),0,dp(4));detail.addView(label);TextView body=text(pretty(value),13,fg);body.setTextIsSelectable(true);detail.addView(body);}
         Object activity=agent.opt("activity");java.util.ArrayList<SubagentActivity.Entry> entries=SubagentActivity.parse(activity);
         if(entries==null){if(activity!=null&&activity!=JSONObject.NULL&&!String.valueOf(activity).isEmpty()){TextView label=text("操作过程",12,muted);detail.addView(label);TextView fallback=text(pretty(activity),13,fg);fallback.setTextIsSelectable(true);detail.addView(fallback);}}
@@ -88,8 +89,9 @@ final class ToolEventView {
                 groupHead.setOnClickListener(v->{boolean open=groupBody.getVisibility()!=View.VISIBLE;groupBody.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(groupKey,open);update.run();});
             }
         }
+        Object summary=agent.opt("summary");if(summary!=null&&summary!=JSONObject.NULL&&!String.valueOf(summary).isEmpty()){TextView label=text("总结",12,muted);label.setPadding(0,dp(10),0,dp(4));detail.addView(label);TextView body=text(pretty(summary),13,fg);body.setTextIsSelectable(true);detail.addView(body);}
         String name=agent.optString("name","子任务"), status=ToolNames.status(agent.optString("status",""));
-        Runnable title=()->header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+(status.isEmpty()?"":"  ·  "+status));title.run();
+        Runnable title=()->header.setText("✿  "+name+(status.isEmpty()?"":"  "+status)+(detail.getVisibility()==View.VISIBLE?"  ⌄":"  ›"));title.run();
         header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);title.run();});
     }
     private void subagentToolRow(LinearLayout parent,SubagentActivity.Entry entry,String id,int index,boolean running,int fg,int muted){
@@ -107,22 +109,26 @@ final class ToolEventView {
         Group(String firstId,String category,String name){
             this.id="group:"+firstId;this.category=category;this.fallback=ToolNames.caption(name,false,false,"").replaceFirst("^正在", "");
             int fg=light?0xff20242c:0xffedf0f5;
-            box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(3),dp(12),dp(5));
-            LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(6);parent.addView(box,params);
-            header=text("",14,fg);header.setPadding(0,dp(10),0,dp(10));box.addView(header);
+            box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,-2);params.bottomMargin=dp(2);parent.addView(box,params);
+            header=text("",14,fg);header.setPadding(dp(4),dp(10),dp(4),dp(10));box.addView(header);
             detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);box.addView(detail);
             header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);update();});
         }
-        void update(){int waiting=0,failed=0;for(Card c:members){if(!c.done)waiting++;if(c.error)failed++;}header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolGrouping.label(category,members.size(),waiting,failed,fallback));header.setTextColor(failed>0?(light?0xffb42318:0xffff8e83):(light?0xff69717d:0xffa1a8b4));}
+        void update(){int waiting=0,failed=0;java.util.List<String> names=new java.util.ArrayList<>();for(Card c:members){names.add(c.name);if(!c.done)waiting++;if(c.error)failed++;}
+            boolean single=members.size()==1;header.setVisibility(single?View.GONE:View.VISIBLE);
+            detail.setVisibility(single||Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);
+            boolean hasCommand=false;for(String name:names)if(name.contains("command")||name.equals("bash"))hasCommand=true;
+            String symbol=category.equals("search")?"⌕":hasCommand?"▹":"▤";
+            header.setText(symbol+"  "+ToolGrouping.label(category,names,waiting,failed,fallback)+(detail.getVisibility()==View.VISIBLE?"  ⌄":"  ›"));header.setTextColor(failed>0?(light?0xffb42318:0xffff8e83):(light?0xff69717d:0xffa1a8b4));}
     }
     private final class Card {
         final String id; final Group group; final LinearLayout box,detail; final TextView header,inputText,resultText; String name="工具",input="",output=""; boolean done,error;
         Card(String id,Group group){
-            this.id=id;this.group=group;group.members.add(this); int fg=light?0xff20242c:0xffedf0f5, muted=light?0xff69717d:0xffa1a8b4;
-            box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(5),dp(12),dp(7));
-            GradientDrawable background=new GradientDrawable();background.setColor(light?0xfff0f1f3:0xff1b1e24);background.setCornerRadius(dp(12));box.setBackground(background);
-            LinearLayout.LayoutParams boxParams=new LinearLayout.LayoutParams(-1,-2);boxParams.bottomMargin=dp(8);group.detail.addView(box,boxParams);
-            header=text("",14,fg);header.setTypeface(null,Typeface.BOLD);header.setGravity(Gravity.CENTER_VERTICAL);header.setPadding(0,dp(8),0,dp(8));box.addView(header);
+            this.id=id;this.group=group;if(group.members.size()==1&&Boolean.TRUE.equals(expanded.get(group.members.get(0).id)))expanded.put(group.id,true);group.members.add(this); int fg=light?0xff20242c:0xffedf0f5, muted=light?0xff69717d:0xffa1a8b4;
+            box=new LinearLayout(context);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(4),0,dp(4),0);
+            LinearLayout.LayoutParams boxParams=new LinearLayout.LayoutParams(-1,-2);group.detail.addView(box,boxParams);
+            header=text("",14,fg);header.setGravity(Gravity.CENTER_VERTICAL);header.setPadding(0,dp(10),0,dp(10));box.addView(header);
             detail=new LinearLayout(context);detail.setOrientation(LinearLayout.VERTICAL);box.addView(detail);detail.setVisibility(Boolean.TRUE.equals(expanded.get(id))?View.VISIBLE:View.GONE);
             TextView inputLabel=text("输入参数",12,muted);inputLabel.setPadding(0,dp(5),0,dp(4));detail.addView(inputLabel);
             inputText=text("",13,fg);inputText.setTypeface(Typeface.MONOSPACE);inputText.setTextIsSelectable(true);detail.addView(inputText);
@@ -130,6 +136,6 @@ final class ToolEventView {
             resultText=text("",13,fg);resultText.setTypeface(Typeface.MONOSPACE);resultText.setTextIsSelectable(true);detail.addView(resultText);
             header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);update();});
         }
-        void update(){header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+ToolNames.caption(name,done,error,location(input)));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));group.update();}
+        void update(){header.setText(icon(name)+"  "+ToolNames.caption(name,done,error,location(input))+(detail.getVisibility()==View.VISIBLE?"  ⌄":""));code(inputText,input.isEmpty()?"—":input);code(resultText,done?(output.isEmpty()?"—":output):"等待返回…");resultText.setTextColor(error?(light?0xffb42318:0xffff8e83):(light?0xff20242c:0xffedf0f5));group.update();}
     }
 }

@@ -12,6 +12,10 @@ import java.util.TreeMap;
 /** Bounded SSE decoding; no tools are returned for execution before a complete response. */
 final class SseModelClient {
     interface Listener { void update(String text,String thinking); }
+    static final class IncompleteResponse extends IOException {
+        final String reason; final boolean hasToolCalls;
+        IncompleteResponse(String reason,boolean hasToolCalls){super("content_filter".equals(reason)?"模型响应被内容过滤，请调整请求后重试":"模型输出达到长度上限，响应未完整结束");this.reason=reason;this.hasToolCalls=hasToolCalls;}
+    }
     private static final int MAX=4_000_000;
     private SseModelClient() {}
     static JSONObject request(String base,String token,String auth,JSONObject data,Listener listener) throws Exception {
@@ -34,8 +38,8 @@ final class SseModelClient {
                     ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[8192];int n;while((n=input.read(buf))!=-1){if(out.size()+n>MAX)throw new IOException("响应过大");out.write(buf,0,n);}
                     JSONObject body=new JSONObject(new String(out.toByteArray(),StandardCharsets.UTF_8));JSONObject choice=messages?null:body.getJSONArray("choices").getJSONObject(0);
                     String reason=messages?body.optString("stop_reason",""):choice.optString("finish_reason","");
-                    if("length".equals(reason)||"max_tokens".equals(reason)||"content_filter".equals(reason))throw new IOException("模型响应未完整结束");
                     JSONObject reply=messages?MessagesProtocol.reply(body):choice.getJSONObject("message");JSONArray calls=reply.optJSONArray("tool_calls");
+                    if("length".equals(reason)||"max_tokens".equals(reason)||"content_filter".equals(reason)){listener.update(reply.optString("content",""),"");throw new IncompleteResponse(reason,calls!=null&&calls.length()>0);}
                     if(calls!=null)for(int i=0;i<calls.length();i++){JSONObject call=calls.getJSONObject(i),fn=call.getJSONObject("function");if(call.optString("id").isEmpty()||fn.optString("name").isEmpty())throw new IOException("工具调用不完整");new JSONObject(fn.optString("arguments","{}"));}
                     listener.update(reply.optString("content",""),"");return reply;
                 }
@@ -83,11 +87,11 @@ final class SseModelClient {
         }
         JSONObject finish() throws Exception {
             if(!complete)throw new IOException("流式响应中断，请重试");
-            if("length".equals(reason)||"max_tokens".equals(reason)||"content_filter".equals(reason))throw new IOException("模型响应未完整结束");
+            if("length".equals(reason)||"max_tokens".equals(reason)||"content_filter".equals(reason))throw new IncompleteResponse(reason,messages?!json.isEmpty()||blocks.values().stream().anyMatch(b->"tool_use".equals(b.optString("type"))):!calls.isEmpty());
             JSONObject reply=new JSONObject().put("role","assistant").put("content",text.toString());JSONArray resultCalls=new JSONArray();
             if(messages){JSONArray content=new JSONArray();for(Map.Entry<Integer,JSONObject> item:blocks.entrySet()){JSONObject block=item.getValue();if("tool_use".equals(block.optString("type"))){StringBuilder fragments=json.get(item.getKey());JSONObject input=fragments==null?block.optJSONObject("input"):new JSONObject(fragments.toString());if(input==null)throw new IOException("工具参数无效");block.put("input",input);resultCalls.put(new JSONObject().put("id",block.getString("id")).put("type","function").put("function",new JSONObject().put("name",block.getString("name")).put("arguments",input.toString())));}content.put(block);}if(resultCalls.length()>0)reply.put("messages_content",content);}
             else for(JSONObject call:calls.values()){JSONObject f=call.getJSONObject("function");if(call.optString("id").isEmpty()||f.optString("name").isEmpty())throw new IOException("工具调用不完整");new JSONObject(f.optString("arguments","{}"));resultCalls.put(call);}
-            if(resultCalls.length()>0)reply.put("tool_calls",resultCalls);forceUpdate();return reply;
+            if(resultCalls.length()>0){reply.put("tool_calls",resultCalls);if(!messages&&thinking.length()>0)reply.put("reasoning_content",thinking.toString());}forceUpdate();return reply;
         }
     }
 }

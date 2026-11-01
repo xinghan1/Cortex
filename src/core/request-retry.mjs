@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
+export const SUBAGENT_MAX_RETRIES = 2880; // Roughly one day at the capped 30 second backoff.
 export const MODEL_RETRY_LIMITS = Object.freeze({ maxRetries: 5, baseDelayMs: 1000, maxDelayMs: 30_000, maxRetryAfterMs: 60_000 });
 
 // Retry-After is a duration or an HTTP date. Keep the numeric value separate
@@ -38,7 +39,7 @@ export async function retryModelRequest(operation, {
   sleep = milliseconds => delay(milliseconds, undefined, { signal }),
 } = {}) {
   if (typeof operation !== 'function' || typeof onEvent !== 'function' || typeof sleep !== 'function' || typeof beforeAttempt !== 'function'
-      || !Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > MODEL_RETRY_LIMITS.maxRetries
+      || !Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > SUBAGENT_MAX_RETRIES
       || !Number.isInteger(initialRetries) || initialRetries < 0 || initialRetries > maxRetries
       || !Number.isInteger(baseDelayMs) || baseDelayMs < 0 || baseDelayMs > 60_000
       || !Number.isInteger(maxDelayMs) || maxDelayMs < 0 || maxDelayMs > 60_000) throw new TypeError('模型重连配置无效。');

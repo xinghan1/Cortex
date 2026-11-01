@@ -293,7 +293,7 @@ test('child steering is bounded, FIFO and never restarts a finished child', asyn
 
 test('a premature coordinator final is withheld until all children join and a real synthesis request completes', async () => {
   const childRelease = deferred(), provisional = deferred(), events = [], messages = [{ role: 'user', content: 'Produce a combined result.' }];
-  let rootRound = 0, settled = false;
+  let rootRound = 0, settled = false, previousRequest;
   const running = runAgent(options({ messages, emit: event => events.push(event),
     subagentFactory: async () => ({ root: 'C:/fixture', execute: async () => 'ok' }),
     requestModel: async request => {
@@ -301,11 +301,14 @@ test('a premature coordinator final is withheld until all children join and a re
       rootRound++;
       if (rootRound === 1) return reply('', [call('start', 'spawn_agent', { name: 'Verifier', task: 'Verify the fixture.' })]);
       if (rootRound === 2) {
+        previousRequest = structuredClone(request.messages);
         request.onTextDelta('PREMATURE_FINAL'); provisional.resolve();
         return reply('PREMATURE_FINAL');
       }
-      assert.match(request.messages[0].content, /\[SUBAGENT_RESULTS_DATA\]/);
-      assert.match(request.messages[0].content, /VERIFIED_CHILD_FINDINGS/);
+      assert.deepEqual(request.messages.slice(0, -1), previousRequest);
+      assert.equal(request.messages.at(-1).role, 'user');
+      assert.match(request.messages.at(-1).content, /\[SUBAGENT_RESULTS_DATA\]/);
+      assert.match(request.messages.at(-1).content, /VERIFIED_CHILD_FINDINGS/);
       return reply('SYNTHESIZED_FINAL');
     } })).finally(() => { settled = true; });
   await provisional.promise;
@@ -543,4 +546,26 @@ test('a coordinator provider error aborts and joins its child instead of leaving
   assert.equal(childStopped, true);
   assert.equal(manager.hasPending(), false);
   assert.equal(manager.snapshots()[0].status, 'stopped');
+});
+
+test('child retries a lost connection, exposes reconnect progress and preserves prior tools', async () => {
+  const events = []; let rootRound = 0, childRound = 0, toolsRun = 0;
+  await runAgent(options({ emit: event => events.push(structuredClone(event)),
+    subagentFactory: async () => ({ root: 'C:/fixture', execute: async () => { toolsRun++; return 'ok'; } }),
+    requestModel: async request => {
+      if (childRequest(request)) {
+        assert.equal(request.timeoutMs, 120000);
+        childRound++;
+        if (childRound === 1) return reply('', [call('read', 'read_file', { path: 'a.txt' })]);
+        if (childRound === 2) { const error = new Error('offline'); error.code = 'PROVIDER_NETWORK_ERROR'; throw error; }
+        return reply('recovered');
+      }
+      if (++rootRound === 1) return reply('', [call('spawn', 'spawn_agent', { name: 'Fixture', task: 'Inspect' }), call('wait', 'wait_agents', {})]);
+      return reply('done');
+    } }));
+  assert.equal(toolsRun, 1);
+  assert.equal(childRound, 3);
+  assert.ok(events.some(event => event.agent?.reconnect?.status === 'waiting' && event.agent.reconnect.attempt === 1));
+  assert.ok(events.some(event => event.agent?.reconnect?.status === 'retrying'));
+  assert.ok(events.some(event => event.agent?.status === 'completed' && event.agent.reconnect === null));
 });

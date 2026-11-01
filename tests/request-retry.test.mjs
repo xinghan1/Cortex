@@ -95,3 +95,14 @@ test('observer failure after successful recovery never replays the completed req
   }, { sleep: async () => {}, onEvent: event => { if (event.status === 'recovered') throw failure('PROVIDER_NETWORK_ERROR'); } }));
   assert.equal(calls, 2);
 });
+
+test('extended retry budget survives more than five outages and remains cancellable', async () => {
+  const controller = new AbortController(); let attempts = 0;
+  const promise = retryModelRequest(async () => {
+    attempts++; const error = new Error('offline'); error.code = 'PROVIDER_NETWORK_ERROR'; throw error;
+  }, { signal: controller.signal, maxRetries: 2880, sleep: async () => {
+    if (attempts === 7) controller.abort();
+  } });
+  await assert.rejects(promise, error => error.name === 'AbortError');
+  assert.equal(attempts, 7);
+});

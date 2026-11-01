@@ -21,7 +21,7 @@ function ephemeralCertificate() {
   const cert='-----BEGIN CERTIFICATE-----\n'+der.toString('base64').match(/.{1,64}/g).join('\n')+'\n-----END CERTIFICATE-----\n';
   return {cert,key:privateKey.export({type:'pkcs8',format:'pem'}),fingerprint:new crypto.X509Certificate(cert).fingerprint256};
 }
-function createMobileRemote({ snapshot, submit, stopTask, approve, answerQuestion, listModels, selectModel, setReasoning, listWorkspaces, selectWorkspace, activateProject }) {
+function createMobileRemote({ snapshot, submit, stopTask, approve, answerQuestion, listModels, selectModel, setReasoning, listWorkspaces, selectWorkspace, activateProject, setPermissionMode, getViewedImage }) {
   let server=null, token=null, fingerprint=null, port=null, operation=Promise.resolve();
   const serialize = action => { const next=operation.then(action); operation=next.catch(()=>{}); return next; };
   const status=()=>({enabled:!!server,token,fingerprint,port,addresses:server ? Object.values(os.networkInterfaces()).flat().filter(x=>x && x.family==='IPv4' && !x.internal).map(x=>`https://${x.address}:${port}`) : []});
@@ -42,7 +42,7 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, answerQuestio
       if(!token || actualBytes.length!==expectedBytes.length || !crypto.timingSafeEqual(actualBytes,expectedBytes)) return reply(401,{error:'未授权'});
       if(req.headers.origin) return reply(403,{error:'不允许网页跨域访问'});
       try {
-        if(req.method==='POST' && ['/v1/files/list','/v1/files/read','/v1/files/write','/v1/files/download','/v1/files/project'].includes(req.url)) {
+        if(req.method==='POST' && ['/v1/files/list','/v1/files/read','/v1/files/write','/v1/files/download','/v1/files/project','/v1/files/open-project','/v1/files/copy','/v1/files/move','/v1/files/delete'].includes(req.url)) {
           const chunks=[]; let size=0;
           for await (const chunk of req) { size+=chunk.length; if(size>3*1024*1024) return reply(413,{error:'请求过大'}); chunks.push(chunk); }
           let body; try { body=JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return reply(400,{error:'JSON 格式无效'}); }
@@ -63,11 +63,16 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, answerQuestio
         if(req.method==='GET' && req.url==='/v1/models') return reply(200,await listModels());
         if(req.method==='GET' && req.url==='/v1/workspaces') return reply(200,await listWorkspaces());
         if(req.method==='POST' && req.url==='/v1/stop') { await stopTask(); return reply(200,{stopped:true}); }
-        if(req.method==='POST' && (req.url==='/v1/messages' || req.url==='/v1/approval' || req.url==='/v1/question' || req.url==='/v1/model' || req.url==='/v1/reasoning' || req.url==='/v1/workspace')) {
+        if(req.method==='POST' && (req.url==='/v1/messages' || req.url==='/v1/approval' || req.url==='/v1/question' || req.url==='/v1/model' || req.url==='/v1/reasoning' || req.url==='/v1/workspace' || req.url==='/v1/permission-mode' || req.url==='/v1/viewed-image')) {
           const chunks=[]; let size=0; const limit=req.url==='/v1/messages'?23000000:50000;
           for await (const chunk of req) { size+=chunk.length; if(size>limit) return reply(413,{error:'消息过长'}); chunks.push(chunk); }
           const body=Buffer.concat(chunks).toString('utf8');
           const parsed=JSON.parse(body);
+          if(req.url==='/v1/permission-mode') {
+            if(!parsed || typeof parsed!=='object' || Array.isArray(parsed) || Object.keys(parsed).some(k=>!['mode','confirmed','workspaceId'].includes(k)) || !['request','assist','full'].includes(parsed.mode) || ('workspaceId' in parsed && (typeof parsed.workspaceId!=='string' || !parsed.workspaceId || parsed.workspaceId.length>200)) || ('confirmed' in parsed && typeof parsed.confirmed!=='boolean') || (parsed.mode==='full' && parsed.confirmed!==true)) return reply(400,{error:'权限模式无效或缺少完全控制确认'});
+            if(typeof setPermissionMode!=='function') return reply(404,{error:'当前不支持切换权限模式'});
+            return reply(200,await setPermissionMode(parsed));
+          }
           if(req.url==='/v1/question') {
             if(!parsed || typeof parsed!=='object' || Array.isArray(parsed) || typeof parsed.id!=='string' || !parsed.id || parsed.id.length>200 || Object.keys(parsed).some(k=>!['id','text','choiceIndex','action'].includes(k))) return reply(400,{error:'回答参数无效'});
             const text=Object.hasOwn(parsed,'text'), choice=Object.hasOwn(parsed,'choiceIndex'), dismiss=Object.hasOwn(parsed,'action');
@@ -77,6 +82,7 @@ function createMobileRemote({ snapshot, submit, stopTask, approve, answerQuestio
           }
           if(req.url==='/v1/workspace') { if(!parsed || typeof parsed.id!=='string' || !parsed.id || parsed.id.length>200) return reply(400,{error:'工作空间标识无效'}); return reply(200,await selectWorkspace(parsed.id)); }
           if(req.url==='/v1/reasoning') { if(!parsed || typeof parsed.model!=='string' || !parsed.model || parsed.model.length>200 || typeof parsed.effort!=='string' || !/^(default|none|enabled|minimal|low|medium|high|xhigh|max|ultra)$/.test(parsed.effort)) return reply(400,{error:'思考强度无效'}); return reply(200,await setReasoning(parsed.model,parsed.effort)); }
+          if(req.url==='/v1/viewed-image') { if(!parsed || !/^[a-f0-9]{64}$/.test(parsed.id||'') || typeof parsed.sessionId!=='string' || !parsed.sessionId || typeof getViewedImage!=='function') return reply(400,{error:'图片引用无效'}); return reply(200,await getViewedImage(parsed)); }
           if(req.url==='/v1/model') { if(!parsed || typeof parsed.model!=='string' || !parsed.model || parsed.model.length>200) return reply(400,{error:'模型标识无效'}); return reply(200,await selectModel(parsed.model)); }
           if(req.url==='/v1/approval') { if(!parsed || typeof parsed.id!=='string' || typeof parsed.approved!=='boolean') return reply(400,{error:'审批参数无效'}); if(!await approve({id:parsed.id,approved:parsed.approved})) return reply(409,{error:'审批已失效或不允许手动处理'}); return reply(200,{accepted:true}); }
           if(!parsed || typeof parsed.text!=='string' || (parsed.mode!==undefined && !['queue','steer'].includes(parsed.mode))) return reply(400,{error:'消息无效'});

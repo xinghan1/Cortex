@@ -74,3 +74,37 @@ test('returning to an API connection restores normal reasoning labels without a 
   assert.equal(f.range.disabled, false); assert.equal(f.node('composer-reasoning-label').textContent, '低');
   assert.equal(f.node('composer-reasoning-label').title, ''); assert.equal(f.range.title, '推理强度：低');
 });
+
+test('the highest advertised API level is displayed as Ultra without changing its value', () => {
+  const f = fixture('apiKey', { options: ['low', 'high', 'xhigh'] });
+  f.context.fillReasoningOptions(f.range, 'gemini', 'xhigh');
+  assert.equal(f.range.dataset.effort, 'xhigh');
+  assert.equal(f.node('reasoning-value').textContent, 'Ultra');
+  const native = fixture('glm-agent', { options: ['low', 'xhigh'], labels: ['Low', 'Official highest'] });
+  native.context.fillReasoningOptions(native.range, 'gemini', 'xhigh');
+  assert.equal(native.node('reasoning-value').textContent, 'Official highest');
+});
+
+test('dragging remains continuous and saves the nearest advertised level on release', () => {
+  const listeners = {}, saved = [], classes = new Set();
+  const visual = { classList: { add: name => classes.add(name), remove: name => classes.delete(name) } };
+  const range = { value: '0', disabled: false, dataset: { effort: 'low' }, closest: () => visual,
+    addEventListener: (name, listener) => { listeners[name] = listener; }, setPointerCapture() {} };
+  const options = ['low', 'medium', 'high'];
+  const context = vm.createContext({ modelControlBusy: () => false, reasoningSaving: false, modelSaving: false,
+    rangeOptions: () => options, updateReasoningControl: (r, input) => { if (input) r.dataset.effort = options[Math.round(Number(r.value))]; },
+    setReasoningEffort: () => saved.push(range.dataset.effort) });
+  vm.runInContext(appFunction('bindRangeAnimation'), context);
+  context.bindRangeAnimation(range);
+  listeners.pointerdown({ pointerId: 1, button: 0, isPrimary: true });
+  range.value = '1.6'; context.updateReasoningControl(range, true);
+  assert.equal(range.value, '1.6'); assert.deepEqual(saved, []);
+  listeners.pointerup({ pointerId: 1 });
+  assert.equal(range.value, '2'); assert.deepEqual(saved, ['high']);
+  assert.equal(classes.has('is-dragging'), false);
+  listeners.pointerdown({ pointerId: 2, button: 0, isPrimary: true });
+  range.value = '0.2'; context.updateReasoningControl(range, true);
+  listeners.pointercancel({ pointerId: 2 });
+  assert.equal(range.value, '2'); assert.equal(range.dataset.effort, 'high');
+  assert.deepEqual(saved, ['high']);
+});

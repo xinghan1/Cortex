@@ -23,6 +23,9 @@ public final class MessagesProtocolTest {
         JSONArray results = messages.getJSONObject(2).getJSONArray("content");
         if (results.length() != 2 || !"t2".equals(results.getJSONObject(1).getString("tool_use_id"))) throw new AssertionError("tool results lost");
         if (!request.getJSONArray("tools").getJSONObject(0).has("input_schema")) throw new AssertionError("schema missing");
+        JSONArray longHistory=new JSONArray();for(int i=0;i<300;i++)longHistory.put(new JSONObject().put("role",i%2==0?"user":"assistant").put("content","message-"+i));
+        JSONArray sent=MessagesProtocol.request("model",longHistory,defs).getJSONArray("messages");
+        if(sent.length()!=300||!"message-0".equals(sent.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))||!"message-299".equals(sent.getJSONObject(299).getJSONArray("content").getJSONObject(0).getString("text")))throw new AssertionError("long history must not be truncated");
         System.out.println("Messages protocol round-trip passed");
     }
 }

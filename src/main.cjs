@@ -1766,6 +1766,13 @@ async function runPersistedChangeOperation(arg, direction) {
 }
 
 function buildHandlers() {
+  let imageEditBusy = false;
+  const validEditedImage = dataUrl => {
+    if (typeof dataUrl !== 'string' || dataUrl.length > 20 * 1024 * 1024 || !/^data:image\/(?:png|jpeg|webp);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(dataUrl)) throw new Error('图片数据无效或过大。');
+    const image = nativeImage.createFromDataURL(dataUrl), size = image.getSize();
+    if (image.isEmpty() || !size.width || !size.height || size.width > 8192 || size.height > 8192 || size.width * size.height > 20000000) throw new Error('图片无法解码或尺寸超出限制。');
+    return image;
+  };
   const activateChatGPT = async () => {
     const account = await chatgpt.publicState();
     if (account.session.status === 'connected' && account.session.sharing) {
@@ -1780,6 +1787,38 @@ function buildHandlers() {
     await broadcastState(); return state();
   };
   const handlers = {
+    removeImageBackground: async arg => {
+      if (imageEditBusy) throw new Error('图片处理正在进行，请稍候。');
+      validEditedImage(arg?.dataUrl);
+      imageEditBusy = true;
+      try {
+        const controller = new AbortController();
+        const config = roleModels.isEnabled('image') ? await roleRuntime.config('image', { signal: controller.signal, permissionMode })
+          : { provider: publicSettings().provider, authMode: publicSettings().authMode, apiKey: store.key('openai'), model: publicSettings().model };
+        if (config.provider !== 'openai' || config.authMode !== 'apiKey' || !config.apiKey) throw new Error('移除背景需要在模型分工或主模型中配置 OpenAI API Key。');
+        const model = /^gpt-image-/u.test(config.model || '') ? config.model : 'gpt-image-2.5-flare';
+        const { generateOpenAIImage } = await import('./core/openai-image.mjs');
+        const result = await generateOpenAIImage({ apiKey: config.apiKey, model, inputImage: arg.dataUrl, transparent: true,
+          prompt: 'Remove the background, preserve the foreground subject and its details, and output a clean transparent background.',
+          fetchImpl: (url, opts) => electronSession.defaultSession.fetch(url, opts) });
+        validEditedImage(result.dataUrl);
+        return { dataUrl: result.dataUrl };
+      } finally { imageEditBusy = false; }
+    },
+    saveEditedImage: async arg => {
+      const image = validEditedImage(arg?.dataUrl);
+      const selected = await dialog.showSaveDialog(win, { title: '保存图片', defaultPath: 'edited-image.png', filters: [{ name: 'PNG 图片', extensions: ['png'] }] });
+      if (selected.canceled || !selected.filePath) return { saved: false };
+      await fs.writeFile(selected.filePath, image.toPNG());
+      return { saved: true };
+    },
+    openEditedImage: async arg => {
+      validEditedImage(arg?.dataUrl);
+      const filename = await imageAssetStore.save(arg.dataUrl);
+      const error = await shell.openPath(filename);
+      if (error) throw new Error('无法在系统中打开图片。');
+      return { opened: true };
+    },
     imagePreviewContext: async arg => {
       if (!arg || typeof arg.dataUrl !== 'string' || arg.dataUrl.length > 3 * 1024 * 1024) throw new Error('图片数据无效。');
       const session = currentSession;
@@ -2595,10 +2634,13 @@ const context = {
       snapshot: async () => {
         const context = host.active, session = context.currentSession;
         const question = context.handlers.getPetDialog().question;
-        const timeline = require('./core/mobile-history.cjs').mobileTimeline({ messages: session?.messages || [], events: [...(session?.events || []), ...(context.activeRun?.liveEvents || [])], subagents: session?.subagents || [], taskRuns: session?.taskRuns || [], redact });
-        return { workspace: context.tools?.root || null, sessionId: session?.id || null,
-          title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: (await context.state()).settings?.model || '',
-          pendingApprovals: (await context.state()).pendingApprovals,
+        const currentState = await context.state();
+        if (host.active !== context || context.currentSession !== session) throw new Error('电脑会话已切换，请重试。');
+        const viewedImages = require('./core/mobile-viewed-images.cjs').viewedImages(session);
+        const timeline = require('./core/mobile-history.cjs').mobileTimeline({ messages: session?.messages || [], events: [...(session?.events || []), ...(context.activeRun?.liveEvents || [])], subagents: session?.subagents || [], taskRuns: session?.taskRuns || [], viewedImages, redact });
+        return { workspace: context.tools?.root || null, workspaceId: context.id, sessionId: session?.id || null,
+          title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: currentState.settings?.model || '',
+          permissionMode: currentState.permissionMode, pendingApprovals: currentState.pendingApprovals,
           pendingQuestion: question?.blocking ? { id: question.id, question: question.question, options: question.options, choiceOnly: question.choiceOnly === true } : null,
           streamText: (() => { const value=redact(String(context.activeRun?.streamText || '')).replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]'); return value.length>50000 ? value.slice(0,50000)+'\n[内容已截断]' : value; })(),
           operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
@@ -2607,8 +2649,16 @@ const context = {
           messages: timeline.filter(entry => entry.type === 'message').map(({role,content})=>({role,content})) };
       },
       activateProject: target => host.activateProject(target),
+      getViewedImage: ({id,sessionId}) => { const session=host.active.currentSession; if(!session || session.id!==sessionId) throw new Error('会话已切换，请重新查看图片'); const image=require('./core/mobile-viewed-images.cjs').viewedImages(session).find(item=>item.id===id); if(!image) throw new Error('图片回执不存在或图片已不可用'); return {name:image.name,mediaType:image.mediaType,dataUrl:image.dataUrl}; },
       stopTask: () => host.active.handlers.stopTask(),
       approve: arg => host.active.handlers.respondApproval(arg),
+      setPermissionMode: async arg => {
+        const context=host.active;
+        if(arg.workspaceId && arg.workspaceId!==context.id) throw new Error('电脑工作空间已切换，请刷新后重试。');
+        const result=await context.handlers.setPermissionMode({mode:arg.mode,confirmed:arg.confirmed===true});
+        if(host.active!==context) throw new Error('电脑工作空间已切换，请刷新后检查权限。');
+        return result;
+      },
       answerQuestion: arg => {
         const context=host.active, dialog=context.handlers.getPetDialog(), question=dialog.question;
         if (!question?.blocking || question.id !== arg.id) throw new Error('问题已结束或会话已切换，请刷新后重试。');

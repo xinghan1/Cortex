@@ -2,6 +2,13 @@ plugins { id 'com.android.application' }
 
 dependencies { implementation 'com.google.zxing:core:3.5.3' }
 
+// Keep Android's displayed version and upgrade ordering in sync with desktop.
+def desktopVersion = new groovy.json.JsonSlurper().parse(new File(rootProject.projectDir.parentFile, 'package.json')).version
+def parts = (desktopVersion instanceof String && desktopVersion ==~ /\d+\.\d+\.\d+/) ? desktopVersion.tokenize('.').collect { it.toLong() } : []
+if (parts.size() != 3 || parts.any { it > 999 }) throw new GradleException('桌面版本必须是各段不超过 999 的数字版本。')
+def androidVersionCode = parts[0] * 1000000L + parts[1] * 1000L + parts[2]
+if (androidVersionCode <= 23 || androidVersionCode > 2100000000L) throw new GradleException('桌面版本无法转换为有效且可升级的 Android versionCode。')
+
 android {
     namespace 'com.cortex.mobile'
     compileSdk 35
@@ -10,7 +17,7 @@ android {
         applicationId 'com.cortex.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 21
-        versionName '0.4.16'
+        versionCode androidVersionCode.toInteger()
+        versionName desktopVersion
     }
 }

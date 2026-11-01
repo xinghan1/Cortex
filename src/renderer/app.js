@@ -14,7 +14,7 @@ const reasoningOptions = {
   relay: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   ollama: []
 };
-const reasoningLabels = { default: '默认', none: '关闭', enabled: '开启思考', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '更高', max: '最高' };
+const reasoningLabels = { default: '默认', none: '关闭', enabled: '开启思考', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '更高', max: 'Ultra' };
 const chatgptStorageMessages = {
   storage_decryption_failed: '无法解密本机保存的 ChatGPT 登录信息。原凭据已保留，请先重试读取；仍失败时可退出本机登录后重新连接。',
   storage_encrypted_invalid: '本机保存的 ChatGPT 登录信息格式无效或已损坏。原凭据已保留，可先重试读取，或退出本机登录后重新连接。',
@@ -1077,11 +1077,14 @@ function officialAgentReasoning(range) {
 function reasoningLabel(range, effort) {
   if (effort === 'default') return '默认';
   try { const labels = JSON.parse(range.dataset.labels || '{}'); if (Object.hasOwn(labels, effort)) return labels[effort]; } catch {}
+  const options = rangeOptions(range);
+  if (options.length > 1 && effort === options[options.length - 1]) return 'Ultra';
   return reasoningLabels[effort] || effort;
 }
 
 function reasoningAvailable(range) {
-  return !officialAgentReasoning(range) && range.dataset.support !== 'none' && rangeOptions(range).length > 0;
+  // Provider-wide fallbacks are not proof that this model accepts any level.
+  return !officialAgentReasoning(range) && range.dataset.support === 'known' && rangeOptions(range).length > 0;
 }
 
 function renderComposerModel() {
@@ -1278,13 +1281,22 @@ function openReasoningPopup() {
 function fillReasoningOptions(range, provider, value = 'default') {
   const spec = reasoningSpec(range, provider);
   const options = spec.options;
+  const support = spec.known ? options.length ? 'known' : 'none' : 'unknown';
+  // Ignore unrelated state refreshes while dragging, but cancel if capabilities or selection change.
+  const signature = JSON.stringify([provider, appState?.settings?.model, currentAuthMode(), options, spec.labels,
+    support, spec.defaultEffort, spec.currentEffort, value]);
+  if (range.dataset.dragging === 'true' && range.dataset.reasoningSignature === signature) return;
+  delete range.dataset.dragging;
+  range.closest?.('.reasoning-slider-visual')?.classList.remove('is-dragging');
+  range.dataset.reasoningSignature = signature;
   range.min = '0';
   range.max = String(Math.max(0, options.length - 1));
-  range.step = '1';
+  // Native pointer movement is continuous; keyboard handling below advances by actual levels.
+  range.step = 'any';
   range.dataset.provider = provider;
   range.dataset.options = JSON.stringify(options);
   range.dataset.labels = JSON.stringify(spec.labels || {});
-  range.dataset.support = spec.known ? options.length ? 'known' : 'none' : 'unknown';
+  range.dataset.support = support;
   range.dataset.defaultEffort = spec.defaultEffort || '';
   range.dataset.effort = options.includes(value) ? value : 'default';
   range.value = String(range.dataset.effort === 'default' ? Math.max(0, options.indexOf(spec.defaultEffort || spec.currentEffort) >= 0
@@ -1295,8 +1307,8 @@ function fillReasoningOptions(range, provider, value = 'default') {
 function updateReasoningControl(range, fromInput = false) {
   const options = rangeOptions(range);
   const available = reasoningAvailable(range);
-  const index = Math.max(0, Math.min(options.length - 1, Math.max(0, Math.round(Number(range.value) || 0))));
-  range.value = String(index);
+  const position = Math.max(0, Math.min(Math.max(0, options.length - 1), Number(range.value) || 0));
+  const index = Math.round(position);
   if (!available) range.dataset.effort = 'default';
   else if (fromInput) range.dataset.effort = options[index] || 'default';
   const effort = range.dataset.effort || 'default';
@@ -1314,11 +1326,13 @@ function updateReasoningControl(range, fromInput = false) {
   label.classList.toggle('is-max', maximum);
   label.classList.toggle('is-unavailable', !officialAgent && !available);
   range.classList.toggle('is-max', maximum);
-  range.dataset.fill = String(options.length > 1 ? Math.round(index / (options.length - 1) * 100) : 0);
+  const fill = available && options.length > 1 ? position / (options.length - 1) * 100 : 0;
+  range.dataset.fill = String(Math.round(fill));
   const visual = range.closest?.('.reasoning-slider-visual');
   if (visual) {
     visual.dataset.fill = range.dataset.fill;
-    visual.classList.toggle('is-max', available && options.length > 1 && index === options.length - 1);
+    visual.style?.setProperty('--range-fill', `${fill}%`);
+    visual.classList.toggle('is-max', available && options.length > 1 && fill >= 100);
     visual.classList.toggle('is-unavailable', !available);
     if (!available) visual.classList.remove('is-dragging');
   }
@@ -2303,6 +2317,7 @@ function openImagePreview(attachment) {
   $('image-preview-content').src = image.src;
   $('image-preview-content').alt = image.name;
   $('image-preview-title').textContent = image.name;
+  window.CortexImagePreviewEditor?.open(image.src);
   if (!$('image-preview-dialog').open) $('image-preview-dialog').showModal();
 }
 
@@ -2385,6 +2400,7 @@ function modelExplicitlyTextOnly() {
 
 function bindImageAttachments() {
   imagePreviewZoom = window.CortexImagePreviewZoom.create($('image-preview-dialog'), $('image-preview-content').parentElement, $('image-preview-content'));
+  window.CortexImagePreviewEditor?.bind({ dialog: $('image-preview-dialog'), image: $('image-preview-content'), zoom: imagePreviewZoom, bridge, notice, openSide: openSideImage });
   $('attach-images').addEventListener('click', () => { if (!$('attach-images').disabled) $('attachment-input').click(); });
   $('attachment-input').addEventListener('change', (event) => { const files = Array.from(event.target.files || []); event.target.value = ''; addDraftImageFiles(files); });
   $('task-input').addEventListener('paste', (event) => {
@@ -2403,7 +2419,7 @@ function bindImageAttachments() {
     if (!dataUrl || typeof bridge.imagePreviewContext !== 'function') return;
     void bridge.imagePreviewContext({ dataUrl }).catch(error => notice(`图片操作失败：${errorText(error)}`, true));
   });
-  $('image-preview-dialog').addEventListener('close', () => { imagePreviewZoom.reset(); $('image-preview-content').removeAttribute('src'); $('image-preview-title').textContent = '图片预览'; });
+  $('image-preview-dialog').addEventListener('close', () => { window.CortexImagePreviewEditor?.close(); imagePreviewZoom.reset(); $('image-preview-content').removeAttribute('src'); $('image-preview-title').textContent = '图片预览'; });
 }
 
 function createUserMessageFooter(text, metadata = {}) {
@@ -2468,16 +2484,13 @@ function finishStream(text) {
   let finished = streamedMessage;
   if (streamedMessage) {
     if (text !== undefined && text !== streamedText) {
-      const previous = window.CortexTextReveal?.visibleText(streamedMessage.body) || '';
       renderText(streamedMessage.body, text);
-      window.CortexTextReveal?.animateNewText(streamedMessage.body, previous);
     }
     streamedMessage.message.classList.remove('streaming');
     streamedMessage = null;
     streamedText = '';
   } else if (text) {
     finished = addMessage('assistant', text);
-    window.CortexTextReveal?.animateNewText(finished.body, '');
   }
   return finished;
 }
@@ -3727,6 +3740,9 @@ function renderSessionSnapshot(session) {
 }
 
 function showPreviewTab(tab) {
+  const imageTab = $('image-side-preview-tab'), imagePanel = $('image-side-preview');
+  if (imageTab) imageTab.classList.toggle('active', tab === 'image');
+  if (imagePanel) imagePanel.hidden = tab !== 'image';
   $('browser-preview-tab').classList.toggle('active', tab === 'browser');
   $('browser-preview').hidden = tab !== 'browser';
   $('preview-panel').classList.toggle('browser-active', tab === 'browser');
@@ -3737,6 +3753,25 @@ function showPreviewTab(tab) {
   $('changes-preview').hidden = tab !== 'changes';
   $('file-preview').hidden = tab !== 'file' || !selectedPath;
   $('preview-empty').hidden = tab !== 'file' || !!selectedPath;
+}
+
+function openSideImage(dataUrl) {
+  if (typeof dataUrl !== 'string' || dataUrl.length > 20 * 1024 * 1024 || !dataUrl.startsWith('data:image/png;base64,')) throw new Error('图片数据无效或过大。');
+  let panel = $('image-side-preview');
+  if (!panel) {
+    const tab = element('button', 'preview-tab', '图片'); tab.id = 'image-side-preview-tab'; tab.type = 'button';
+    tab.addEventListener('click', () => showPreviewTab('image'));
+    document.querySelector('.preview-tabs').append(tab);
+    panel = element('section', 'image-side-preview'); panel.id = 'image-side-preview'; panel.setAttribute('aria-label', '图片预览');
+    const heading = element('div', 'image-side-preview-heading');
+    const close = element('button', 'icon-button small', '×'); close.type = 'button'; close.setAttribute('aria-label', '关闭图片预览');
+    close.addEventListener('click', () => { panel.remove(); tab.remove(); showPreviewTab('file'); });
+    heading.append(element('span', '', '图片预览'), close);
+    const image = element('img', 'image-side-preview-content'); image.alt = '编辑后的图片';
+    panel.append(heading, image); $('preview-panel').append(panel);
+  }
+  panel.querySelector('img').src = dataUrl;
+  setPreviewOpen(true); showPreviewTab('image');
 }
 
 function setPreviewOpen(open) {
@@ -4306,9 +4341,7 @@ function handleEvent(event) {
       if (!streamedMessage) { streamedText = ''; streamedMessage = addMessage('assistant', '', true); }
       if ((event.replace && (event.text || '') === streamedText) || (!event.replace && !event.text)) break;
       streamedText = event.replace ? (event.text || '') : streamedText + (event.text || '');
-      const previous = window.CortexTextReveal?.visibleText(streamedMessage.body) || '';
       renderText(streamedMessage.body, streamedText);
-      window.CortexTextReveal?.animateNewText(streamedMessage.body, previous);
       scrollBottom();
       break;
     case 'assistant-message': {
@@ -4580,15 +4613,53 @@ function initializeSidebarSizing() {
 function bindRangeAnimation(range) {
   const visual = range.closest('.reasoning-slider-visual');
   if (!visual) return;
-  let pointerX = null;
-  range.addEventListener('pointerdown', (event) => { pointerX = range.disabled ? null : event.clientX; });
-  range.addEventListener('pointermove', (event) => {
-    if (pointerX !== null && Math.abs(event.clientX - pointerX) > 3) visual.classList.add('is-dragging');
+  const unlocked = () => !range.disabled && !modelControlBusy() && !reasoningSaving && !modelSaving;
+  const snap = () => { range.value = String(Math.max(0, Math.min(rangeOptions(range).length - 1, Math.round(Number(range.value) || 0)))); };
+  let pointerId = null;
+  let beforeEffort = 'default';
+  let beforeValue = '0';
+  range.addEventListener('pointerdown', (event) => {
+    if (!unlocked() || pointerId !== null || event.isPrimary === false || event.button !== 0) return;
+    pointerId = event.pointerId;
+    beforeEffort = range.dataset.effort || 'default';
+    beforeValue = range.value;
+    range.dataset.dragging = 'true';
+    visual.classList.add('is-dragging');
+    range.setPointerCapture?.(pointerId);
   });
-  const finish = () => { pointerX = null; visual.classList.remove('is-dragging'); };
-  range.addEventListener('pointerup', finish);
-  range.addEventListener('pointercancel', finish);
-  range.addEventListener('lostpointercapture', finish);
+  const finish = (event, cancel = false) => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    const active = range.dataset.dragging === 'true';
+    pointerId = null;
+    delete range.dataset.dragging;
+    visual.classList.remove('is-dragging');
+    if (!active) return;
+    if (cancel || !unlocked()) {
+      range.value = beforeValue;
+      range.dataset.effort = beforeEffort;
+      updateReasoningControl(range);
+      return;
+    }
+    snap();
+    updateReasoningControl(range, true);
+    if (range.dataset.effort !== beforeEffort) setReasoningEffort();
+  };
+  range.addEventListener('pointerup', event => finish(event));
+  range.addEventListener('pointercancel', event => finish(event, true));
+  range.addEventListener('lostpointercapture', event => finish(event, true));
+  range.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (!unlocked() || pointerId !== null) return;
+    const last = rangeOptions(range).length - 1;
+    const current = Math.max(0, Math.min(last, Math.round(Number(range.value) || 0)));
+    const index = event.key === 'Home' ? 0 : event.key === 'End' ? last
+      : Math.max(0, Math.min(last, current + (['ArrowRight', 'ArrowUp', 'PageUp'].includes(event.key) ? 1 : -1)));
+    if (index === current) return;
+    range.value = String(index);
+    updateReasoningControl(range, true);
+    setReasoningEffort();
+  });
 }
 
 function bindUI() {
@@ -4687,9 +4758,13 @@ function bindUI() {
   }));
   $('reasoning-effort').addEventListener('input', () => { if (!$('reasoning-effort').disabled && !modelControlBusy() && !reasoningSaving) updateReasoningControl($('reasoning-effort'), true); });
   $('reasoning-effort').addEventListener('change', () => {
-    if ($('reasoning-effort').disabled || modelControlBusy() || reasoningSaving) return;
-    updateReasoningControl($('reasoning-effort'), true);
-    setReasoningEffort();
+    const range = $('reasoning-effort');
+    if (range.disabled || modelControlBusy() || reasoningSaving || modelSaving || range.dataset.dragging === 'true') return;
+    const previous = range.dataset.effort || 'default';
+    range.value = String(Math.max(0, Math.min(rangeOptions(range).length - 1, Math.round(Number(range.value) || 0))));
+    updateReasoningControl(range, true);
+    // An assistive technology can change the native value without a pointer or keyboard event.
+    if (range.dataset.effort !== previous || range.dataset.effort !== (appState?.settings?.reasoningEffort || 'default')) setReasoningEffort();
   });
   $('reasoning-default').addEventListener('click', () => {
     if ($('reasoning-default').disabled || modelControlBusy() || reasoningSaving) return;

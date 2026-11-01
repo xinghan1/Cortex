@@ -20,6 +20,14 @@ test('remote file reading and optimistic edits preserve external changes', async
     await assert.rejects(mobileFiles('write',{path:target,content:'x'}), e=>e.status===400);
     const project=path.join(root,'project'); let opened;
     await mobileFiles('project',{path:project},async p=>{opened=p}); assert.equal(opened,project);
+    await mobileFiles('open-project',{path:root},async p=>{opened=p}); assert.equal(opened,root);
+    await assert.rejects(mobileFiles('open-project',{path:target},async()=>{}), e=>e.status===400);
+    const copied=path.join(root,'copy.txt'),moved=path.join(root,'moved.txt');
+    await mobileFiles('copy',{path:target,destination:copied}); assert.equal(await fs.readFile(copied,'utf8'),'手机更新');
+    await assert.rejects(mobileFiles('copy',{path:target,destination:copied}), e=>e.code==='EEXIST');
+    await mobileFiles('move',{path:copied,destination:moved}); assert.equal(await fs.readFile(moved,'utf8'),'手机更新'); await assert.rejects(fs.stat(copied),e=>e.code==='ENOENT');
+    await assert.rejects(mobileFiles('delete',{path:root}),e=>e.status===400);
+    await mobileFiles('delete',{path:moved}); await assert.rejects(fs.stat(moved),e=>e.code==='ENOENT');
     const downloaded=await mobileFiles('download',{path:target}); try {assert.equal(downloaded.size,Buffer.byteLength('手机更新'));} finally {await downloaded.handle.close();}
     await assert.rejects(mobileFiles('read',{path:'relative'}), e=>e.status===400);
     await fs.writeFile(target, Buffer.from([0,1,2])); await assert.rejects(mobileFiles('read',{path:target}), e=>e.status===415);

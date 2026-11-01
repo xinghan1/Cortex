@@ -43,6 +43,8 @@
       status: statuses.has(agent.status) ? agent.status : 'running',
       elapsedMs: number(agent.elapsedMs), inputTokens: number(agent.inputTokens), outputTokens: number(agent.outputTokens),
       summary: text(agent.summary), error: text(agent.error),
+      reconnect: agent.reconnect && ['waiting', 'retrying'].includes(agent.reconnect.status) ? {
+        attempt: number(agent.reconnect.attempt), maxAttempts: number(agent.reconnect.maxAttempts) } : null,
       telemetry: agent.telemetry && typeof agent.telemetry === 'object' ? {
         phase: Object.hasOwn(phases, agent.telemetry.phase) ? agent.telemetry.phase : '',
         estimatedOutputTokens: number(agent.telemetry.estimatedOutputTokens), estimated: agent.telemetry.estimated === true,
@@ -223,6 +225,7 @@
     element.dataset.agentId = agent.id; element.dataset.status = status; element.dataset.color = colorFor(agent.id);
     state.name.textContent = agent.name; state.name.title = agent.task || agent.name;
     state.status.textContent = state.historical && agent.status === 'running' ? '任务已结束'
+      : status === 'running' && agent.reconnect ? `正在重连 ${agent.reconnect.attempt}/${agent.reconnect.maxAttempts}`
       : status === 'running' && agent.telemetry?.phase ? phases[agent.telemetry.phase] : statusText[status];
     state.stop.hidden = state.historical || status !== 'running';
     state.stop.disabled = state.stopPending;

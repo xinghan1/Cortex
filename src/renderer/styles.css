@@ -3302,9 +3302,31 @@ textarea:focus-visible,
   opacity: 1;
 }
 
-.reasoning-slider-visual.is-dragging .reasoning-visual-thumb,
-.reasoning-slider-visual.is-dragging .reasoning-visual-fill {
-  transition-duration: 110ms;
+/* Clip the fill to keep drag motion smooth and the maximum gradient stable. */
+html #reasoning-popup .reasoning-slider-visual .reasoning-visual-fill {
+  width: 100%;
+  clip-path: inset(0 calc(100% - var(--range-fill)) 0 0 round 16px);
+  transition: clip-path 220ms cubic-bezier(.2,.8,.2,1);
+}
+
+html #reasoning-popup .reasoning-slider-visual :is(.reasoning-visual-fill, .reasoning-visual-thumb) {
+  background: #b4d8ff !important;
+}
+
+html #reasoning-popup .reasoning-slider-visual.is-max:not(.is-unavailable) :is(.reasoning-visual-fill, .reasoning-visual-thumb) {
+  background: linear-gradient(90deg, #ff9d32, #ef4444) !important;
+}
+
+html #reasoning-popup .reasoning-slider-visual.is-unavailable :is(.reasoning-visual-fill, .reasoning-visual-thumb) {
+  background: #929292 !important;
+}
+
+html #reasoning-popup .reasoning-slider-visual :is(.reasoning-visual-fill, .reasoning-visual-thumb)::after {
+  display: none !important;
+}
+
+html #reasoning-popup .reasoning-slider-visual.is-dragging :is(.reasoning-visual-thumb, .reasoning-visual-fill) {
+  transition: none;
 }
 
 .reasoning-slider-visual:focus-within {
@@ -5131,7 +5153,7 @@ dialog {
   align-items: center;
   justify-content: center;
   max-width: calc(90vw - 34px);
-  max-height: calc(90vh - 80px);
+  max-height: calc(90vh - 170px);
   overflow: hidden;
 }
 
@@ -5140,7 +5162,7 @@ dialog {
   width: auto;
   height: auto;
   max-width: calc(90vw - 34px);
-  max-height: calc(90vh - 80px);
+  max-height: calc(90vh - 170px);
   object-fit: contain;
   transform-origin: center center;
   user-select: none;
@@ -5148,6 +5170,22 @@ dialog {
   cursor: grab;
 }
 #image-preview-content.is-dragging { cursor: grabbing; }
+
+.image-preview-actions { display:flex; align-items:center; gap:8px; }
+.image-side-preview { min-height: 0; flex: 1; overflow: auto; padding: 12px; }
+.image-side-preview[hidden] { display: none; }
+.image-side-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.image-side-preview-content { display: block; max-width: 100%; height: auto; margin: auto; }
+.image-preview-actions button, .image-preview-tools button, .image-preview-inline button { border:0; border-radius:9px; padding:8px 12px; background:#303237; color:#f2f3f5; cursor:pointer; }
+.image-preview-actions button:hover, .image-preview-tools button:hover, .image-preview-tools button.active { background:#4b5362; }
+.image-preview-actions button:disabled, .image-preview-tools button:disabled { opacity:.5; cursor:wait; }
+.image-preview-body { position:relative; }
+#image-preview-canvas { position:absolute; z-index:2; touch-action:none; cursor:crosshair; background:conic-gradient(#aaa 25%,#eee 0 50%,#aaa 0 75%,#eee 0) 0 0 / 16px 16px; }
+.image-preview-tools { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:6px; padding:10px; }
+.image-preview-tools [role="status"] { color:var(--muted); font-size:12px; }
+.image-preview-inline { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:8px; padding:4px 12px 12px; }
+.image-preview-inline[hidden] { display:none; }
+.image-preview-inline input { max-width:180px; padding:6px; }
 
 /* Keep long approvals inside the chat viewport, with actions outside their scrollable body. */
 

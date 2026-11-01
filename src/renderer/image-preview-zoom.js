@@ -12,6 +12,7 @@ window.CortexImagePreviewZoom = Object.freeze({
 
     function render() {
       image.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+      if (typeof CustomEvent === 'function' && typeof dialog.dispatchEvent === 'function') dialog.dispatchEvent(new CustomEvent('image-preview-zoom', { detail: scale }));
     }
 
     function endDrag() {
@@ -29,6 +30,7 @@ window.CortexImagePreviewZoom = Object.freeze({
       x = 0;
       y = 0;
       image.style.transform = '';
+      if (typeof CustomEvent === 'function' && typeof dialog.dispatchEvent === 'function') dialog.dispatchEvent(new CustomEvent('image-preview-zoom', { detail: scale }));
     }
 
     viewport.addEventListener('wheel', (event) => {
@@ -65,6 +67,6 @@ window.CortexImagePreviewZoom = Object.freeze({
     image.addEventListener('dragstart', (event) => event.preventDefault());
     viewport.addEventListener('dblclick', reset);
 
-    return Object.freeze({ reset });
+    return Object.freeze({ reset, zoom(factor) { scale = Math.max(minScale, Math.min(maxScale, scale * factor)); render(); } });
   }
 });

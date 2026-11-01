@@ -40,12 +40,37 @@ async function mobileFiles(action, body, activateProject) {
   if (action === 'list') {
     const entries = await fs.promises.readdir(target, { withFileTypes: true });
     if (entries.length > 10000) throw fail(413, '目录项目过多');
-    return { path: target, parent: path.dirname(target), entries: entries.map(entry => ({ name: entry.name, path: path.join(target, entry.name), type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other' })).sort((a, b) => a.name.localeCompare(b.name)) };
+    const parent = path.dirname(target);
+    return { path: target, parent: parent === target ? '' : parent, entries: entries.map(entry => ({ name: entry.name, path: path.join(target, entry.name), type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other' })).sort((a, b) => a.name.localeCompare(b.name)) };
+  }
+  if (action === 'open-project') {
+    const stat = await fs.promises.stat(target);
+    if (!stat.isDirectory()) throw fail(400, '请选择文件夹作为项目');
+    await activateProject(target);
+    return { path: target };
   }
   if (action === 'project') {
     await fs.promises.mkdir(target);
     try { await activateProject(target); } catch (error) { throw fail(500, `目录已创建，但打开项目失败：${String(error.message || error).slice(0, 200)}`); }
     return { path: target };
+  }
+  if (action === 'copy' || action === 'move' || action === 'delete') {
+    // These operations are intentionally limited to regular files. Never
+    // recursively remove a directory or follow a symlink supplied as a file.
+    const before = await fs.promises.lstat(target);
+    if (!before.isFile() || before.isSymbolicLink()) throw fail(400, '仅支持操作普通文件');
+    if (action === 'delete') { await fs.promises.unlink(target); return { path: target, deleted: true }; }
+    const destination = absolutePath(body.destination);
+    await fs.promises.copyFile(target, destination, fs.constants.COPYFILE_EXCL);
+    if (action === 'move') {
+      try {
+        const after = await fs.promises.lstat(target);
+        if (!after.isFile() || after.isSymbolicLink() || before.dev!==after.dev || before.ino!==after.ino || before.size!==after.size || before.mtimeMs!==after.mtimeMs)
+          throw fail(409, '副本已创建，但原文件发生变化；原文件已保留');
+        await fs.promises.unlink(target);
+      } catch(error) { if(error.status===409)throw error; throw fail(500, '副本已创建，但原文件无法删除；请检查两处文件'); }
+    }
+    return { path: target, destination, moved: action === 'move', copied: action === 'copy' };
   }
   if (action === 'read') {
     const { handle, stat } = await regularFile(target);

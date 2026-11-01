@@ -22,10 +22,12 @@ await fs.mkdir(resources, { recursive: true });
 await fs.cp(path.join(root, 'src'), path.join(resources, 'src'), { recursive: true });
 // Include runtime dependencies only, without developer tooling or its caches.
 const lock = JSON.parse(await fs.readFile(path.join(root, 'package-lock.json'), 'utf8'));
-const runtime = Object.entries(lock.packages || {}).filter(([name, meta]) => name.startsWith('node_modules/') && !meta.dev).map(([name]) => name).sort((a,b)=>a.length-b.length);
+const runtime = Object.entries(lock.packages || {}).filter(([name, meta]) => name.startsWith('node_modules/') && !meta.dev).sort(([a],[b])=>a.length-b.length);
 const copied = [];
-for (const relative of runtime) {
+for (const [relative, meta] of runtime) {
   if (copied.some(parent => relative.startsWith(parent + '/'))) continue;
+  try { await fs.access(path.join(root, relative)); }
+  catch (error) { if (error.code === 'ENOENT' && meta.optional) continue; throw error; }
   await fs.mkdir(path.dirname(path.join(resources, relative)), { recursive: true });
   await fs.cp(path.join(root, relative), path.join(resources, relative), { recursive: true });
   copied.push(relative);

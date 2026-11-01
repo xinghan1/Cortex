@@ -79,7 +79,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
   const snapshot = record => ({ id: record.id, name: record.name, task: record.task, role: record.role, writePaths: record.writePaths.map(path => safe(path, 500)),
     status: record.status, startedAt: record.startedAt, endedAt: record.endedAt,
     elapsedMs: Math.max(0, Date.parse(record.endedAt || new Date().toISOString()) - Date.parse(record.startedAt)),
-    summary: record.summary, error: record.error, activity: record.activity.map(item => structuredClone(item)),
+    summary: record.summary, error: record.error, reconnect: record.reconnect, activity: record.activity.map(item => structuredClone(item)),
     inputTokens: record.inputTokens, outputTokens: record.outputTokens, telemetry: record.telemetry ? { ...record.telemetry } : null });
   const publish = record => emit({ type: 'subagent-update', agent: snapshot(record) });
   const result = record => { const { activity, ...value } = snapshot(record); return value; };
@@ -127,8 +127,11 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
       record.liveMessage.text = safe(record.messageBuffer, 65536).slice(-SUBAGENT_LIMITS.summaryChars);
       record.summary = record.liveMessage.text;
       publish(record);
-    } else if (event.type === 'reconnect' && event.resetText) {
-      if (record.liveMessage) {
+    } else if (event.type === 'reconnect') {
+      record.reconnect = ['waiting', 'retrying'].includes(event.status) ? { status: event.status,
+        attempt: Math.max(0, Math.min(2880, Number(event.attempt) || 0)), maxAttempts: Math.max(0, Math.min(2880, Number(event.maxAttempts) || 0)) } : null;
+      publish(record);
+      if (event.resetText && record.liveMessage) {
         const index = record.activity.indexOf(record.liveMessage);
         if (index !== -1) record.activity.splice(index, 1);
         record.liveMessage = null;
@@ -208,7 +211,7 @@ export function createSubagentManager({ root = process.cwd(), createWorkspace, r
     if (pending().length >= SUBAGENT_LIMITS.concurrent) throw new Error('最多同时运行 3 个子智能体，请先等待现有任务。');
     if (scopes.some(scope => activeScopes().some(active => overlap(scope, active)))) throw new Error('写入范围与正在运行的子智能体重叠，请等待它完成或分配不同文件。');
     const record = { id: `agent-${randomUUID()}`, name: safe(name, 80), task: safe(task, SUBAGENT_LIMITS.taskChars), role, writePaths, scopes,
-      status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', activity: [],
+      status: 'running', startedAt: new Date().toISOString(), endedAt: null, summary: '', error: '', reconnect: null, activity: [],
       inputTokens: 0, outputTokens: 0, controller: new AbortController(), queue: [], delivered: false, promise: null,
       commandBuffers: {}, commandActivity: {}, messageBuffer: '', liveMessage: null, confirmedSummary: '', telemetry: null, lastTelemetryAt: 0 };
     records.set(record.id, record);

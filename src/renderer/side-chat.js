@@ -87,7 +87,6 @@
     document.querySelector('.conversation-controls').prepend(trigger);
     let state = { open: false, running: false, revision: -1, messages: [] }, workspaceId = null;
     let quote = '', pending = false, pendingRequest = null, generation = 0, collapsed = false;
-    let previousRendered = new Map();
     const clearQuote = () => { quote = ''; quoteText.textContent = ''; quoteWrap.hidden = true; };
     const show = open => {
       panel.hidden = !open; document.documentElement.classList.toggle('side-chat-open', open);
@@ -98,7 +97,6 @@
       show(state.open);
       const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
       const fragment = document.createDocumentFragment();
-      const nextRendered = new Map();
       for (const message of state.messages || []) {
         const item = el('article', `side-chat-message ${message.role}`); item.dataset.messageId = message.id;
         item.append(el('div', 'side-chat-message-label', message.role === 'user' ? '你' : 'Cortex'));
@@ -108,18 +106,11 @@
           onLink, onCopy: text => bridge.copyText({ text }), onCopyError: cause => notice?.(cause.message, true),
         });
         else content.textContent = message.content || (state.running ? '正在思考…' : '');
-        if (message.role === 'assistant' && window.CortexTextReveal) {
-          const current = message.content ? window.CortexTextReveal.visibleText(content) : '';
-          const previous = previousRendered.get(message.id);
-          if (previous !== undefined && previous !== current) window.CortexTextReveal.animateNewText(content, previous);
-          nextRendered.set(message.id, current);
-        }
         item.append(content);
         if (message.status === 'stopped') item.append(el('small', 'side-chat-message-status', '已停止'));
         fragment.append(item);
       }
       messages.replaceChildren(fragment);
-      previousRendered = nextRendered;
       if (follow) messages.scrollTop = messages.scrollHeight;
       error.textContent = state.error || ''; error.hidden = !state.error;
       stop.hidden = !state.running; send.hidden = state.running;
@@ -129,7 +120,7 @@
       if (id !== getWorkspaceId()) return;
       if (workspaceId !== id) {
         workspaceId = id; state = { open: false, running: false, revision: -1, messages: [] };
-        clearQuote(); input.value = ''; pending = false; pendingRequest = null; collapsed = false; previousRendered.clear(); generation++;
+        clearQuote(); input.value = ''; pending = false; pendingRequest = null; collapsed = false; generation++;
       }
       if (!next || Number(next.revision) < Number(state.revision)) return;
       state = collapsed ? { ...next, open: false } : next; render();

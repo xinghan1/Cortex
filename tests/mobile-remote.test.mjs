@@ -10,6 +10,39 @@ const require=createRequire(import.meta.url);
 const {createMobileRemote}=require('../src/core/mobile-remote.cjs');
 function request(port,token,method,path,body) { return new Promise((resolve,reject)=>{ const req=https.request({host:'127.0.0.1',port,method,path,rejectUnauthorized:false,headers:{authorization:`Bearer ${token}`}},res=>{const fingerprint=res.socket.getPeerCertificate().fingerprint256;let data='';res.on('data',chunk=>data+=chunk);res.on('end',()=>resolve({code:res.statusCode,body:JSON.parse(data),fingerprint}));});req.on('error',reject);req.end(body);}); }
 function download(port,token,body) { return new Promise((resolve,reject)=>{ const req=https.request({host:'127.0.0.1',port,method:'POST',path:'/v1/files/download',rejectUnauthorized:false,headers:{authorization:`Bearer ${token}`}},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve({code:res.statusCode,data:Buffer.concat(chunks)}));});req.on('error',reject);req.end(JSON.stringify(body));}); }
+test('mobile web preview endpoint is not available',async()=>{
+ const service=createMobileRemote({});const pair=await service.start();
+ try { assert.equal((await request(pair.port,pair.token,'GET','/v1/preview?port=80&path=%2F')).code,404); }
+ finally { await service.stop(); }
+});
+test('paired devices can select existing projects and manage files without overwriting',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'cortex-remote-manage-'));let opened='';const service=createMobileRemote({activateProject:p=>{opened=p;}});const pair=await service.start();
+ try{const source=path.join(root,'src.txt'),copy=path.join(root,'copy.txt'),moved=path.join(root,'moved.txt');await fs.writeFile(source,'a');
+  const send=(token,route,body)=>request(pair.port,token,'POST','/v1/files/'+route,JSON.stringify(body));
+  for(const route of ['open-project','copy','move','delete'])assert.equal((await send('bad',route,{path:source,destination:copy})).code,401);
+  assert.equal((await send(pair.token,'open-project',{path:root})).code,200);assert.equal(opened,root);
+  assert.equal((await send(pair.token,'copy',{path:source,destination:copy})).code,200);
+  assert.equal((await send(pair.token,'copy',{path:source,destination:copy})).code,409);
+  assert.equal((await send(pair.token,'move',{path:copy,destination:moved})).code,200);
+  assert.equal((await send(pair.token,'delete',{path:root})).code,400);
+  assert.equal((await send(pair.token,'delete',{path:moved})).code,200);
+ }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});}
+});
+test('viewed image retrieval requires pairing and a valid receipt identifier',async()=>{
+ const service=createMobileRemote({getViewedImage:({id,sessionId})=>({id,sessionId})}), pair=await service.start(),id='a'.repeat(64);
+ try {const body=JSON.stringify({id,sessionId:'session'});assert.equal((await request(pair.port,'wrong','POST','/v1/viewed-image',body)).code,401);assert.equal((await request(pair.port,pair.token,'POST','/v1/viewed-image',JSON.stringify({id:'../../x',sessionId:'session'}))).code,400);assert.equal((await request(pair.port,pair.token,'POST','/v1/viewed-image',body)).code,200);}finally{await service.stop();}
+});
+test('permission mode requires pairing and explicit full-control confirmation',async()=>{
+ const calls=[];const service=createMobileRemote({snapshot:()=>({permissionMode:'request',pendingApprovals:[{id:'a',reviewStatus:'manual'},{id:'b',reviewStatus:'reviewing'}]}),setPermissionMode:arg=>{calls.push(arg);return {mode:arg.mode};}});const pair=await service.start();
+ try {const url='/v1/permission-mode', body=x=>JSON.stringify(x);const state=await request(pair.port,pair.token,'GET','/v1/state');assert.equal(state.body.permissionMode,'request');assert.deepEqual(state.body.pendingApprovals.map(x=>x.reviewStatus),['manual','reviewing']);
+  assert.equal((await request(pair.port,'wrong','POST',url,body({mode:'full',confirmed:true}))).code,401);
+  assert.equal((await request(pair.port,pair.token,'POST',url,body({mode:'full'}))).code,400);
+  assert.equal((await request(pair.port,pair.token,'POST',url,body({mode:'bogus'}))).code,400);
+  assert.equal((await request(pair.port,pair.token,'POST',url,body({mode:'assist',workspaceId:'w'}))).body.mode,'assist');
+  assert.equal((await request(pair.port,pair.token,'POST',url,body({mode:'full',confirmed:true,workspaceId:'w'}))).body.mode,'full');
+  assert.deepEqual(calls,[{mode:'assist',workspaceId:'w'},{mode:'full',confirmed:true,workspaceId:'w'}]);
+ }finally{await service.stop();}
+});
 test('paired user can answer or dismiss a pending question with validated input',async()=>{
  let calls=[]; const service=createMobileRemote({snapshot:()=>({pendingQuestion:{id:'q',question:'请选择',options:['一','二'],choiceOnly:false}}),answerQuestion:input=>{if(input.id!=='q')throw Error('问题已结束');calls.push(input);}}); const pair=await service.start();
  try {
