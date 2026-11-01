@@ -4,6 +4,50 @@ import { runAgent } from '../src/core/agent.mjs';
 import { requestModel } from '../src/core/providers.mjs';
 
 const config = { provider: 'openai', apiKey: 'secret', model: 'test-model', maxSteps: 3 };
+test('steering interrupts an in-flight model request and restarts with the new instruction without executing partial tools', async () => {
+  const messages = [{ role: 'user', content: '原任务' }], events = [], queue = [], usage = [];
+  let interrupt, requests = 0, executed = 0;
+  await runAgent({ config, messages, signal: new AbortController().signal,
+    workspace: { root: 'test', execute: async () => { executed++; } }, toolDefinitions: [], emit: event => events.push(event),
+    takeSteering: async () => queue.splice(0),
+    onUsage: async value => usage.push(value),
+    registerSteeringInterrupt: (callback, previous) => { if (callback) interrupt = callback; else if (interrupt === previous) interrupt = null; },
+    requestModel: async request => {
+      requests++;
+      if (requests === 1) {
+        request.onTextDelta('开始处理');
+        request.onProgress({ usage: { inputTokens: 7, outputTokens: 2 } });
+        queue.push({ id: 'steer-1', text: '请先修改方向' });
+        interrupt();
+        request.onTextDelta('迟到文本不得显示');
+        // An adapter that ignores cancellation must not execute its late tool call.
+        return { message: { role: 'assistant', content: '迟到', toolCalls: [{ id: 'late', name: 'write_file', arguments: {} }] }, usage: {} };
+      }
+      assert.equal(request.messages.at(-1).content, '请先修改方向');
+      return { message: { role: 'assistant', content: '收到', toolCalls: [] }, usage: {} };
+    },
+  });
+  assert.equal(requests, 2); assert.equal(executed, 0);
+  assert.equal(messages.at(-1).content, '收到');
+  assert.ok(!events.some(event => event.type === 'text-delta' && event.text.includes('迟到文本')));
+  assert.equal(usage.length, 2); assert.equal(usage[0].partial, true); assert.equal(usage[0].inputTokens, 7); assert.equal(usage[0].outputTokens, 2);
+  assert.ok(events.some(event => event.type === 'assistant-message' && event.text.includes('本次响应未完成')));
+});
+test('steering wakes the model from a network retry delay', async () => {
+  const messages = [{ role: 'user', content: '原任务' }], queue = []; let interrupt, requests = 0;
+  await runAgent({ config, messages, signal: new AbortController().signal,
+    workspace: { root: 'test', execute: async () => '' }, toolDefinitions: [],
+    takeSteering: async () => queue.splice(0),
+    registerSteeringInterrupt: (callback, previous) => { if (callback) interrupt = callback; else if (interrupt === previous) interrupt = null; },
+    emit: event => { if (event.type === 'reconnect' && event.status === 'waiting') { queue.push({ id: 'steer-2', text: '新的方向' }); interrupt(); } },
+    requestModel: async request => {
+      if (++requests === 1) throw Object.assign(new Error('network'), { code: 'PROVIDER_NETWORK_ERROR' });
+      assert.equal(request.messages.at(-1).content, '新的方向');
+      return { message: { role: 'assistant', content: '收到', toolCalls: [] }, usage: {} };
+    },
+  });
+  assert.equal(requests, 2);
+});
 test('a switched connection receives a text reference and its new segment without leaking previous tool data or images', async () => {
   const { externalAgentPrompt } = await import('../src/core/external-agent-context.mjs');
   const messages = [

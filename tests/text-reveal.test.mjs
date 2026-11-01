@@ -42,3 +42,22 @@ test('reduced motion skips wrapping, and unchanged text does not replay', () => 
   const unchanged = setup('文字'); unchanged.api.animateNewText(unchanged.root, '文字');
   assert.equal(unchanged.root.replacement.length, 0);
 });
+
+test('Markdown rewrites and replacement frames do not fade previously visible text again', () => {
+  const rewritten = setup('一段强调文字');
+  rewritten.api.animateNewText(rewritten.root, '一段**强调文字');
+  assert.equal(rewritten.root.replacement.length, 0);
+  const replacement = setup('新的回复');
+  replacement.api.animateNewText(replacement.root, '先前的回复');
+  assert.equal(replacement.root.replacement.length, 0);
+});
+
+test('a markdown rewrite followed by an append fades only the new suffix', () => {
+  const rewritten = setup('原有强调内容');
+  rewritten.api.animateNewText(rewritten.root, '原有**强调内容');
+  assert.equal(rewritten.root.replacement.length, 0);
+  const appended = setup('原有强调内容新增');
+  appended.api.animateNewText(appended.root, '原有强调内容');
+  assert.equal(appended.root.replacement[0].data, '原有强调内容');
+  assert.equal(appended.root.replacement.slice(1).map(node => node.textContent).join(''), '新增');
+});

@@ -4291,6 +4291,7 @@ function handleEvent(event) {
       clearTaskReconnect();
       setTaskActivityPhase('generating', '正在生成');
       if (!streamedMessage) { streamedText = ''; streamedMessage = addMessage('assistant', '', true); }
+      if ((event.replace && (event.text || '') === streamedText) || (!event.replace && !event.text)) break;
       streamedText = event.replace ? (event.text || '') : streamedText + (event.text || '');
       const previous = window.CortexTextReveal?.visibleText(streamedMessage.body) || '';
       renderText(streamedMessage.body, streamedText);

@@ -51,7 +51,7 @@ function nativeStateMatches(state, config) {
   return true;
 }
 
-export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, onToolBatchStart = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage, contextStartIndex = 0, contextReference = '' }) {
+export async function runAgent({ config, messages, workspace, toolDefinitions, requestModel, signal, emit, redact = x => x, onUsage = async () => {}, runId, sessionId, messageStartIndex, takeSteering = async () => [], registerSteeringInterrupt = () => {}, permissionMode = 'request', contextCheckpoint = {}, onContextCompacted = async () => {}, onContextUsage = () => {}, onMessagesChanged = () => {}, onToolBatchStart = () => {}, subagentFactory, onSubagentManager = () => {}, delegatedTask, getRequestConfig, getSubagentRequestConfig, contextMeasurement, previousContextUsage, contextStartIndex = 0, contextReference = '' }) {
   if (getRequestConfig !== undefined && typeof getRequestConfig !== 'function') throw new Error('实时模型配置读取器无效。');
   if (getSubagentRequestConfig !== undefined && typeof getSubagentRequestConfig !== 'function') throw new Error('子智能体模型配置读取器无效。');
   if (subagentFactory || getRequestConfig) config = freezeConfig(config);
@@ -170,6 +170,7 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
   };
   const telemetry = new RunTelemetry({ emit });
   const retryConfigChanged = Symbol('request configuration changed before reconnect');
+  const steeringInterrupted = Symbol('model request interrupted by steering');
   const timer = setInterval(() => { if (telemetry.current) telemetry.publish(); }, 300);
   timer.unref?.();
   // Compaction is a separate billed model request. It shares cancellation and
@@ -187,6 +188,10 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
       }
     }
     let reply, partial = '', lastFrame = 0, reportedUsage = null, requestStatus = 'completed';
+    const steeringController = new AbortController();
+    const requestSignal = AbortSignal.any([signal, steeringController.signal]);
+    const interruptSteering = () => steeringController.abort();
+    if (!compaction) registerSteeringInterrupt(interruptSteering);
     const holdText = Boolean(subagents?.needsSynthesis());
     const requestId = randomUUID();
     const contextUsage = !compaction ? contextBase(currentConfig, compressionMetadata) : null;
@@ -221,8 +226,9 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     telemetry.begin();
     try {
       reply = await requestModel({ ...currentConfig, ...(compaction ? { reasoningEffort: 'default' } : {}),
-        messages: requestMessages, tools, signal,
+        messages: requestMessages, tools, signal: requestSignal,
         onProgress: sample => {
+          if (requestSignal.aborted) return;
           if (sample.usage) reportedUsage = sample.usage;
           if (realCount(sample.estimatedOutputTokens)) estimatedOutputTokens = Math.max(estimatedOutputTokens, sample.estimatedOutputTokens);
           const wireChanged = mergeActual(sample.contextUsage);
@@ -234,7 +240,7 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
           }
           telemetry.progress(sample);
         }, onTextDelta: text => {
-          if (compaction) return;
+          if (compaction || requestSignal.aborted) return;
           partial += text;
           // Redact the accumulated response before sending a replacement frame:
           // a server may echo a key across arbitrary SSE chunk boundaries.
@@ -243,12 +249,14 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
             emit({ type: 'text-delta', text: redact(partial), replace: true });
           }
         } });
-      signal.throwIfAborted();
+      requestSignal.throwIfAborted();
     } catch (error) {
-      requestStatus = signal.aborted ? 'stopped' : 'failed';
+      requestStatus = requestSignal.aborted ? 'stopped' : 'failed';
       onIncomplete(partial);
+      if (steeringController.signal.aborted && !signal.aborted) { reply = null; throw steeringInterrupted; }
       throw error;
     } finally {
+      if (!compaction) registerSteeringInterrupt(null, interruptSteering);
       const hasUsage = reply ? reply.usageReported !== false && Boolean(reply.usage) : Boolean(reportedUsage);
       const usage = hasUsage ? (reply?.usage || reportedUsage) : null;
       const partialUsage = requestStatus !== 'completed';
@@ -300,6 +308,9 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     let incomplete = '';
     let malformedRetries = options.malformedRetryAttempts || 0;
     let needsRepairPrompt = false;
+    const retrySteeringController = new AbortController();
+    const retrySignal = AbortSignal.any([signal, retrySteeringController.signal]);
+    const interruptRetry = () => retrySteeringController.abort();
     try {
       while (true) {
         try {
@@ -309,7 +320,7 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
           const result = await retryModelRequest(() => {
             incomplete = '';
             return askModelAttempt({ ...options, requestMessages, onIncomplete: partial => { incomplete = partial; } });
-          }, { signal, initialRetries: options.retryAttempts || 0, beforeAttempt: async retryAttempts => {
+          }, { signal: retrySignal, initialRetries: options.retryAttempts || 0, beforeAttempt: async retryAttempts => {
             if (!retryAttempts || !getRequestConfig) return;
             const latest = await readConfig();
             if (configIdentity(latest) !== configIdentity(options.requestConfig || config)) {
@@ -318,12 +329,14 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
           }, onEvent: event => {
             // Only the failed attempt's visible stream is discarded.
             if (event.status === 'waiting') incomplete = '';
+            if (!options.compaction && event.status === 'waiting') registerSteeringInterrupt(interruptRetry);
             emit({ ...event, ...(event.status === 'waiting' ? { resetText: !options.compaction } : {}),
               ...(options.compaction ? { purpose: 'context-compaction' } : {}) });
           } });
           if (needsRepairPrompt) emit({ type: 'reconnect', status: 'recovered', attempt: malformedRetries, maxAttempts: 2, delayMs: 0, reason: 'format' });
           return result;
         } catch (error) {
+          if (retrySteeringController.signal.aborted && !signal.aborted) throw steeringInterrupted;
           if (signal.aborted) {
             if (error?.retryableMalformedToolJson === true) signal.throwIfAborted();
             throw error;
@@ -363,15 +376,21 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
     } catch (error) {
       // Intermediate attempts never enter history. Keep only the final failed
       // or cancelled attempt as a local-only partial, with no executable calls.
-      if (!options.compaction && incomplete) messages.push({ role: 'assistant', content: redact(incomplete) + '\n\n[本次响应未完成]', toolCalls: [], localOnly: true });
+      if (!options.compaction && incomplete) {
+        const content = redact(incomplete) + '\n\n[本次响应未完成]';
+        messages.push({ role: 'assistant', content, toolCalls: [], localOnly: true });
+        if (error === steeringInterrupted) emit({ type: 'assistant-message', text: content, toolCallCount: 0 });
+      }
       throw error;
+    } finally {
+      if (!options.compaction) registerSteeringInterrupt(null, interruptRetry);
     }
   };
   try {
   // Continue until a final answer, cancellation or an actual error. Legacy
   // maxSteps settings are deliberately ignored; context/response limits and
   // per-request cancellation still apply on every round.
-  while (true) {
+  mainLoop: while (true) {
     signal.throwIfAborted();
     if (!steeringAlreadyApplied) await applySteering();
     steeringAlreadyApplied = false;
@@ -462,6 +481,9 @@ export async function runAgent({ config, messages, workspace, toolDefinitions, r
       try {
         reply = await askModel({ requestMessages, tools: toolDefinitions, requestConfig: nextConfig, compressionMetadata: prepared.metadata, retryAttempts, malformedRetryAttempts });
       } catch (error) {
+        if (error === steeringInterrupted) {
+          continue mainLoop;
+        }
         if (error?.type !== retryConfigChanged) throw error;
         retryAttempts = error.retryAttempts;
         malformedRetryAttempts = error.malformedRetryAttempts || malformedRetryAttempts;

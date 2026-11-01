@@ -951,6 +951,7 @@ async function submitPrompt(arg, { validate, source } = {}) {
     const mode = arg.mode === 'steer' && activeRun && !activeRun.controller.signal.aborted ? 'steer' : 'queue';
     const item = { id: randomUUID(), text: arg.text.trim(), mode, source: source === 'pet' ? 'pet' : immediately ? 'direct' : 'queue', createdAt, ...(attachments.length ? { attachments } : {}) };
     pendingPrompts.push(item); emitQueue();
+    if (mode === 'steer') activeRun?.interruptSteering?.();
     const started = await dispatchNextPrompt();
     return { id: item.id, disposition: started ? 'started' : mode === 'steer' ? 'steering' : 'queued' };
   });
@@ -970,6 +971,7 @@ async function managePendingPrompt(arg) {
     else {
       if (!activeRun || activeRun.kind !== 'agent' || activeRun.demo || activeRun.controller.signal.aborted || shuttingDown) throw new Error('当前没有可接收引导的模型任务，消息仍保留在待发送列表。');
       pendingPrompts[index].mode = 'steer';
+      activeRun.interruptSteering?.();
     }
     if (!pendingPrompts.length) { queuePaused = false; queueReason = null; }
     emitQueue();
@@ -1663,6 +1665,7 @@ async function startTask(input) {
           onSubagentManager: manager => { run.subagentManager = manager; },
           onToolBatchStart: id => remoteSession.observeBatch(id),
           takeSteering: () => takeSteering(run),
+          registerSteeringInterrupt: (callback, previous) => { if (callback) { run.interruptSteering = callback; if (pendingPrompts.some(item => item.mode === 'steer')) queueMicrotask(callback); } else if (run.interruptSteering === previous) run.interruptSteering = null; },
           contextStartIndex: currentSession.modelContext?.startIndex || 0,
           contextReference: currentSession.modelContext?.startIndex ? externalAgentPrompt('', currentSession.messages.slice(0, currentSession.modelContext.startIndex).map(message => ({ ...message, content: typeof message.content === 'string' ? redact(message.content) : message.content }))) : '',
           previousContextUsage,
@@ -2591,18 +2594,28 @@ const context = {
     host.mobileRemote = require('./core/mobile-remote.cjs').createMobileRemote({
       snapshot: async () => {
         const context = host.active, session = context.currentSession;
+        const question = context.handlers.getPetDialog().question;
         const timeline = require('./core/mobile-history.cjs').mobileTimeline({ messages: session?.messages || [], events: [...(session?.events || []), ...(context.activeRun?.liveEvents || [])], subagents: session?.subagents || [], taskRuns: session?.taskRuns || [], redact });
         return { workspace: context.tools?.root || null, sessionId: session?.id || null,
           title: session ? store.sessionTitle(session) : '', running: Boolean(context.activeRun), model: (await context.state()).settings?.model || '',
           pendingApprovals: (await context.state()).pendingApprovals,
+          pendingQuestion: question?.blocking ? { id: question.id, question: question.question, options: question.options, choiceOnly: question.choiceOnly === true } : null,
           streamText: (() => { const value=redact(String(context.activeRun?.streamText || '')).replace(/data:[^\s"']*;base64,[A-Za-z0-9+/=_-]+/gi,'[图片数据已省略]'); return value.length>50000 ? value.slice(0,50000)+'\n[内容已截断]' : value; })(),
           operations: (context.activeRun?.liveEvents || []).filter(event => ['tool-start', 'tool-result'].includes(event.type))
             .slice(-20).map(event => ({ type: event.type, name: redact(String(event.name || '')).slice(0, 200) })),
           timeline,
           messages: timeline.filter(entry => entry.type === 'message').map(({role,content})=>({role,content})) };
       },
+      activateProject: target => host.activateProject(target),
       stopTask: () => host.active.handlers.stopTask(),
       approve: arg => host.active.handlers.respondApproval(arg),
+      answerQuestion: arg => {
+        const context=host.active, dialog=context.handlers.getPetDialog(), question=dialog.question;
+        if (!question?.blocking || question.id !== arg.id) throw new Error('问题已结束或会话已切换，请刷新后重试。');
+        const scope={workspaceId:dialog.workspaceId,sessionId:dialog.sessionId,id:arg.id};
+        if (arg.action==='dismiss') return context.handlers.dismissPetDialog(scope);
+        return context.handlers.answerPetDialog({ ...scope, ...(Object.hasOwn(arg,'choiceIndex') ? {choiceIndex:arg.choiceIndex} : {text:arg.text}) });
+      },
       listWorkspaces: async () => ({ workspaces: host.summaries().map(item => ({ id: item.workspaceId, name: item.name, active: item.active })) }),
       selectWorkspace: async id => {
         const target = [...host.contexts].find(value => value.id === id && value.tools);
@@ -2631,9 +2644,9 @@ const context = {
         if (host.active !== context) throw new Error('电脑项目已切换，请重试。');
         return { reasoningEffort: state.settings?.reasoningEffort || 'default' };
       },
-      submit: async (text, attachments) => {
+      submit: async (text, attachments, mode) => {
         const context = host.active;
-        return context.submitPrompt({ text, attachments }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });
+        return context.submitPrompt({ text, attachments, mode }, { validate: () => { if (host.active !== context) throw new Error('电脑项目已切换，请重试。'); } });
       },
     });
     initializeBrowser();

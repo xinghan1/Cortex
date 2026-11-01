@@ -31,6 +31,12 @@ function fixture(qr = async () => ({size:21,modules:Array.from({length:21},()=>A
   return { ui: window.CortexMobileRemote, calls, qrCalls, ports, node: id => document.nodes.get(id), fail: value => { fail = value; }, setState: value => { state=value; } };
 }
 
+test('remote connection panel clearly states paired file access', async () => {
+  const f=fixture(); await f.ui.open();
+  assert.equal(f.node('mobile-remote-file-access-notice').textContent,'已配对设备可访问和修改电脑文件');
+  assert.ok(f.node('mobile-remote-dialog').children.includes(f.node('mobile-remote-file-access-notice')));
+});
+
 test('remote access is explicit, credentials are text, and close does not stop it', async () => {
   const f = fixture(); await f.ui.open();
   assert.deepEqual(f.calls, ['status']); assert.equal(f.node('mobile-remote-start').disabled, false); assert.equal(f.node('mobile-remote-stop').disabled, true);

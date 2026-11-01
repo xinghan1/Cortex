@@ -17,6 +17,7 @@
   const close = el('button', 'icon-button', '×'); close.type = 'button'; close.setAttribute('aria-label', '关闭手机远程连接');
   close.addEventListener('click', () => dialog.close()); header.append(title, close);
   const status = el('p', 'mobile-remote-status'); status.id = 'mobile-remote-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  const accessNotice = el('p', 'mobile-remote-status', '已配对设备可访问和修改电脑文件'); accessNotice.id = 'mobile-remote-file-access-notice';
   const error = el('p', 'form-error'); error.id = 'mobile-remote-error'; error.hidden = true; error.setAttribute('role', 'alert');
   const controls = el('div', 'mobile-remote-controls');
   const portLabel = el('label', 'mobile-remote-label', '本地端口（留空自动分配；穿透时建议固定）'); portLabel.htmlFor = 'mobile-remote-port';
@@ -46,7 +47,7 @@
   const fingerprint = field('证书指纹', 'mobile-remote-fingerprint');
   const token = field('连接令牌', 'mobile-remote-token');
   const help = el('button', 'button subtle mobile-remote-help-button', '需要帮助？'); help.type = 'button'; help.id = 'mobile-remote-help';
-  dialog.append(header, status, error, portLabel, localPort, controls, info, help); document.body.append(dialog);
+  dialog.append(header, status, accessNotice, error, portLabel, localPort, controls, info, help); document.body.append(dialog);
   const helpDialog = el('dialog', 'settings-dialog mobile-remote-help-dialog'); helpDialog.id = 'mobile-remote-help-dialog'; helpDialog.setAttribute('aria-labelledby', 'mobile-remote-help-title');
   const helpHeader = el('div', 'dialog-header');
   const helpTitle = el('h2', '', '远程连接帮助'); helpTitle.id = 'mobile-remote-help-title';
@@ -67,7 +68,7 @@
     '手机和电脑也可以加入同一个组网 VPN，并选择电脑的 VPN 地址。是否能够连接取决于网络和防火墙设置。'
   ]);
   section('连接安全', [
-    '配对二维码和连接令牌可用于访问电脑，只提供给可信设备。每次重新开启远程服务会生成新令牌；关闭连接窗口不会停止服务，不再使用时请点击“停止远程连接”。'
+    '配对设备可以浏览电脑可访问的任意路径、新建项目、编辑及下载文件。配对二维码和连接令牌只提供给可信设备。每次重新开启远程服务会生成新令牌；关闭连接窗口不会停止服务，不再使用时请点击“停止远程连接”。'
   ]);
   helpDialog.append(helpHeader, helpBody); document.body.append(helpDialog);
   help.addEventListener('click', () => { if (!helpDialog.open) helpDialog.showModal(); });

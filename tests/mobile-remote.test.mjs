@@ -2,10 +2,57 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import https from 'node:https';
 import net from 'node:net';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 const require=createRequire(import.meta.url);
 const {createMobileRemote}=require('../src/core/mobile-remote.cjs');
 function request(port,token,method,path,body) { return new Promise((resolve,reject)=>{ const req=https.request({host:'127.0.0.1',port,method,path,rejectUnauthorized:false,headers:{authorization:`Bearer ${token}`}},res=>{const fingerprint=res.socket.getPeerCertificate().fingerprint256;let data='';res.on('data',chunk=>data+=chunk);res.on('end',()=>resolve({code:res.statusCode,body:JSON.parse(data),fingerprint}));});req.on('error',reject);req.end(body);}); }
+function download(port,token,body) { return new Promise((resolve,reject)=>{ const req=https.request({host:'127.0.0.1',port,method:'POST',path:'/v1/files/download',rejectUnauthorized:false,headers:{authorization:`Bearer ${token}`}},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve({code:res.statusCode,data:Buffer.concat(chunks)}));});req.on('error',reject);req.end(JSON.stringify(body));}); }
+test('paired user can answer or dismiss a pending question with validated input',async()=>{
+ let calls=[]; const service=createMobileRemote({snapshot:()=>({pendingQuestion:{id:'q',question:'请选择',options:['一','二'],choiceOnly:false}}),answerQuestion:input=>{if(input.id!=='q')throw Error('问题已结束');calls.push(input);}}); const pair=await service.start();
+ try {
+  assert.equal((await request(pair.port,pair.token,'GET','/v1/state')).body.pendingQuestion.question,'请选择');
+  assert.equal((await request(pair.port,'wrong','POST','/v1/question',JSON.stringify({id:'q',text:'a'}))).code,401);
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/question',JSON.stringify({id:'q',text:'a',choiceIndex:1}))).code,400);
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/question',JSON.stringify({id:'q',choiceIndex:1}))).code,200);
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/question',JSON.stringify({id:'q',action:'dismiss'}))).code,200);
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/question',JSON.stringify({id:'stale',text:'a'}))).code,400);
+  assert.deepEqual(calls,[{id:'q',choiceIndex:1},{id:'q',action:'dismiss'}]);
+ } finally {await service.stop();}
+});
+test('remote download returns binary bytes and handles an empty file',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'cortex-download-')); const service=createMobileRemote({}); const pair=await service.start();
+ try {
+  const target=path.join(root,'sample.bin'); await fs.writeFile(target,Buffer.from([0,255,7]));
+  const data=await download(pair.port,pair.token,{path:target}); assert.equal(data.code,200);assert.deepEqual(data.data,Buffer.from([0,255,7]));
+  await fs.writeFile(target,Buffer.alloc(0)); const empty=await download(pair.port,pair.token,{path:target});assert.equal(empty.code,200);assert.equal(empty.data.length,0);
+  const f=await fs.open(target,'w'); try {await f.truncate(100*1024*1024+1);} finally {await f.close();}
+  assert.equal((await download(pair.port,pair.token,{path:target})).code,413);
+ } finally {await service.stop();await fs.rm(root,{recursive:true,force:true});}
+});
+test('interrupting a download closes its file handle',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'cortex-download-abort-')); const target=path.join(root,'large.bin');
+ await fs.writeFile(target,Buffer.alloc(8*1024*1024,1)); const originalOpen=fs.open; let closedResolve; const closed=new Promise(resolve=>{closedResolve=resolve});
+ fs.open=async (...args)=>{const handle=await originalOpen(...args); if(args[0]===target){const originalClose=handle.close.bind(handle); handle.close=async()=>{try{return await originalClose();}finally{closedResolve();}};} return handle;};
+ const service=createMobileRemote({}); let timer;
+ try {
+  const pair=await service.start(); await new Promise((resolve,reject)=>{const req=https.request({host:'127.0.0.1',port:pair.port,method:'POST',path:'/v1/files/download',rejectUnauthorized:false,headers:{authorization:`Bearer ${pair.token}`}},res=>{res.once('data',()=>{res.destroy();resolve();});res.on('error',()=>{});});req.on('error',reject);req.end(JSON.stringify({path:target}));});
+  await Promise.race([closed,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('下载中断后文件句柄未关闭')),3000);})]);
+ } finally {clearTimeout(timer); await service.stop(); fs.open=originalOpen; await fs.rm(root,{recursive:true,force:true});}
+});
+test('remote steering and drive discovery require authorization and validate mode',async()=>{
+ let submitted; const service=createMobileRemote({submit:(text,attachments,mode)=>{submitted={text,mode};return {accepted:true}}});
+ const pair=await service.start();
+ try {
+  assert.equal((await request(pair.port,'wrong','POST','/v1/files/list',JSON.stringify({path:''}))).code,401);
+  const roots=await request(pair.port,pair.token,'POST','/v1/files/list',JSON.stringify({path:''})); assert.equal(roots.code,200); assert.ok(roots.body.entries.length);
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/messages',JSON.stringify({text:'hello',mode:'steer'}))).code,200);
+  assert.deepEqual(submitted,{text:'hello',mode:'steer'});
+  assert.equal((await request(pair.port,pair.token,'POST','/v1/messages',JSON.stringify({text:'bad',mode:'other'}))).code,400);
+ } finally {await service.stop();}
+});
 test('fixed port validates input, reports conflicts, and can be reused after stopping',async()=>{
  const service=createMobileRemote({snapshot:()=>({ok:true})});
  for(const port of [-1,65536,1.5,'123',null]) await assert.rejects(service.start({port}),/端口/);

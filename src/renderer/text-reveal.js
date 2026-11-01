@@ -22,6 +22,10 @@
     if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
     const nodes = textNodes(root), current = nodes.map(node => node.data).join('');
     let offset = commonPrefix(previous, current);
+    // Markdown syntax can alter already rendered text when later tokens close
+    // a construct. Re-animating that rewritten suffix makes old words blink.
+    // Display that frame directly; subsequent appended text can fade in again.
+    if (offset < previous.length) return;
     if (offset < current.length && /[\uDC00-\uDFFF]/u.test(current[offset])) offset--;
     // Bound DOM churn and total delay for unusually large, non-streaming chunks.
     const groupSize = Math.max(1, Math.ceil((current.length - offset) / 1024));
