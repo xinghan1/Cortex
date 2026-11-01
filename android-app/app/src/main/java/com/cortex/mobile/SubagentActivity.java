@@ -5,6 +5,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 
 /** Presentation projection for redacted child activity; older snapshots may lack status or either event. */
 final class SubagentActivity {
@@ -36,6 +37,15 @@ final class SubagentActivity {
         if("failed".equals(e.status))return ToolNames.caption(e.name,true,true,location);
         String label=ToolNames.caption(e.name,false,false,location).replaceFirst("^正在","");
         return label+("denied".equals(e.status)?" · 未执行":"stopped".equals(e.status)?" · 已停止":" · 已返回");
+    }
+    static boolean groupable(Entry e){return "tool".equals(e.type)&&kind(e.name)!=null;}
+    static String kind(String name){switch(name){case "list_files":case "read_file":return "读取文件";case "search_files":return "搜索文件";case "write_file":case "replace_in_file":return "编辑文件";case "run_command":return "运行命令";default:return null;}}
+    static String groupCaption(java.util.List<Entry> items,boolean running){
+        LinkedHashSet<String> kinds=new LinkedHashSet<>();boolean active=false,failed=false,unknown=false;
+        for(Entry e:items){String kind=kind(e.name);if(kind!=null)kinds.add(kind);if(e.status.isEmpty()){if(running)active=true;else unknown=true;}else if("failed".equals(e.status)||"denied".equals(e.status)||"stopped".equals(e.status))failed=true;else if(!"completed".equals(e.status))unknown=true;}
+        StringBuilder label=new StringBuilder();for(String kind:kinds){if(label.length()>0)label.append("、");if(!active&&!failed&&!unknown)label.append(kind.replace("文件","了文件").replace("运行命令","运行了命令"));else label.append(kind);}
+        if(active)label.append(" · 进行中");else if(failed)label.append(" · 有未完成");else if(unknown)label.append(" · 状态待确认");
+        return label.toString();
     }
     private SubagentActivity(){}
 }

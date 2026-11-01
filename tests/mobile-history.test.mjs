@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const { mobileTimeline }=createRequire(import.meta.url)('../src/core/mobile-history.cjs');
 
+test('delegation bookkeeping is hidden, while failures and actual child cards remain visible', () => {
+  const calls=[{id:'s',name:'spawn_agent',arguments:{}},{id:'w',name:'wait_agents',arguments:{}},{id:'bad',name:'spawn_agent',arguments:{}},{id:'other',name:'send_agent_message',arguments:{}}];
+  const rows=mobileTimeline({messages:[{role:'assistant',toolCalls:calls},{role:'tool',toolCallId:'s',content:'{"id":"agent-1"}'},{role:'tool',toolCallId:'w',content:'[]'},{role:'tool',toolCallId:'bad',content:'工具执行失败：范围无效'},{role:'tool',toolCallId:'other',content:'ok'}],subagents:[{id:'agent-1',name:'Child',status:'running'}]});
+  assert.equal(rows.some(row=>row.id==='s'||row.id==='w'),false);
+  assert.equal(rows.filter(row=>row.id==='bad').length,0);
+  assert.equal(rows.filter(row=>row.type==='notice' && row.content.includes('子任务操作未完成')).length,1);
+  assert.ok(rows.some(row=>row.id==='other'));
+  assert.ok(rows.some(row=>row.type==='subagent'&&row.id==='agent-1'));
+});
+
 test('mobile timeline preserves conversation order and deduplicates live tool events',()=>{
   const history=mobileTimeline({messages:[{role:'user',content:'任务'}, {role:'assistant',content:'开始',toolCalls:[{id:'c1',name:'read_file',arguments:{path:'a.txt'}}]}, {role:'tool',toolCallId:'c1',content:'文件内容'}, {role:'assistant',content:'完成'}],events:[{type:'tool-start',toolCallId:'c1',name:'read_file',args:{path:'a.txt'}},{type:'tool-result',toolCallId:'c1',result:'文件内容'},{type:'tool-start',toolCallId:'c2',name:'write_file',args:{path:'b.txt'}}]});
   assert.deepEqual(history.map(x=>x.type),['message','message','tool_call','tool_result','message','tool_call']);

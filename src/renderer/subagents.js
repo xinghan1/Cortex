@@ -146,12 +146,38 @@
       const results = new Map();
       for (const item of agent.activity) if (item.type === 'tool-result' && item.toolCallId) results.set(item.toolCallId, item);
       const paired = new Set(agent.activity.filter(item => item.type === 'tool-start' && item.toolCallId && results.has(item.toolCallId)).map(item => item.toolCallId));
+      const categories = { list_files: 'read', read_file: 'read', search_files: 'search', write_file: 'edit', replace_in_file: 'edit', run_command: 'command' };
+      const names = { read: ['读取文件', '读取了文件'], search: ['搜索文件', '搜索了文件'], edit: ['编辑文件', '编辑了文件'], command: ['运行命令', '运行了命令'] };
+      let batch = null;
+      function flush() {
+        if (!batch) return;
+        const group = node('details', 'subagent-operation-group'); group.dataset.stateKey = batch.key;
+        const summary = node('summary', 'subagent-operation-group-summary');
+        const symbol = node('span', 'subagent-operation-group-icon', '›_'); symbol.setAttribute('aria-hidden', 'true');
+        const captions = Object.keys(names).filter(category => batch.categories.has(category)).map(category => {
+          const allCompleted = batch.categories.get(category).every(status => status === '已完成');
+          return names[category][allCompleted ? 1 : 0];
+        });
+        const label = node('span', 'subagent-operation-group-label', captions.join('、'));
+        const count = node('span', 'subagent-operation-group-count', `${batch.count} 项操作`);
+        const failures = batch.statuses.filter(status => ['未完成', '未执行', '已停止', '未返回'].includes(status)).length;
+        const stateLabel = failures ? node('span', 'subagent-operation-group-problem', `${failures} 项未完成`) : null;
+        summary.append(symbol, label, count); if (stateLabel) summary.append(stateLabel);
+        const arrow = node('span', 'subagent-operation-group-chevron', '›'); arrow.setAttribute('aria-hidden', 'true'); summary.append(arrow);
+        const body = node('div', 'subagent-operation-group-body'); body.append(...batch.children);
+        group.append(summary, body); log.append(group); batch = null;
+      }
       agent.activity.forEach((item, index) => {
         if (['message', 'assistant-message', 'text', 'status', 'progress'].includes(item.type)) {
+          flush();
           if (item.text) log.append(node('div', 'subagent-activity-text', item.text));
           return;
         }
-        if (item.type === 'command-output') { raw(log, '命令输出', item.text || item.result, 'activity-' + index + '-output'); return; }
+        if (item.type === 'command-output') {
+          if (batch) { const output = node('div', 'subagent-command-output'); raw(output, '命令输出', item.text || item.result, 'activity-' + index + '-output'); batch.children.push(output); }
+          else raw(log, '命令输出', item.text || item.result, 'activity-' + index + '-output');
+          return;
+        }
         if (item.type === 'tool-result' && item.toolCallId && paired.has(item.toolCallId)) return;
         const result = item.type === 'tool-start' && item.toolCallId ? results.get(item.toolCallId) : item.type === 'tool-result' ? item : null;
         const key = 'activity-' + (item.toolCallId || index) + '-operation';
@@ -165,8 +191,14 @@
         if (item.text) body.append(node('div', 'subagent-activity-text', item.text));
         raw(body, '输入参数', item.args, key + '-args');
         raw(body, '执行结果', result?.result, key + '-result', item.args?.path);
-        operation.append(body); log.append(operation);
+        operation.append(body);
+        const category = categories[item.name];
+        if (!category) { flush(); log.append(operation); return; }
+        if (!batch) batch = { key: 'operation-group-' + (item.toolCallId || index), count: 0, categories: new Map(), statuses: [], children: [] };
+        if (!batch.categories.has(category)) batch.categories.set(category, []);
+        batch.categories.get(category).push(status); batch.statuses.push(status); batch.count++; batch.children.push(operation);
       });
+      flush();
       fragment.append(log);
     }
     state.usage = null;

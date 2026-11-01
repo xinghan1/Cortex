@@ -2106,6 +2106,15 @@ function renderQuestionAnswer(event, { target, historical = false, runId } = {})
   card.append(response); target.append(card); return card;
 }
 
+function quietSubagentOperation(name) { return name === 'spawn_agent' || name === 'wait_agents'; }
+function failedSubagentOperation(result) {
+  if (typeof result === 'string') { if (/^(?:错误|工具执行失败|Error|操作已停止)/i.test(result)) return true; try { result = JSON.parse(result); } catch { return false; } }
+  return !!(result && typeof result === 'object' && (result.error || result.denied || result.canceled || result.cancelled || result.success === false));
+}
+function showSubagentOperationFailure(result, target) {
+  const value = typeof result === 'string' ? result : JSON.stringify(result || {});
+  target.append(element('p', 'task-history-error', `子任务操作未完成：${String(value).slice(0, 2000)}`));
+}
 function renderHistoricalTaskActivity(record, items = []) {
   const activity = createTaskActivity(record);
   activity.status = ['completed', 'failed', 'stopped'].includes(record.status) ? record.status : 'completed';
@@ -2121,6 +2130,10 @@ function renderHistoricalTaskActivity(record, items = []) {
     else if (item.type === 'message' && (item.message.content || messageImageAttachments(item.message.attachments).length)) addMessage(item.message.role, item.message.content || '', false, { ...item.message, target: activity.events, historical: true });
     else if (item.type === 'event') {
       const event = item.event;
+      if (quietSubagentOperation(event.name) && (event.type === 'tool-start' || event.type === 'tool-result')) {
+        if (event.type === 'tool-result' && failedSubagentOperation(event.result)) showSubagentOperationFailure(event.result, activity.events);
+        continue;
+      }
       if (event.type === 'tool-start') {
         output = null;
         const tool = createToolCard(event);
@@ -4306,8 +4319,12 @@ function handleEvent(event) {
       }
       moveTaskActivityToEnd(); scrollBottom(); break;
     }
-    case 'tool-start': if (taskKind !== 'undo') addTool(event); break;
-    case 'tool-result': rememberTaskChange(event); if (taskKind !== 'undo') completeTool(event); break;
+    case 'tool-start': if (taskKind !== 'undo' && !quietSubagentOperation(event.name)) addTool(event); break;
+    case 'tool-result':
+      rememberTaskChange(event);
+      if (taskKind !== 'undo' && quietSubagentOperation(event.name)) { if (failedSubagentOperation(event.result)) showSubagentOperationFailure(event.result, taskProcessTarget()); }
+      else if (taskKind !== 'undo') completeTool(event);
+      break;
     case 'file-change-recorded': rememberTaskChange(event); break;
     case 'images-viewed': renderImageViewed(event); break;
     case 'image-generated':

@@ -27,16 +27,25 @@ function mobileTimeline({ messages = [], events = [], subagents = [], taskRuns =
       out[key]=/^(?:token|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|password|secret)$/i.test(key) ? '[已隐藏]' : clean(item,depth+1);
     } return out;
   }
-  const rows=[], calls=new Set(), results=new Set(), agents=new Map();
+  // Suppress delegation bookkeeping rows; report failures as plain notices.
+  // The model's original messages are never changed.
+  const quietNames=new Set(['spawn_agent','wait_agents']), quietCalls=new Set(), failedCalls=new Set();
+  const failed=value=>{ if(typeof value==='string'){if(/^(?:错误|工具执行失败|Error|操作已停止)/i.test(value))return true;try{value=JSON.parse(value);}catch{return false;}} return !!(value&&typeof value==='object'&&(value.error||value.denied||value.canceled||value.cancelled||value.success===false)); };
+  for(const m of messages) if(m?.role==='assistant' && Array.isArray(m.toolCalls)) for(const call of m.toolCalls) if(quietNames.has(call?.name)&&call.id) quietCalls.add(String(call.id));
+  for(const e of events) if(e?.type==='tool-start'&&quietNames.has(e.name)&&e.toolCallId) quietCalls.add(String(e.toolCallId));
+  for(const m of messages) if(m?.role==='tool'&&m.toolCallId&&failed(m.content)) failedCalls.add(String(m.toolCallId));
+  for(const e of events) if(e?.type==='tool-result'&&e.toolCallId&&failed(e.result)) failedCalls.add(String(e.toolCallId));
+  const hide=(name,id)=> quietNames.has(name)||quietCalls.has(String(id||''));
+  const rows=[], calls=new Set(), results=new Set(), agents=new Map(), quietNotices=new Set();
   const add=(entry,index,order)=>rows.push({ entry, index, order, seq:rows.length });
   messages.forEach((m,i)=>{
     if(!m || typeof m!=='object')return;
     if((m.role==='user'||m.role==='assistant') && typeof m.content==='string' && m.content) add({type:'message',role:m.role,content:text(m.content,MESSAGE_LIMIT)},i,0);
     if(m.role==='assistant' && Array.isArray(m.toolCalls)) for(const c of m.toolCalls) {
-      if(!c || typeof c!=='object')continue;const id=text(c.id||'');if(id)calls.add(id);
+      if(!c || typeof c!=='object')continue;const id=text(c.id||'');if(hide(c.name,id))continue;if(id)calls.add(id);
       add({type:'tool_call',id,name:text(c.name||'工具'),content:text(c.arguments ?? {})},i,1);
     }
-    if(m.role==='tool') { const id=text(m.toolCallId||'');if(id)results.add(id);add({type:'tool_result',id,name:text(m.name||''),content:text(m.content ?? '')},i,0); }
+    if(m.role==='tool') { const id=text(m.toolCallId||'');if(hide(m.name,id)){if(failedCalls.has(id)&&!quietNotices.has(id)){quietNotices.add(id);add({type:'notice',content:'子任务操作未完成：'+text(m.content ?? '')},i,0);}return;}if(id)results.add(id);add({type:'tool_result',id,name:text(m.name||''),content:text(m.content ?? '')},i,0); }
   });
   for(const a of subagents) if(a && typeof a.id==='string') agents.set(a.id,a);
   for(const e of events) if(e?.type==='subagent-update' && typeof e.agent?.id==='string') agents.set(e.agent.id,{...agents.get(e.agent.id),...e.agent,_index:e.messageIndex});
@@ -45,7 +54,7 @@ function mobileTimeline({ messages = [], events = [], subagents = [], taskRuns =
     add({type:'subagent',id:text(a.id),name:text(a.name||'子任务'),status:text(a.status||''),task:text(a.task||''),summary:text(a.summary||a.error||''),activity:text(a.activity||[])},index,2);
   }
   for(const e of events) {
-    if(!e || !['tool-start','tool-result'].includes(e.type))continue;const id=text(e.toolCallId||'');
+    if(!e || !['tool-start','tool-result'].includes(e.type))continue;const id=text(e.toolCallId||'');if(hide(e.name,id)){if(e.type==='tool-result'&&failed(e.result)&&!quietNotices.has(id)){quietNotices.add(id);add({type:'notice',content:'子任务操作未完成：'+text(e.result)},Number.isInteger(e.messageIndex)?e.messageIndex:messages.length,3);}continue;}
     if(id && (e.type==='tool-start'?calls:results).has(id))continue;
     if(id) (e.type==='tool-start'?calls:results).add(id);
     add({type:e.type==='tool-start'?'tool_call':'tool_result',id,name:text(e.name||'工具'),content:text(e.type==='tool-start'?e.args??{}:e.result??'')},Number.isInteger(e.messageIndex)?e.messageIndex:messages.length,3);

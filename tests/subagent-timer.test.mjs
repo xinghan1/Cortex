@@ -42,6 +42,26 @@ test('legacy and unfinished operations are not falsely reported as completed', (
   const texts = collect(card);
   assert.ok(texts.includes('搜索文件 · 未返回')); assert.ok(texts.includes('读取文件列表 · 已返回'));
 });
+test('adjacent operations form one expandable group without hiding failures or inventing success', () => {
+  const f = fixture(), card = f.api.render({ ...snapshot, status: 'completed', activity: [
+    { type: 'tool-start', name: 'search_files', toolCallId: 'a' },
+    { type: 'tool-result', name: 'search_files', toolCallId: 'a', status: 'completed', result: '{}' },
+    { type: 'tool-start', name: 'write_file', toolCallId: 'b' },
+    { type: 'tool-result', name: 'write_file', toolCallId: 'b', status: 'failed', result: '{"error":"denied"}' },
+    { type: 'tool-start', name: 'run_command', toolCallId: 'c' },
+    { type: 'tool-result', name: 'run_command', toolCallId: 'c', status: 'completed', result: '{"exitCode":0}' },
+    { type: 'message', text: '已结束' },
+    { type: 'tool-result', name: 'list_files', result: '旧记录' },
+  ] });
+  const findAll = (element, name) => [...(element.className === name ? [element] : []), ...element.children.flatMap(child => findAll(child, name))];
+  const groups = findAll(card, 'subagent-operation-group');
+  assert.equal(groups.length, 2); assert.equal(groups[0].open, undefined);
+  const texts = collect(groups[0]);
+  assert.ok(texts.includes('搜索了文件、编辑文件、运行了命令'));
+  assert.ok(texts.includes('3 项操作')); assert.ok(texts.includes('1 项未完成'));
+  assert.ok(texts.includes('编辑文件 · 未完成'));
+  assert.ok(collect(groups[1]).includes('读取文件列表 · 已返回'));
+});
 const meta = card => card.children[0].children[3];
 const phase = card => card.children[0].children[2];
 function usage(card) {

@@ -71,21 +71,36 @@ final class ToolEventView {
         if(entries==null){if(activity!=null&&activity!=JSONObject.NULL&&!String.valueOf(activity).isEmpty()){TextView label=text("操作过程",12,muted);detail.addView(label);TextView fallback=text(pretty(activity),13,fg);fallback.setTextIsSelectable(true);detail.addView(fallback);}}
         else if(!entries.isEmpty()){
             TextView label=text("操作过程",12,muted);label.setPadding(0,dp(7),0,dp(4));detail.addView(label);int index=0;
-            for(SubagentActivity.Entry entry:entries){
-                if(!"tool".equals(entry.type)){TextView body=text(entry.text,13,fg);body.setTextIsSelectable(true);body.setPadding(0,dp(5),0,dp(5));detail.addView(body);continue;}
-                String itemKey=id+":tool:"+(entry.id.isEmpty()?String.valueOf(index):entry.id);index++;
-                LinearLayout row=new LinearLayout(context);row.setOrientation(LinearLayout.VERTICAL);detail.addView(row);
-                TextView summary=text("",13,fg);summary.setPadding(0,dp(8),0,dp(8));row.addView(summary);
-                LinearLayout data=new LinearLayout(context);data.setOrientation(LinearLayout.VERTICAL);data.setVisibility(Boolean.TRUE.equals(expanded.get(itemKey))?View.VISIBLE:View.GONE);row.addView(data);
-                if(entry.args!=null&&entry.args!=JSONObject.NULL){data.addView(text("输入参数",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.args));data.addView(value);}
-                if(entry.result!=null&&entry.result!=JSONObject.NULL){data.addView(text("执行结果",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.result));data.addView(value);}
-                String caption=SubagentActivity.caption(entry,"running".equals(agent.optString("status")));Runnable update=()->summary.setText((data.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+caption);update.run();
-                summary.setOnClickListener(v->{boolean open=data.getVisibility()!=View.VISIBLE;data.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(itemKey,open);update.run();});
+            for(int cursor=0;cursor<entries.size();){
+                SubagentActivity.Entry entry=entries.get(cursor);
+                if(!"tool".equals(entry.type)){TextView body=text(entry.text,13,fg);body.setTextIsSelectable(true);body.setPadding(0,dp(5),0,dp(5));detail.addView(body);cursor++;continue;}
+                if(!SubagentActivity.groupable(entry)){subagentToolRow(detail,entry,id,index++,"running".equals(agent.optString("status")),fg,muted);cursor++;continue;}
+                java.util.ArrayList<SubagentActivity.Entry> grouped=new java.util.ArrayList<>();int first=cursor;
+                while(cursor<entries.size()&&SubagentActivity.groupable(entries.get(cursor)))grouped.add(entries.get(cursor++));
+                String groupKey=id+":operations:"+(entry.id.isEmpty()?String.valueOf(first):entry.id);
+                LinearLayout group=new LinearLayout(context);group.setOrientation(LinearLayout.VERTICAL);group.setPadding(dp(10),dp(2),dp(10),dp(2));
+                GradientDrawable border=new GradientDrawable();border.setColor(Color.TRANSPARENT);border.setCornerRadius(dp(10));border.setStroke(dp(1),light?0xffc9cdd4:0xff373d47);group.setBackground(border);
+                LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-1,-2);gp.bottomMargin=dp(6);detail.addView(group,gp);
+                TextView groupHead=text("",13,fg);groupHead.setPadding(0,dp(9),0,dp(9));group.addView(groupHead);
+                LinearLayout groupBody=new LinearLayout(context);groupBody.setOrientation(LinearLayout.VERTICAL);groupBody.setVisibility(Boolean.TRUE.equals(expanded.get(groupKey))?View.VISIBLE:View.GONE);group.addView(groupBody);
+                for(SubagentActivity.Entry member:grouped)subagentToolRow(groupBody,member,id,index++,"running".equals(agent.optString("status")),fg,muted);
+                String caption=SubagentActivity.groupCaption(grouped,"running".equals(agent.optString("status")));Runnable update=()->groupHead.setText((groupBody.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+"▣  "+caption+"  "+grouped.size()+" 项");update.run();
+                groupHead.setOnClickListener(v->{boolean open=groupBody.getVisibility()!=View.VISIBLE;groupBody.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(groupKey,open);update.run();});
             }
         }
         String name=agent.optString("name","子任务"), status=ToolNames.status(agent.optString("status",""));
         Runnable title=()->header.setText((detail.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+name+(status.isEmpty()?"":"  ·  "+status));title.run();
         header.setOnClickListener(v->{boolean open=detail.getVisibility()!=View.VISIBLE;detail.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(id,open);title.run();});
+    }
+    private void subagentToolRow(LinearLayout parent,SubagentActivity.Entry entry,String id,int index,boolean running,int fg,int muted){
+        String itemKey=id+":tool:"+(entry.id.isEmpty()?String.valueOf(index):entry.id);
+        LinearLayout row=new LinearLayout(context);row.setOrientation(LinearLayout.VERTICAL);parent.addView(row);
+        TextView summary=text("",13,fg);summary.setPadding(0,dp(8),0,dp(8));row.addView(summary);
+        LinearLayout data=new LinearLayout(context);data.setOrientation(LinearLayout.VERTICAL);data.setVisibility(Boolean.TRUE.equals(expanded.get(itemKey))?View.VISIBLE:View.GONE);row.addView(data);
+        if(entry.args!=null&&entry.args!=JSONObject.NULL){data.addView(text("输入参数",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.args));data.addView(value);}
+        if(entry.result!=null&&entry.result!=JSONObject.NULL){data.addView(text("执行结果",12,muted));TextView value=text("",13,fg);value.setTextIsSelectable(true);code(value,pretty(entry.result));data.addView(value);}
+        String caption=SubagentActivity.caption(entry,running);Runnable update=()->summary.setText((data.getVisibility()==View.VISIBLE?"▾  ":"▸  ")+caption);update.run();
+        summary.setOnClickListener(v->{boolean open=data.getVisibility()!=View.VISIBLE;data.setVisibility(open?View.VISIBLE:View.GONE);expanded.put(itemKey,open);update.run();});
     }
     private final class Group {
         final String id,category,fallback; final LinearLayout box,detail; final TextView header; final java.util.List<Card> members=new java.util.ArrayList<>();
